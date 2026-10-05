@@ -4,12 +4,22 @@
  *
  * 「自动拆 K 层」内部是**串行多次调用同一个单步接口**（/api/predict），
  * 不是调 /api/search —— 每步取 Top-1，随时可停止，受「最大深度」与「调用预算」双重约束。
+ *
+ * 🔴 本组件有两个宿主，两种形态：
+ *    ① **标定卡片内**（TargetSetupPanel）—— 自带 `.rw-card` 边框与标题；
+ *    ② **右辅助面板内**（AsidePanel）—— 面板已经给了标题「运行参数」和外框，
+ *       这里必须用 `embedded` 关掉自己那层卡壳，否则会出现
+ *       「运行参数 / 运行参数」两行标题叠在一起（实测踩过）。
+ *    判据是显式 prop，**不要靠 CSS 去猜父容器** —— 猜错就是重复标题或彻底没标题。
  */
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { retroApi } from '@/api/retro';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { countHeavyAtoms } from '@/utils/smiles';
+
+/** true = 已被外层容器（右辅助面板）接管标题与外框，本组件只出内容 */
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
 
 const store = useWorkspaceStore();
 const materialInput = ref('');
@@ -104,13 +114,18 @@ onMounted(() => {
 </script>
 
 <template>
-  <section class="rw-card params">
-    <div class="rw-card__head">
+  <section class="rw-card params" :class="{ 'params--embedded': embedded }">
+    <div v-if="!embedded" class="rw-card__head">
       <div class="rw-card__title">运行参数</div>
       <el-tag v-if="store.autoRunning" type="warning" size="small" effect="dark">运行中</el-tag>
     </div>
 
     <div class="rw-card__body params__body">
+      <!-- 嵌入模式：面板标题行已经在跑，这里补一个运行中角标就够 -->
+      <div v-if="embedded && store.autoRunning" class="params__flag">
+        <el-tag type="warning" size="small" effect="dark">自动拆分运行中</el-tag>
+      </div>
+
       <!-- 分组一：预测设置（最常改的两个） -->
       <details class="params__group" open>
         <summary class="params__group-head">
@@ -254,6 +269,21 @@ onMounted(() => {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 嵌入右辅助面板：去掉自己那层卡壳（外框与标题都归 AsidePanel） */
+.params--embedded.rw-card {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.params--embedded .params__body {
+  padding: 0;
+}
+
+.params__flag {
+  display: flex;
 }
 
 /* ---------- 可折叠分组 ----------

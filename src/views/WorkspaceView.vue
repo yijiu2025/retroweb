@@ -8,20 +8,25 @@
  * └──────────────────────────────────────────────────────────────────┘
  * ┌─ 路线态（已有目标）──────────────────────────────────────────────┐
  * │  顶部：目标分子条（结构缩略 + 性质 + 换目标）                     │
- * │  主区：路线树 / 合成路线 / 每步流程 三页签                        │
- * │  右栏：运行参数，**可伸缩** —— 收起后主区独占整宽                │
+ * │  主区：路线树 / 合成路线 / 每步流程 三页签（**单列，独占整宽**）  │
+ * │  底部：状态底栏（见 RouteStats，由 AppShell 挂在内容区末尾）      │
  * └──────────────────────────────────────────────────────────────────┘
+ *
+ * 🔴 路线态为什么不再自带参数栏：
+ *    参数栏以前是本视图栅格的第 2 列（300px）。抬到 AppShell 的右辅助面板后，
+ *    本视图变成**单列**，栅格、伸缩、sticky 高度统统不用自己管了，
+ *    「参数」也终于能被别的页面复用同一个槽位。
+ *    ⇒ 本文件不再 import RunParams / 不再持有 paramsCollapsed。
  *
  * 「一个目标分析 = 一个任务」：标定卡片消失 = 任务正式开始；
  * 换目标 = 回到标定态 = 开始下一个任务的准备。
  *
- * 断点：≥1180px 双栏；<1180px 单栏纵向堆叠；<768px 由各组件自身适配。
+ * 断点：内容区宽 <1180px 时右辅助面板堆到下方（由 AppShell 统一处理）。
  */
 import { computed, onMounted, ref } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 import TargetSetupPanel from '@/components/workspace/TargetSetupPanel.vue';
 import TargetBar from '@/components/workspace/TargetBar.vue';
-import RunParams from '@/components/workspace/RunParams.vue';
 import StepTree from '@/components/workspace/StepTree.vue';
 import RouteSummary from '@/components/workspace/RouteSummary.vue';
 import RouteFlow from '@/components/workspace/RouteFlow.vue';
@@ -66,56 +71,38 @@ onMounted(() => {
     <TargetSetupPanel />
   </div>
 
-  <!-- ============ 路线态 ============ -->
-  <div v-else class="workspace" :class="{ 'workspace--narrow': store.paramsCollapsed }">
-    <div class="workspace__main">
-      <TargetBar @preview="openPreview" />
-      <SchemeBar />
+  <!-- ============ 路线态 ============
+       🔴 单列：参数栏已交给 AppShell 的右辅助面板，这里不再有第二列栅格。 -->
+  <div v-else class="workspace">
+    <TargetBar @preview="openPreview" />
+    <SchemeBar />
 
-      <el-alert type="warning" :closable="false" class="workspace__alert">
-        <template #title>
-          模型预测可能存在幻觉：排名越靠后越可能不合理，实验前必须由专业人员验证。
-        </template>
-      </el-alert>
+    <el-alert type="warning" :closable="false" class="workspace__alert">
+      <template #title>
+        模型预测可能存在幻觉：排名越靠后越可能不合理，实验前必须由专业人员验证。
+      </template>
+    </el-alert>
 
-      <el-alert
-        v-if="store.globalError"
-        type="error"
-        :closable="true"
-        :title="store.globalError"
-        class="workspace__alert"
-        @close="store.globalError = null"
-      />
+    <el-alert
+      v-if="store.globalError"
+      type="error"
+      :closable="true"
+      :title="store.globalError"
+      class="workspace__alert"
+      @close="store.globalError = null"
+    />
 
-      <el-tabs v-model="tab" class="workspace__tabs">
-        <el-tab-pane label="路线树" name="tree">
-          <StepTree @preview="openPreview" />
-        </el-tab-pane>
-        <el-tab-pane label="合成路线" name="route">
-          <RouteSummary />
-        </el-tab-pane>
-        <el-tab-pane label="每步流程" name="flow">
-          <RouteFlow />
-        </el-tab-pane>
-      </el-tabs>
-    </div>
-
-    <!-- 右栏：运行参数，可伸缩 -->
-    <aside class="workspace__side" :class="{ 'is-collapsed': store.paramsCollapsed }">
-      <button
-        type="button"
-        class="workspace__side-toggle"
-        :title="store.paramsCollapsed ? '展开运行参数' : '收起运行参数'"
-        @click="store.paramsCollapsed = !store.paramsCollapsed"
-      >
-        <span class="workspace__side-chevron">{{ store.paramsCollapsed ? '‹' : '›' }}</span>
-        <span v-show="!store.paramsCollapsed">运行参数</span>
-      </button>
-
-      <div v-show="!store.paramsCollapsed" class="workspace__side-body rw-scroll">
-        <RunParams />
-      </div>
-    </aside>
+    <el-tabs v-model="tab" class="workspace__tabs">
+      <el-tab-pane label="路线树" name="tree">
+        <StepTree @preview="openPreview" />
+      </el-tab-pane>
+      <el-tab-pane label="合成路线" name="route">
+        <RouteSummary />
+      </el-tab-pane>
+      <el-tab-pane label="每步流程" name="flow">
+        <RouteFlow />
+      </el-tab-pane>
+    </el-tabs>
 
     <el-dialog v-model="previewVisible" :title="'结构预览'" width="560" align-center>
       <div class="workspace__preview">
@@ -130,78 +117,25 @@ onMounted(() => {
 /* 标定态的定位层：铺满内容区，给内部 absolute 的卡片当坐标系。
    `min-height` 与路线态的可用高度一致（内容区高度 = 100vh - 顶栏 60 - 上下 padding 36），
    这样卡片居中才落在视觉中心，而不是被内容区高度差带偏。 */
+/* 标定态的定位层：铺满内容区，给内部 absolute 的卡片当坐标系。
+   `min-height` 与路线态的可用高度一致（内容区高度 = 100vh − 顶栏 − 上下 padding 36），
+   这样卡片居中才落在视觉中心，而不是被内容区高度差带偏。
+   🔴 顶栏高度走变量 `--rw-header-h`，**不要就地写 60px** ——
+      顶栏高度是 AppShell / AsidePanel / 这里三处共用的一个数，
+      一旦各自写死，改顶栏就会只改到一处（这正是这次重构前的老问题）。 */
 .workspace__layer {
   position: relative;
-  min-height: calc(100vh - 60px - 36px);
+  min-height: calc(100vh - var(--rw-header-h) - 36px);
 }
 
+/* 路线态：单列纵向流。
+   参数栏已抬到 AppShell 的右辅助面板 ⇒ 这里不必再有第二列栅格、
+   不必自己算 sticky 高度，也不必再维护「收起 / 展开」两套栅格列宽。 */
 .workspace {
-  display: grid;
-  /* 主区优先；右栏固定 300px（参数是被查参考，不是主战场） */
-  grid-template-columns: minmax(0, 1fr) 300px;
-  gap: 16px;
-  align-items: start;
-}
-
-/* 参数收起后主区独占整宽 */
-.workspace--narrow {
-  grid-template-columns: minmax(0, 1fr) 40px;
-}
-
-.workspace__main {
   display: flex;
   flex-direction: column;
   gap: 12px;
   min-width: 0;
-}
-
-/* ---------- 右栏（运行参数） ---------- */
-.workspace__side {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  position: sticky;
-  /* 顶栏 60px + 内容区上边距 18px */
-  top: 0;
-  max-height: calc(100vh - 60px - 36px);
-  min-width: 0;
-}
-
-.workspace__side-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 7px 10px;
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface);
-  color: var(--rw-text-2);
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.15s, border-color 0.15s;
-}
-
-.workspace__side-toggle:hover {
-  color: var(--rw-brand);
-  border-color: var(--rw-brand);
-}
-
-/* 收起后按钮变窄条：竖排字会让它变得很高，改用单个 chevron */
-.workspace__side.is-collapsed .workspace__side-toggle {
-  padding: 8px 0;
-}
-
-.workspace__side-chevron {
-  font-size: 15px;
-  line-height: 1;
-}
-
-.workspace__side-body {
-  overflow-y: auto;
-  min-height: 0;
 }
 
 .workspace__alert :deep(.el-alert__title) {
@@ -225,23 +159,5 @@ onMounted(() => {
   color: var(--rw-text-2);
   word-break: break-all;
   text-align: center;
-}
-
-/* 窄屏：参数栏不再贴右，改为堆到主区下面 */
-@media (max-width: 1180px) {
-  .workspace,
-  .workspace--narrow {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .workspace__side {
-    position: static;
-    max-height: none;
-  }
-
-  /* 窄屏下收起态就别留一条竖栏了，直接藏掉内容、按钮横过来 */
-  .workspace__side.is-collapsed .workspace__side-toggle {
-    padding: 10px 12px;
-  }
 }
 </style>

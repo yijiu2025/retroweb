@@ -1,25 +1,41 @@
 <script setup lang="ts">
 /**
- * 应用外壳：侧边导航 + 顶栏 + 内容区。
+ * 应用外壳：四个分区。
  *
- * 侧栏自下而上分三段：
- *   ① 品牌
- *   ② 主导航（工作台 / 历史记录 / 个人中心）
- *   ③ **最近的任务**（常驻列表，不是一个按钮 + 抽屉 —— 任务入口应当随手可点）
+ * ┌────────┬───────────────────────────────┬──────────┐
+ * │        │  顶栏（标题 / 主题 / 用户）    │          │
+ * │ 侧栏   ├───────────────────────────────┤ 辅助面板 │
+ * │        │  内容区（router-view）         │          │
+ * └────────┴───────────────────────────────┴──────────┘
+ *
+ * 分工与理由：
+ *   ① **侧栏**（品牌 + 主导航 + 分组任务）纵向贯穿整屏 —— 品牌留在顶部，
+ *      让「我们是谁 / 我在哪 / 我有哪些任务」这一列连续，不被顶栏打断。
+ *   ② **顶栏**横跨「主区 + 辅助面板」两列 —— 它描述的是*当前页面*的身份
+ *      （标题 + 副标题）与全局动作（主题、用户），与左侧导航是两回事。
+ *   ③ **内容区**只放页面主体，不再自己管参数栏 ——
+ *      参数已抬到 ④，于是各页面都能用同一个右槽位放"随时可查的参考"。
+ *   ④ **辅助面板**是一个**槽位**，内容随路由切换（见 AppShell 的 aside 插槽逻辑），
+ *      可收起成 40px 竖条；开合状态落盘，刷新后保持。
  *
  * 布局断点：
- *   ≥1280px  侧栏展开
- *   <1024px  侧栏自动收成图标条（.app.is-collapsed，此时最近任务列表隐藏）
- *   <768px   侧栏变抽屉（由 isMobile 控制覆盖层）
+ *   ≥1280px  侧栏 + 主区 + 辅助面板 三列并存
+ *   <1180px  辅助面板堆到主区下方（横向空间不够，收成竖条反而更挤）
+ *   <1024px  侧栏自动收成图标条
+ *   <768px   顶栏压到 52px、副标题隐藏
  */
-import { computed, onMounted, onUnmounted, ref } from 'vue';
+import { computed, onMounted, onUnmounted, ref, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { Fold, Expand, Moon, Sunny } from '@element-plus/icons-vue';
 import { useSettingsStore } from '@/stores/settings';
 import { useWorkspaceStore } from '@/stores/workspace';
 import UserMenu from './UserMenu.vue';
 import DevBypassBadge from './DevBypassBadge.vue';
+import AsidePanel from './AsidePanel.vue';
 import SessionPanel from '@/components/workspace/SessionPanel.vue';
+import RunParams from '@/components/workspace/RunParams.vue';
+import SchemeCompare from '@/components/workspace/SchemeCompare.vue';
+import RouteStats from '@/components/workspace/RouteStats.vue';
 
 const settings = useSettingsStore();
 const store = useWorkspaceStore();
@@ -27,6 +43,8 @@ const route = useRoute();
 const router = useRouter();
 
 const isMobile = ref(false);
+/** 窄屏（<1180）时辅助面板堆到下方，此时收起态没有意义 → 强制展开显示 */
+const narrow = ref(false);
 
 const collapsed = computed({
   get: () => settings.sidebarCollapsed || isMobile.value,
@@ -41,7 +59,6 @@ function openSession(id: string): void {
   if (route.path !== '/') void router.push('/');
 }
 
-
 const navItems = [
   { path: '/', label: '工作台', icon: '⌗' },
   { path: '/history', label: '历史记录', icon: '⟲' },
@@ -51,8 +68,43 @@ const navItems = [
 const pageTitle = computed(() => (route.meta.title as string) || '逆合成工作台');
 const pageDesc = computed(() => (route.meta.desc as string) || '');
 
+/**
+ * 辅助面板放什么 —— 由「当前路由 + 工作台处于哪个阶段」两件事决定。
+ *
+ * 🔴 判据必须是 `route.name === 'workspace'` 而不是 `route.path === '/'`：
+ *    路由表里工作台的 path 是 '/'，但用 name 匹配更抗未来的路径调整。
+ *
+ * 三态：
+ *   工作台 · 标定态 → 不显示（参数已并排在标定卡片里，右面板再放一份只会让人困惑）
+ *   工作台 · 路线态 → 参数
+ *   工作台 · 合成路线页签 → 方案对比（横向选优时才需要看）
+ *   其他页面 → 不显示（历史 / 个人中心不需要常驻参考）
+ */
+const asideKind = computed<'params' | 'schemes' | 'none'>(() => {
+  if (route.name !== 'workspace') return 'none';
+  // 标定态下参数已在卡片里并排展示，右面板重复显示只会让人困惑
+  if (store.targetSetupOpen) return 'none';
+  return store.mainTab === 'route' ? 'schemes' : 'params';
+});
+
+const asideTitle = computed(() => (asideKind.value === 'schemes' ? '路线方案对比' : '运行参数'));
+
+/**
+ * 辅助面板里的内容用 `component :is` 动态渲染。
+ * RunParams 传 embedded：面板已给了标题和外框，组件要关掉自己那层，
+ * 否则会出现「运行参数 / 运行参数」两行标题（见 RunParams 头部注释）。
+ */
+type AsideComp = { comp: Component; props: Record<string, unknown> };
+
+const asideContent = computed<AsideComp | null>(() => {
+  if (asideKind.value === 'params') return { comp: RunParams, props: { embedded: true } };
+  if (asideKind.value === 'schemes') return { comp: SchemeCompare, props: {} };
+  return null;
+});
+
 function onResize(): void {
   isMobile.value = window.innerWidth < 768;
+  narrow.value = window.innerWidth < 1180;
 }
 
 onMounted(() => {
@@ -64,7 +116,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 </script>
 
 <template>
-  <div class="app" :class="{ 'is-collapsed': collapsed }">
+  <div class="app" :class="{ 'is-collapsed': collapsed, 'is-narrow': narrow }">
     <aside class="app__aside">
       <div class="app__brand">
         <span class="app__logo">R</span>
@@ -102,7 +154,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
       </div>
     </aside>
 
-    <div class="app__main">
+    <!-- 主区 + 辅助面板：顶栏横跨这两列 -->
+    <div class="app__body">
       <header class="app__header">
         <div class="app__heading">
           <h1>{{ pageTitle }}</h1>
@@ -119,11 +172,22 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </div>
       </header>
 
-      <main class="app__content rw-scroll">
-        <router-view v-slot="{ Component }">
-          <component :is="Component" />
-        </router-view>
-      </main>
+      <!-- 顶栏之下：主区 + 辅助面板 -->
+      <div class="app__lower">
+        <main class="app__content rw-scroll">
+          <router-view v-slot="{ Component }">
+            <component :is="Component" />
+          </router-view>
+          <!-- 底栏：把「这次分析的整体状态」钉在视野里，不用滚回去看 -->
+          <RouteStats v-if="route.name === 'workspace' && !store.targetSetupOpen" />
+        </main>
+
+        <!-- 辅助面板槽位：内容由 asideKind 决定 -->
+        <AsidePanel v-if="asideContent" class="app__aside-panel">
+          <template #title>{{ asideTitle }}</template>
+          <component :is="asideContent.comp" v-bind="asideContent.props" />
+        </AsidePanel>
+      </div>
     </div>
   </div>
 </template>
@@ -139,8 +203,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 .app__aside {
   display: flex;
   flex-direction: column;
-  width: 236px;
-  flex: 0 0 236px;
+  width: 240px;
+  flex: 0 0 240px;
   background: var(--rw-surface);
   border-right: 1px solid var(--rw-border);
   transition: width 0.18s ease, flex-basis 0.18s ease;
@@ -155,7 +219,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   display: flex;
   align-items: center;
   gap: 10px;
-  height: 60px;
+  height: var(--rw-header-h);
+  flex: 0 0 var(--rw-header-h);
   padding: 0 16px;
   border-bottom: 1px solid var(--rw-border);
 }
@@ -273,8 +338,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   color: var(--rw-text);
 }
 
-/* ---------- 主区 ---------- */
-.app__main {
+/* ---------- 主区（顶栏 + 下半部分） ---------- */
+.app__body {
   display: flex;
   flex-direction: column;
   flex: 1;
@@ -286,7 +351,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  height: 60px;
+  height: var(--rw-header-h);
+  flex: 0 0 var(--rw-header-h);
   padding: 0 22px;
   background: var(--rw-surface);
   border-bottom: 1px solid var(--rw-border);
@@ -301,7 +367,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   font-size: 16px;
   font-weight: 600;
   color: var(--rw-text);
-  /* 窄屏标题不许换行（换行会把 60px 顶栏撑高、挤压内容区） */
+  /* 窄屏标题不许换行（换行会把顶栏撑高、挤压内容区） */
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -337,10 +403,37 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   border-color: var(--rw-brand);
 }
 
-.app__content {
+/* 顶栏下方：内容区 + 辅助面板 横向并排 */
+.app__lower {
+  display: flex;
   flex: 1;
   min-height: 0;
+  min-width: 0;
+}
+
+.app__content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
   padding: 18px 22px;
+}
+
+/* 辅助面板：只在没内容时整条不出现（v-if），宽度由组件自己管 */
+.app__aside-panel {
+  min-height: 0;
+}
+
+/* 窄屏：辅助面板堆到内容区下方，纵向不够时就整页滚动 */
+@media (max-width: 1180px) {
+  .app__lower {
+    flex-direction: column;
+    overflow-y: auto;
+  }
+
+  .app__content {
+    flex: 0 0 auto;
+    overflow: visible;
+  }
 }
 
 @media (max-width: 768px) {
@@ -357,10 +450,14 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   .app__header {
     padding: 0 12px;
     height: 52px;
+    flex-basis: 52px;
     gap: 8px;
   }
   .app__heading h1 {
     font-size: 15px;
+  }
+  :global(html:root) {
+    --rw-header-h: 52px;
   }
 }
 </style>

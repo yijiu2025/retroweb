@@ -39,6 +39,11 @@
 
   --rw-font-mono: Consolas, 'SFMono-Regular', 'Courier New', monospace;
 
+  /* 顶栏高度：单一来源。
+     🔴 内容区里凡需要「减掉顶栏」的高度计算（如标定卡的居中基准）都必须引用它，
+        不要就地写 calc(100vh - 60px - ...)，否则顶栏一改高就静默错位。 */
+  --rw-header-h: 60px;
+
   /* Element Plus 主色对齐 */
   --el-color-primary: var(--rw-brand);
   --el-border-radius-base: 8px;
@@ -217,11 +222,15 @@ a {
 }
 
 /* ---------- 打印（另存为 PDF） ----------
-   只留路线主体：隐藏侧栏、顶栏、左栏参数与所有操作按钮。 */
+   只留路线主体：隐藏左导航、右辅助面板、顶栏与所有操作按钮。 */
 @media print {
   .app__aside,
+  .app__aside-foot,
   .app__header,
-  .workspace__left,
+  /* ⚠️ 参数栏已从工作台栅格移到外壳右面板，这里两个类名都要留：
+     .workspace__side 是历史的栅格内右栏选择器，.aside 是现在的全局右面板。 */
+  .workspace__side,
+  .aside,
   .workspace__alert,
   .rw-card__head,
   .summary__ops,
@@ -246,6 +255,15 @@ a {
 
   .app__content {
     padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  /* 打印时主区不再受 flex 高度约束，否则内容会被裁在一页里 */
+  .app,
+  .app__main,
+  .app__body {
+    display: block !important;
+    height: auto !important;
     overflow: visible !important;
   }
 

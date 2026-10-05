@@ -5,9 +5,15 @@
  * 一个目标分析 = 一个任务。这个列表就是任务的入口：
  * 点一条即把该任务的路线树恢复回来（还在跑的节点会自动接上后端 job 轮询）。
  *
- * 版式取舍：这是**侧栏里的紧凑列表**（宽度约 236px，收起时 64px），
+ * 版式取舍：这是**侧栏里的紧凑列表**（宽度约 240px，收起时 64px），
  * 所以不展示大标签，改用「状态圆点 + 名称 + 时间」三行内搞定；
  * 删除按钮只在 hover 时出现，避免一堆红色按钮糊满侧栏。
+ *
+ * 🔴 分两组的判据是 `updatedAt` 的新旧，与状态**无关**：
+ *    第一组「最近」= 前 6 条（还在手上的活），第二组「更早」= 其余（归档区）。
+ *    之所以不按状态分组（进行中 / 已完成）：同一个任务的状态会来回变，
+ *    按状态分组会让一条任务在两个组之间跳来跳去，用户反而找不着了。
+ *    按时间分组是稳定的 —— 位置只随"你多久没碰它"单调变化。
  */
 import { computed, ref } from 'vue';
 import { ElMessageBox } from 'element-plus';
@@ -20,10 +26,14 @@ const emit = defineEmits<{
   (e: 'open', id: string): void;
 }>();
 
-/** 按最近使用排序；已完成的不算「最近的任务」的噪声，但保留（用户可能想回看） */
-const items = computed(() =>
-  [...store.sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 12)
-);
+/** 第一组最多显示几条，其余进「更早的任务」 */
+const RECENT_SIZE = 6;
+
+/** 全量按最近使用排序 */
+const all = computed(() => [...store.sessions].sort((a, b) => b.updatedAt - a.updatedAt));
+
+const recent = computed(() => all.value.slice(0, RECENT_SIZE));
+const earlier = computed(() => all.value.slice(RECENT_SIZE));
 
 const STATUS_META: Record<SessionStatus, { label: string; cls: string }> = {
   running: { label: '进行中', cls: 'is-running' },
@@ -69,45 +79,89 @@ async function onRemove(id: string, name: string): Promise<void> {
 
 <template>
   <div class="recent">
-    <div class="recent__head">
-      <span class="recent__title">最近的任务</span>
-      <span class="recent__count">{{ items.length }}</span>
-    </div>
+    <p v-if="!all.length" class="recent__empty">还没有任务。在工作台设定目标分子即可开始。</p>
 
-    <ul v-if="items.length" class="recent__list">
-      <li v-for="s in items" :key="s.id">
-        <div
-          class="recent__item"
-          :class="{ 'is-current': s.id === store.currentSessionId }"
-          role="button"
-          tabindex="0"
-          :title="s.target"
-          @click="emit('open', s.id)"
-          @keyup.enter="emit('open', s.id)"
-        >
-          <span class="recent__dot" :class="STATUS_META[s.status].cls" />
-          <div class="recent__body">
-            <span class="recent__name">{{ s.name }}</span>
-            <span class="recent__sub">
-              <code class="rw-mono">{{ shortTarget(s) }}</code>
-              <i>·</i>
-              <span>{{ timeText(s.updatedAt) }}</span>
-            </span>
-          </div>
-          <button
-            type="button"
-            class="recent__del"
-            title="删除任务"
-            :disabled="confirming === s.id"
-            @click.stop="onRemove(s.id, s.name)"
-          >
-            ×
-          </button>
+    <template v-else>
+      <!-- 分组一：最近碰过的（还在手上的活） -->
+      <section class="recent__group">
+        <div class="recent__head">
+          <span class="recent__title">最近的任务</span>
+          <span class="recent__count">{{ recent.length }}</span>
         </div>
-      </li>
-    </ul>
+        <ul class="recent__list">
+          <li v-for="s in recent" :key="s.id">
+            <div
+              class="recent__item"
+              :class="{ 'is-current': s.id === store.currentSessionId }"
+              role="button"
+              tabindex="0"
+              :title="s.target"
+              @click="emit('open', s.id)"
+              @keyup.enter="emit('open', s.id)"
+            >
+              <span class="recent__dot" :class="STATUS_META[s.status].cls" />
+              <div class="recent__body">
+                <span class="recent__name">{{ s.name }}</span>
+                <span class="recent__sub">
+                  <code class="rw-mono">{{ shortTarget(s) }}</code>
+                  <i>·</i>
+                  <span>{{ timeText(s.updatedAt) }}</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                class="recent__del"
+                title="删除任务"
+                :disabled="confirming === s.id"
+                @click.stop="onRemove(s.id, s.name)"
+              >
+                ×
+              </button>
+            </div>
+          </li>
+        </ul>
+      </section>
 
-    <p v-else class="recent__empty">还没有任务。在工作台设定目标分子即可开始。</p>
+      <!-- 分组二：更早的（归档区，默认折叠，别把侧栏撑爆） -->
+      <details v-if="earlier.length" class="recent__group recent__group--arch">
+        <summary class="recent__head recent__head--btn">
+          <span class="recent__title">更早的任务</span>
+          <span class="recent__count">{{ earlier.length }}</span>
+        </summary>
+        <ul class="recent__list">
+          <li v-for="s in earlier" :key="s.id">
+            <div
+              class="recent__item"
+              :class="{ 'is-current': s.id === store.currentSessionId }"
+              role="button"
+              tabindex="0"
+              :title="s.target"
+              @click="emit('open', s.id)"
+              @keyup.enter="emit('open', s.id)"
+            >
+              <span class="recent__dot" :class="STATUS_META[s.status].cls" />
+              <div class="recent__body">
+                <span class="recent__name">{{ s.name }}</span>
+                <span class="recent__sub">
+                  <code class="rw-mono">{{ shortTarget(s) }}</code>
+                  <i>·</i>
+                  <span>{{ timeText(s.updatedAt) }}</span>
+                </span>
+              </div>
+              <button
+                type="button"
+                class="recent__del"
+                title="删除任务"
+                :disabled="confirming === s.id"
+                @click.stop="onRemove(s.id, s.name)"
+              >
+                ×
+              </button>
+            </div>
+          </li>
+        </ul>
+      </details>
+    </template>
   </div>
 </template>
 
@@ -115,7 +169,14 @@ async function onRemove(id: string, name: string): Promise<void> {
 .recent {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 14px;
+  min-height: 0;
+}
+
+.recent__group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   min-height: 0;
 }
 
@@ -129,7 +190,38 @@ async function onRemove(id: string, name: string): Promise<void> {
   font-weight: 600;
   color: var(--rw-text-3);
   letter-spacing: 0.03em;
-  text-transform: uppercase;
+}
+
+/* 「更早的任务」是可折叠分组：summary 复用 head 的排版，去掉默认三角 */
+.recent__head--btn {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  padding: 4px 12px;
+  border-radius: var(--rw-radius-sm);
+}
+
+.recent__head--btn::-webkit-details-marker {
+  display: none;
+}
+
+.recent__head--btn:hover {
+  background: var(--rw-surface-2);
+  color: var(--rw-text-2);
+}
+
+/* 自带 chevron：展开时旋转 90° */
+.recent__head--btn .recent__title::before {
+  content: '›';
+  display: inline-block;
+  margin-right: 5px;
+  font-size: 13px;
+  line-height: 1;
+  transition: transform 0.16s ease;
+}
+
+.recent__group--arch[open] > .recent__head--btn .recent__title::before {
+  transform: rotate(90deg);
 }
 
 .recent__count {

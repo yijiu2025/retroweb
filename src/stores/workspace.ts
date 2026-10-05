@@ -1085,14 +1085,73 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     persistTimer = setTimeout(() => persistSession(), 400);
   }
 
+  /**
+   * 把一个节点补全成合法形状。
+   *
+   * 🔴 为什么必须有这一步：快照是**从 localStorage 读回来的、可能来自旧版本**，
+   *    也可能被手工改坏。而 store 里到处直接解引用节点的结构字段
+   *    （`rxn.precursorList.join()`、`node.children.forEach()`、`node.candidates.find()`），
+   *    缺一个数组字段就是整页白屏 —— 实测踩过：手写快照漏了 `precursorList`，
+   *    报 `Cannot read properties of undefined (reading 'join')`，应用直接起不来，
+   *    而且报错发生在计算属性里，控制台只有一堆 promise 重复报错，很难定位。
+   *    这里的策略是**缺什么补什么**（而不是丢弃这条会话）——
+   *    用户宁可看到一条"结构残缺但能打开"的任务，也不要打不开的历史。
+   */
+  function normalizeNode(raw: Partial<MolNode>, fallbackId: string): MolNode {
+    const smiles = typeof raw.smiles === 'string' ? raw.smiles : '';
+    const node: MolNode = {
+      id: raw.id || fallbackId,
+      smiles,
+      role: raw.role ?? 'intermediate',
+      depth: typeof raw.depth === 'number' ? raw.depth : 0,
+      status: raw.status ?? 'idle',
+      formula: raw.formula,
+      mw: raw.mw ?? null,
+      atoms: raw.atoms,
+      parentReactionId: raw.parentReactionId ?? null,
+      probabilityChain: typeof raw.probabilityChain === 'number' ? raw.probabilityChain : 1,
+      fetched: !!raw.fetched,
+      // 这三个数组是解引用重灾区，必须保证是数组
+      candidates: Array.isArray(raw.candidates) ? raw.candidates : [],
+      chosenReactionId: raw.chosenReactionId ?? null,
+      children: Array.isArray(raw.children) ? raw.children : [],
+      purchased: !!raw.purchased,
+      collapsed: !!raw.collapsed,
+      duplicateOf: raw.duplicateOf ?? null,
+      reusedFrom: raw.reusedFrom ?? null,
+      runs: Array.isArray(raw.runs) ? raw.runs : [],
+      activeRunId: raw.activeRunId ?? null,
+      // analyses 是「按 reactionId 键控的对象」，不是数组
+      analyses:
+        raw.analyses && typeof raw.analyses === 'object' && !Array.isArray(raw.analyses)
+          ? raw.analyses
+          : {}
+    };
+    // 候选反应自身也要补：rank/precursorList 等被直接读
+    node.candidates = node.candidates.map((r) => ({
+      ...r,
+      probability: typeof r.probability === 'number' ? r.probability : 0,
+      precursorList: Array.isArray(r.precursorList)
+        ? r.precursorList
+        : String(r.precursors ?? '').split('.').filter(Boolean),
+      childNodeIds: Array.isArray(r.childNodeIds) ? r.childNodeIds : []
+    }));
+    return node;
+  }
+
   /** 把某个已存会话的快照灌回当前工作台（不触发新的预测） */
   function restoreSnapshot(s: Session): void {
     reset({ keepParams: true });
-    nodes.value = JSON.parse(JSON.stringify(s.snapshot.nodes)) as Record<string, MolNode>;
+    const rawNodes = (s.snapshot?.nodes ?? {}) as Record<string, Partial<MolNode>>;
+    const next: Record<string, MolNode> = {};
+    for (const [id, raw] of Object.entries(rawNodes)) {
+      next[id] = normalizeNode(raw ?? {}, id);
+    }
+    nodes.value = next;
     rootId.value = s.snapshot.rootId;
-    params.value = { ...s.snapshot.params };
-    activeNodeId.value = s.snapshot.activeNodeId;
-    jobIds.value = { ...s.snapshot.jobIds };
+    params.value = { ...DEFAULT_PARAMS, ...s.snapshot.params };
+    activeNodeId.value = s.snapshot.activeNodeId ?? null;
+    jobIds.value = { ...(s.snapshot.jobIds ?? {}) };
     schemes.value = (s.snapshot.schemes ? JSON.parse(JSON.stringify(s.snapshot.schemes)) : []) as RouteScheme[];
     currentSchemeId.value = s.snapshot.currentSchemeId ?? null;
   }
@@ -1114,22 +1173,35 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function resumeSessions(): void {
     if (rootId.value) return;
     const candidates = sessions.value
-      .filter((s) => s.status !== 'done' && s.snapshot.rootId)
+      .filter((s) => s.status !== 'done' && s.snapshot?.rootId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
-    const s = candidates[0];
-    if (!s) return;
-    restoreSnapshot(s);
-    currentSessionId.value = s.id;
-    // 恢复出来的会话有根节点 ⇒ 直接进路线态（与 loadSession 同理）
-    if (rootId.value) targetSetupOpen.value = false;
-    resumeLoading();
+    for (const s of candidates) {
+      // 🔴 逐条 try：一条坏快照不该让整个应用起不来（restoreSnapshot 里已尽量补全字段，
+      //    但真遇到结构完全不对的旧数据，仍然要能跳过它去试下一条）
+      try {
+        restoreSnapshot(s);
+        if (!rootId.value) continue;
+        currentSessionId.value = s.id;
+        // 恢复出来的会话有根节点 ⇒ 直接进路线态（与 loadSession 同理）
+        targetSetupOpen.value = false;
+        resumeLoading();
+        return;
+      } catch (e) {
+        console.warn('[retroweb] 跳过一条无法恢复的会话：', s.id, e);
+      }
+    }
   }
 
   /** 从列表里手动打开一个会话（点击「继续」） */
   function loadSession(id: string): void {
     const s = sessions.value.find((x) => x.id === id);
     if (!s) return;
-    restoreSnapshot(s);
+    try {
+      restoreSnapshot(s);
+    } catch (e) {
+      globalError.value = `这条任务的数据已损坏，无法打开：${(e as Error).message}`;
+      return;
+    }
     currentSessionId.value = s.id;
     // 打开的会话已经在跑/有路线了 ⇒ 直接进路线态，别让标定卡片盖在上面
     if (rootId.value) targetSetupOpen.value = false;
@@ -1184,7 +1256,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const s = schemes.value.find((x) => x.id === id);
     if (!s) return false;
     const now = collectChoices();
-    for (const [nodeId, rid] of Object.entries(s.choices)) {
+    // 🔴 s.choices 来自 localStorage，可能是旧结构（例如早先嵌在 snapshot 里）⇒ 必须兜底，
+    //    否则 Object.entries(undefined) 会直接抛，把整个 schemeStats 计算链带崩。
+    for (const [nodeId, rid] of Object.entries(s.choices ?? {})) {
       if (now[nodeId] !== rid) return true;
     }
     return false;
@@ -1244,8 +1318,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       //    只看可见节点会导致「被摘下去的步骤永远接不回来」。按 depth 从浅到深，
       //    保证父节点先接好子树再处理子节点。
       const ordered = [...allNodes.value].sort((a, b) => a.depth - b.depth);
+      // 方案可能来自旧结构（choices 缺失/嵌套过）⇒ 统一兜底成空对象，别让整轮应用中断
+      const choices = scheme.choices ?? {};
       for (const n of ordered) {
-        const want = scheme.choices[n.id];
+        const want = choices[n.id];
         if (want && !n.candidates.some((r) => r.id === want)) {
           // 🔴 方案里记的那一步可能只存在于**更早的一次分析**里（后来「重新分析」
           //    换了候选，把它挤出了当前列表）。从历史 runs 里捞回来并并回 candidates，

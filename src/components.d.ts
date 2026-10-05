@@ -12,6 +12,7 @@ export {}
 declare module 'vue' {
   export interface GlobalComponents {
     AppShell: typeof import('./components/layout/AppShell.vue')['default']
+    AsidePanel: typeof import('./components/layout/AsidePanel.vue')['default']
     CandidatePanel: typeof import('./components/workspace/CandidatePanel.vue')['default']
     DevBypassBadge: typeof import('./components/layout/DevBypassBadge.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
@@ -42,9 +43,11 @@ declare module 'vue' {
     RouteFlow: typeof import('./components/workspace/RouteFlow.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
+    RouteStats: typeof import('./components/workspace/RouteStats.vue')['default']
     RouteSummary: typeof import('./components/workspace/RouteSummary.vue')['default']
     RunParams: typeof import('./components/workspace/RunParams.vue')['default']
     SchemeBar: typeof import('./components/workspace/SchemeBar.vue')['default']
+    SchemeCompare: typeof import('./components/workspace/SchemeCompare.vue')['default']
     SessionPanel: typeof import('./components/workspace/SessionPanel.vue')['default']
     SsoLoginModal: typeof import('./components/sso/SsoLoginModal.vue')['default']
     StepAnalysis: typeof import('./components/workspace/StepAnalysis.vue')['default']
