@@ -215,15 +215,24 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const analysisAborts = new Map<string, AbortController>();
 
   /**
-   * 目标分子输入区是否展开。
+   * 标定面板是否打开 —— 工作台版式的**唯一开关**。
    *
-   * 设计：**未设定目标时必须展开**（否则用户不知道该干什么），
-   * 设定成功后自动收起成一条紧凑胶囊（结构图 + 分子式 + 分子量），
-   * 把左栏高度让给运行参数与主区。用户手动展开后不再被自动收起（尊重意图）。
+   *   - true  （首次进入 / 点「换目标」）→ 整屏居中的标定卡片（画布 + 粘贴框 + 参数）
+   *   - false（点了「确定目标，开始分析」）→ 路线态：目标降级成顶部一条，参数在右栏
+   *
+   * 🔴 不变量：**没有目标时它必须为 true** —— 否则工作台会是一屏空白，
+   *    用户不知道下一步该干什么。`closeTargetSetup()` 里守了这条。
+   *
+   * 🔴 注意它与 `rootId` 的分工：**解析成功 ≠ 关闭面板**。
+   *    `setTarget()` 不碰它；只有用户显式点「确定目标，开始分析」（走 closeTargetSetup）
+   *    才关 —— 这样用户才有机会先调模型参数再开跑。
+   *    反过来「换目标」时 rootId 还是旧的、非空，所以面板可见性**绝不能**用 `!rootId` 判。
    */
-  const targetExpanded = ref(true);
-  /** 用户是否手动开合过目标区（手动过就不再自动收） */
-  let targetTouchedByUser = false;
+  const targetSetupOpen = ref(true);
+  /** 本次标定是否被用户动过（用于「换目标」后提示"改动未保存"之类的场景） */
+  const targetSetupDirty = ref(false);
+  /** 运行参数栏是否收起（路线态的右栏，可伸缩） */
+  const paramsCollapsed = ref(false);
   /** 请求取消句柄（长任务可取消） */
   const aborts = new Map<string, AbortController>();
   /**
@@ -578,15 +587,30 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     activeNodeId.value = null;
     // 新目标 = 新会话（旧会话若还挂着会被保留在列表里，可稍后继续）
     currentSessionId.value = uid('sess');
-    // 设定成功即收起输入区（除非用户手动干预过）—— 把左栏高度让给运行参数
-    if (!targetTouchedByUser) targetExpanded.value = false;
+    // 🔴 这里**有意不关面板**：解析成功只代表「目标填好了」，用户可能还要改模型参数。
+    //    关面板的职责归 `closeTargetSetup()`，由标定卡片底部的「确定目标，开始分析」触发。
     persistSession();
   }
 
-  /** 用户手动开合目标区（手动过之后不再自动收） */
-  function setTargetExpanded(v: boolean): void {
-    targetExpanded.value = v;
-    targetTouchedByUser = true;
+  /**
+   * 重新打开标定面板（「换目标」按钮）—— 相当于开始一个新任务的准备阶段。
+   *
+   * 🔴 顺手把旧目标清掉（`reset`）。理由：
+   *   ① 「换目标」的语义就是**不要旧的了**，留着它会让输入框里的 SMILES 回填成旧的；
+   *   ② 更要命的是旧路线树还挂在界面上 —— 面板是盖在它上面的，一旦 store 里有 rootId，
+   *      `TargetInput` 的「已设定」标签、`canStart` 判断都会指向上一个任务，容易误开跑。
+   *   面板可见性由 `targetSetupOpen` 独立控制，所以清 rootId 不会把面板一并关掉。
+   */
+  function openTargetSetup(): void {
+    reset({ keepParams: true });
+    targetSetupOpen.value = true;
+    targetSetupDirty.value = true;
+  }
+
+  /** 关掉标定面板（只有已经有目标时才允许，否则工作台会空无一物） */
+  function closeTargetSetup(): void {
+    if (!rootId.value) return; // 没有目标 → 面板必须开着，没得商量
+    targetSetupOpen.value = false;
   }
 
   /**
@@ -1096,6 +1120,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!s) return;
     restoreSnapshot(s);
     currentSessionId.value = s.id;
+    // 恢复出来的会话有根节点 ⇒ 直接进路线态（与 loadSession 同理）
+    if (rootId.value) targetSetupOpen.value = false;
     resumeLoading();
   }
 
@@ -1105,6 +1131,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!s) return;
     restoreSnapshot(s);
     currentSessionId.value = s.id;
+    // 打开的会话已经在跑/有路线了 ⇒ 直接进路线态，别让标定卡片盖在上面
+    if (rootId.value) targetSetupOpen.value = false;
     resumeLoading();
   }
 
@@ -1603,8 +1631,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     loadModels,
     warmModel,
     setTarget,
-    targetExpanded,
-    setTargetExpanded,
+    targetSetupOpen,
+    targetSetupDirty,
+    paramsCollapsed,
+    openTargetSetup,
+    closeTargetSetup,
     predictNode,
     cancelNode,
     adopt,

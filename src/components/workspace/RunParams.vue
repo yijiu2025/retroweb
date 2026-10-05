@@ -106,7 +106,7 @@ onMounted(() => {
 <template>
   <section class="rw-card params">
     <div class="rw-card__head">
-      <div class="rw-card__title">② 运行参数</div>
+      <div class="rw-card__title">运行参数</div>
       <el-tag v-if="store.autoRunning" type="warning" size="small" effect="dark">运行中</el-tag>
     </div>
 

@@ -16,12 +16,10 @@ declare module 'vue' {
     DevBypassBadge: typeof import('./components/layout/DevBypassBadge.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
-    ElCheckbox: typeof import('element-plus/es')['ElCheckbox']
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
     ElDivider: typeof import('element-plus/es')['ElDivider']
-    ElDrawer: typeof import('element-plus/es')['ElDrawer']
     ElDropdown: typeof import('element-plus/es')['ElDropdown']
     ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
     ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']
@@ -53,7 +51,9 @@ declare module 'vue' {
     StepRow: typeof import('./components/workspace/StepRow.vue')['default']
     StepTree: typeof import('./components/workspace/StepTree.vue')['default']
     StructureEditor: typeof import('./components/mol/StructureEditor.vue')['default']
+    TargetBar: typeof import('./components/workspace/TargetBar.vue')['default']
     TargetInput: typeof import('./components/workspace/TargetInput.vue')['default']
+    TargetSetupPanel: typeof import('./components/workspace/TargetSetupPanel.vue')['default']
     UserMenu: typeof import('./components/layout/UserMenu.vue')['default']
   }
 }

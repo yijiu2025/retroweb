@@ -1,12 +1,16 @@
 <script setup lang="ts">
 /**
- * 任务会话面板：列出「未完成 / 进行中」的逆合成任务。
+ * 侧栏「最近的任务」列表 —— 常驻在导航栏下方。
  *
- * 这些会话随工作台自动落盘到 localStorage（见 stores/workspace.persistSession），
- * 所以**刷新网页后这里仍然显示**，点「继续」即可把路线树恢复回来，
- * 还在跑的节点会自动接上后端的 job 轮询（见 resumeSessions / predictNode.resumeJobId）。
+ * 一个目标分析 = 一个任务。这个列表就是任务的入口：
+ * 点一条即把该任务的路线树恢复回来（还在跑的节点会自动接上后端 job 轮询）。
+ *
+ * 版式取舍：这是**侧栏里的紧凑列表**（宽度约 236px，收起时 64px），
+ * 所以不展示大标签，改用「状态圆点 + 名称 + 时间」三行内搞定；
+ * 删除按钮只在 hover 时出现，避免一堆红色按钮糊满侧栏。
  */
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
+import { ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { Session, SessionStatus } from '@/types/retro';
 
@@ -14,161 +18,253 @@ const store = useWorkspaceStore();
 
 const emit = defineEmits<{
   (e: 'open', id: string): void;
-  (e: 'remove', id: string): void;
 }>();
 
-/** 只展示未完成 / 进行中的会话（已完成的不占地方） */
-const visible = computed(() =>
-  store.sessions
-    .filter((s) => s.status !== 'done' && s.snapshot.rootId)
-    .sort((a, b) => b.updatedAt - a.updatedAt)
+/** 按最近使用排序；已完成的不算「最近的任务」的噪声，但保留（用户可能想回看） */
+const items = computed(() =>
+  [...store.sessions].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 12)
 );
 
-const STATUS_META: Record<SessionStatus, { label: string; type: 'primary' | 'warning' | 'success' }> = {
-  running: { label: '进行中', type: 'primary' },
-  incomplete: { label: '未完成', type: 'warning' },
-  done: { label: '已完成', type: 'success' }
+const STATUS_META: Record<SessionStatus, { label: string; cls: string }> = {
+  running: { label: '进行中', cls: 'is-running' },
+  incomplete: { label: '未完成', cls: 'is-incomplete' },
+  done: { label: '已完成', cls: 'is-done' }
 };
 
-function nodeCount(s: Session): number {
-  return Object.keys(s.snapshot.nodes).length;
+function shortTarget(s: Session): string {
+  return s.target.length > 22 ? s.target.slice(0, 22) + '…' : s.target;
 }
 
-function updatedAtText(ts: number): string {
+function timeText(ts: number): string {
+  const now = Date.now();
+  const diff = now - ts;
+  const min = Math.floor(diff / 60000);
+  if (min < 1) return '刚刚';
+  if (min < 60) return `${min} 分钟前`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr} 小时前`;
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-function shortSmiles(s: string): string {
-  return s.length > 30 ? s.slice(0, 30) + '…' : s;
+const confirming = ref<string | null>(null);
+
+async function onRemove(id: string, name: string): Promise<void> {
+  confirming.value = id;
+  try {
+    await ElMessageBox.confirm(`删除任务「${name}」？这条路线树会一并移除，无法恢复。`, '删除任务', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    });
+    store.removeSession(id);
+  } catch {
+    /* 用户取消 */
+  } finally {
+    confirming.value = null;
+  }
 }
 </script>
 
 <template>
-  <section class="rw-card sessions">
-    <div class="rw-card__head">
-      <div class="rw-card__title">③ 任务会话（刷新后保留）</div>
-      <el-tag size="small" effect="plain" type="info">{{ visible.length }}</el-tag>
+  <div class="recent">
+    <div class="recent__head">
+      <span class="recent__title">最近的任务</span>
+      <span class="recent__count">{{ items.length }}</span>
     </div>
 
-    <div class="rw-card__body sessions__body">
-      <p class="sessions__hint">
-        工作台会自动保存进度，刷新网页即可恢复「未完成 / 进行中」的任务。
-      </p>
+    <ul v-if="items.length" class="recent__list">
+      <li v-for="s in items" :key="s.id">
+        <div
+          class="recent__item"
+          :class="{ 'is-current': s.id === store.currentSessionId }"
+          role="button"
+          tabindex="0"
+          :title="s.target"
+          @click="emit('open', s.id)"
+          @keyup.enter="emit('open', s.id)"
+        >
+          <span class="recent__dot" :class="STATUS_META[s.status].cls" />
+          <div class="recent__body">
+            <span class="recent__name">{{ s.name }}</span>
+            <span class="recent__sub">
+              <code class="rw-mono">{{ shortTarget(s) }}</code>
+              <i>·</i>
+              <span>{{ timeText(s.updatedAt) }}</span>
+            </span>
+          </div>
+          <button
+            type="button"
+            class="recent__del"
+            title="删除任务"
+            :disabled="confirming === s.id"
+            @click.stop="onRemove(s.id, s.name)"
+          >
+            ×
+          </button>
+        </div>
+      </li>
+    </ul>
 
-      <ul class="sessions__list">
-        <li v-for="s in visible" :key="s.id" class="sessions__item">
-          <div class="sessions__main">
-            <div class="sessions__line">
-              <el-tag :type="STATUS_META[s.status].type" size="small" effect="dark">
-                {{ STATUS_META[s.status].label }}
-              </el-tag>
-              <span v-if="s.id === store.currentSessionId" class="sessions__current">当前</span>
-              <span class="sessions__name">{{ s.name }}</span>
-            </div>
-            <div class="sessions__meta">
-              <code class="rw-mono">{{ shortSmiles(s.target) }}</code>
-              <span class="sessions__sep">·</span>
-              <span>{{ nodeCount(s) }} 个分子</span>
-              <span class="sessions__sep">·</span>
-              <span>{{ updatedAtText(s.updatedAt) }}</span>
-            </div>
-          </div>
-          <div class="sessions__actions">
-            <el-button size="small" type="primary" plain @click="emit('open', s.id)">继续</el-button>
-            <el-button size="small" type="danger" plain @click="emit('remove', s.id)">删除</el-button>
-          </div>
-        </li>
-      </ul>
-    </div>
-  </section>
+    <p v-else class="recent__empty">还没有任务。在工作台设定目标分子即可开始。</p>
+  </div>
 </template>
 
 <style scoped>
-.sessions__body {
+.recent {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 6px;
+  min-height: 0;
 }
 
-.sessions__hint {
-  margin: 0;
-  font-size: 12px;
+.recent__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px;
+  font-size: 11px;
+  font-weight: 600;
   color: var(--rw-text-3);
-  line-height: 1.5;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
-.sessions__list {
+.recent__count {
+  font-variant-numeric: tabular-nums;
+}
+
+.recent__list {
   list-style: none;
   margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
-.sessions__item {
+.recent__item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--rw-border);
-  border-radius: 8px;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  border-radius: var(--rw-radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.recent__item:hover {
   background: var(--rw-surface-2);
 }
 
-.sessions__main {
+.recent__item.is-current {
+  background: var(--rw-brand-l);
+}
+
+.recent__dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--rw-text-3);
+}
+
+.recent__dot.is-running {
+  background: var(--el-color-primary);
+  box-shadow: 0 0 0 3px rgb(64 158 255 / 18%);
+}
+
+.recent__dot.is-incomplete {
+  background: var(--el-color-warning);
+}
+
+.recent__dot.is-done {
+  background: var(--el-color-success);
+}
+
+.recent__body {
+  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
 }
 
-.sessions__line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.sessions__current {
-  font-size: 11px;
-  color: var(--el-color-primary);
-  border: 1px solid var(--el-color-primary);
-  border-radius: 4px;
-  padding: 0 4px;
-  line-height: 16px;
-}
-
-.sessions__name {
+.recent__name {
   font-size: 13px;
-  font-weight: 600;
-  color: var(--rw-text-1);
+  color: var(--rw-text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.sessions__meta {
+.recent__item.is-current .recent__name {
+  font-weight: 600;
+  color: var(--rw-brand-d);
+}
+
+.recent__sub {
   display: flex;
   align-items: center;
-  gap: 6px;
-  font-size: 12px;
+  gap: 4px;
+  font-size: 11px;
   color: var(--rw-text-3);
+  white-space: nowrap;
+  overflow: hidden;
 }
 
-.sessions__meta .rw-mono {
-  font-size: 11.5px;
+.recent__sub code {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.sessions__sep {
+.recent__sub i {
+  font-style: normal;
   opacity: 0.5;
 }
 
-.sessions__actions {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+.recent__del {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rw-text-3);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s, background 0.15s;
+}
+
+/* 删除按钮只在 hover / 聚焦时露出，避免侧栏被红叉糊满 */
+.recent__item:hover .recent__del,
+.recent__del:focus-visible {
+  opacity: 1;
+}
+
+.recent__del:hover {
+  background: var(--el-color-danger-light-9);
+  color: var(--el-color-danger);
+}
+
+.recent__empty {
+  margin: 0;
+  padding: 0 12px;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--rw-text-3);
+}
+
+/* 侧栏收起（64px）时整块隐藏 —— 挤不下，显示也没意义 */
+:global(.app.is-collapsed) .recent {
+  display: none;
 }
 </style>

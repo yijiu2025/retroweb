@@ -6,12 +6,12 @@
  * 解析走后端 RDKit（/api/parse），失败时展示「人话诊断 + 一键修复候选」——
  * 这套体验是 retrochimera 里最值得保留的部分（R 基团 / [*] 通配 / kekulize 失败都能兜住）。
  *
- * 版式：**双态卡片**。
- *   未设定 / 用户手动展开 → 完整输入区（模式切换 + 文本域 + 操作 + 示例 + 解析结果）
- *   已设定且未手动展开   → 紧凑胶囊（结构图缩略 + 分子式 + 分子量 + 换目标）
- * 目的是把左栏垂直空间让给运行参数 —— 目标只在开头设一次，却一直占着整屏高度。
+ * 版式：**只有输入态**。
+ *   本组件嵌在「标定大卡片」（TargetSetupPanel）里，负责画布 + 粘贴框 + 解析结果。
+ *   解析成功 → `store.setTarget()` → 标定面板整体消失、工作台切到路线态，
+ *   目标降级成路线区顶部的 TargetBar（这条带子由 TargetBar.vue 负责，不在这里）。
  */
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, ref } from 'vue';
 import { ElMessage } from 'element-plus';
 import { retroApi } from '@/api/retro';
 import { useWorkspaceStore } from '@/stores/workspace';
@@ -29,12 +29,6 @@ const parsed = ref<ParseSuccess | null>(null);
 const failure = ref<ParseFailure | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 
-/** 卡片是否展开（store 持有：设定成功后自动收起） */
-const expanded = computed({
-  get: () => store.targetExpanded,
-  set: (v: boolean) => store.setTargetExpanded(v)
-});
-
 
 const EXAMPLES: Array<{ label: string; smiles: string }> = [
   { label: '阿司匹林', smiles: 'CC(=O)Oc1ccccc1C(=O)O' },
@@ -51,22 +45,6 @@ const placeholder = computed(() =>
 );
 
 const currentSmiles = computed(() => store.rootId ? store.nodes[store.rootId]?.smiles : '');
-
-/** 胶囊态展示的当前目标信息（会话恢复时 parsed 为空，直接取根节点） */
-const currentTarget = computed(() => {
-  const root = store.rootId ? store.nodes[store.rootId] : undefined;
-  if (!root) return null;
-  return {
-    smiles: root.smiles,
-    formula: root.formula || parsed.value?.formula || '',
-    mw: root.mw ?? parsed.value?.mw,
-    atoms: root.atoms
-  };
-});
-
-/** 有目标 + 用户没手动展开过 → 收成胶囊 */
-const collapsed = computed(() => !!currentTarget.value && !expanded.value);
-
 
 async function runParse(input?: string): Promise<void> {
   const payload = (input ?? text.value).trim();
@@ -128,8 +106,7 @@ const editorOpen = ref(false);
 const editorRef = ref<InstanceType<typeof StructureEditor> | null>(null);
 const editorBusy = ref(false);
 const editorError = ref<ParseFailure | null>(null);
-/** 画完就搜：解析成功自动对根节点展开一步 */
-const autoExpand = ref(true);
+/** 画完就搜的设置已退役：是否立刻开跑由标定面板的「开始分析」按钮决定 */
 
 async function openEditor(): Promise<void> {
   editorOpen.value = true;
@@ -167,7 +144,8 @@ async function confirmEditor(): Promise<void> {
     store.setTarget(res);
     ElMessage.success('已用绘制的结构设为目标分子');
     editorOpen.value = false;
-    if (autoExpand.value && store.rootId) void store.predictNode(store.rootId);
+    // ⚠️ 这里**不再**自动展开 —— 「开始分析」由标定面板底部的确认按钮统一负责，
+    //    否则画完就悄悄关掉面板开跑，用户来不及改模型参数。
   } catch (e) {
     ElMessage.error((e as Error).message);
   } finally {
@@ -181,68 +159,53 @@ function clearAll(): void {
   failure.value = null;
 }
 
-/** 点胶囊展开输入区（已有目标就先回填 SMILES 便于微调） */
-function expand(): void {
-  expanded.value = true;
-  if (!text.value && currentTarget.value) text.value = currentTarget.value.smiles;
+/**
+ * 「确定目标，开始分析」—— 标定阶段唯一的出口。
+ *
+ * 🔴 语义：**一个目标分析 = 一个任务**。点下这个按钮 = 任务正式开始：
+ *   ① 保证根节点已经在树上（画板路径已经 setTarget 过了，这里兜住直接粘贴的路径）；
+ *   ② 关掉整张标定面板（store.closeTargetSetup）→ 工作台切到路线态，
+ *      参数跑到右栏、目标降级成顶部窄条；
+ *   ③ 顺手对根节点**展开一步**，不让用户再去找那个「展开」按钮。
+ *
+ * 之所以把「关面板」放在这里而不是 setTarget 里：解析成功 ≠ 要开始分析 ——
+ * 用户可能想换个模型参数再开跑。只有**显式点这个按钮**才代表"任务开始"。
+ */
+function startAnalysis(): void {
+  if (!store.rootId) {
+    ElMessage.warning('先解析一个目标分子');
+    return;
+  }
+  store.closeTargetSetup();
+  // 关掉面板 = 任务开始，顺手替用户走第一步（否则还要回路线树找「展开」按钮）
+  void store.predictNode(store.rootId);
 }
 
+/** 这个目标是不是已经可以开跑了（根节点在树上） */
+const canStart = computed(() => !!store.rootId);
+
 /**
- * 展开后自动聚焦文本域 —— 用户点「换目标」的意图就是要输入，
- * 不聚焦的话还得再点一次输入框（多一步无谓操作）。
+ * 挂载时若已有目标分子（从历史/会话恢复回来），把 SMILES 回填进输入框，
+ * 方便用户在当前结构上微调。注意：这**不会**打开标定面板 ——
+ * 是否展示标定面板由 store.targetSetupOpen 决定，不在这里抢权。
  */
-watch(collapsed, async (isCollapsed) => {
-  if (isCollapsed) return;
-  await nextTick();
-  const el = document.querySelector<HTMLTextAreaElement>('.target__input textarea');
-  el?.focus();
-});
+function seedFromCurrent(): void {
+  if (!text.value && currentSmiles.value) text.value = currentSmiles.value;
+}
+
+void nextTick(seedFromCurrent);
 </script>
 
 <template>
-  <section class="rw-card target" :class="{ 'target--collapsed': collapsed }">
-    <!-- ============ 胶囊态：已设定目标，收起成一条 ============ -->
-    <div v-if="collapsed" class="target__pill">
-      <div class="target__pill-mol">
-        <MolView :smiles="currentTarget!.smiles" fit />
-      </div>
-      <div class="target__pill-info">
-        <div class="target__pill-label">
-          目标分子
-          <el-tag size="small" type="success" effect="light">已设定</el-tag>
-        </div>
-        <div class="target__pill-props">
-          <span v-if="currentTarget!.formula">{{ currentTarget!.formula }}</span>
-          <span v-if="currentTarget!.mw"><i>MW</i> {{ currentTarget!.mw }}</span>
-          <span v-if="currentTarget!.atoms"><i>重原子</i> {{ currentTarget!.atoms }}</span>
-        </div>
-        <code class="rw-mono target__pill-smiles">{{ currentTarget!.smiles }}</code>
-      </div>
-      <div class="target__pill-ops">
-        <el-tooltip content="重新展开输入区，换个目标分子" placement="left">
-          <el-button size="small" plain @click="expand">换目标</el-button>
-        </el-tooltip>
+  <section class="rw-card target">
+    <div class="rw-card__head">
+      <div class="rw-card__title">目标分子</div>
+      <div class="target__head-ops">
+        <el-tag v-if="currentSmiles" type="success" size="small" effect="light">已设定</el-tag>
       </div>
     </div>
 
-    <!-- ============ 展开态：完整输入区 ============ -->
-    <template v-else>
-      <div class="rw-card__head">
-        <div class="rw-card__title">① 目标分子</div>
-        <div class="target__head-ops">
-          <el-tag v-if="currentSmiles" type="success" size="small" effect="light">已设定</el-tag>
-          <el-button
-            v-if="currentSmiles"
-            link
-            size="small"
-            @click="expanded = false"
-          >
-            收起
-          </el-button>
-        </div>
-      </div>
-
-      <div class="rw-card__body target__body">
+    <div class="rw-card__body target__body">
         <el-radio-group v-model="mode" size="small">
           <el-radio-button value="structure">结构式粘贴</el-radio-button>
           <el-radio-button value="smiles">SMILES</el-radio-button>
@@ -324,9 +287,36 @@ watch(collapsed, async (isCollapsed) => {
           </div>
         </div>
 
-        <el-empty v-else-if="!failure" description="尚未设定目标分子" :image-size="60" />
-      </div>
-    </template>
+        <div v-else-if="!failure" class="target__blank">
+          <div class="target__blank-mol">
+            <MolView :smiles="'CCO'" fit />
+          </div>
+          <p class="target__blank-text">
+            这里会显示解析后的结构：<br />
+            先<strong>粘贴</strong> ChemDraw 结构 / SMILES，或点<strong>「画结构式」</strong>手绘一个
+          </p>
+        </div>
+
+        <!-- 标定阶段的唯一出口：确认目标 ⇒ 收起整张面板、开跑第一个任务 -->
+        <div class="target__start">
+          <el-button
+            type="primary"
+            size="large"
+            :disabled="!canStart"
+            class="target__start-btn"
+            @click="startAnalysis"
+          >
+            确定目标，开始分析
+          </el-button>
+          <span class="target__start-hint">
+            {{
+              canStart
+                ? '参数已按右侧设置生效；开始后本面板收起，参数移到右栏可随时调'
+                : '先粘贴/画一个结构并点「解析结构」，或直接点上面的示例'
+            }}
+          </span>
+        </div>
+    </div>
 
     <!-- 结构式画板：画完即搜索 -->
     <el-dialog
@@ -349,7 +339,6 @@ watch(collapsed, async (isCollapsed) => {
       </el-alert>
 
       <template #footer>
-        <el-checkbox v-model="autoExpand" class="target__auto">解析后自动展开一步</el-checkbox>
         <el-button @click="editorOpen = false">取消</el-button>
         <el-button type="primary" :loading="editorBusy" @click="confirmEditor">
           用此结构搜索
@@ -370,81 +359,6 @@ watch(collapsed, async (isCollapsed) => {
   display: flex;
   align-items: center;
   gap: 6px;
-}
-
-/* ---------- 胶囊态 ---------- */
-/* 目标已设定且用户未展开时的高度：约 88px（完整输入区常态 500px+） */
-.target--collapsed {
-  overflow: hidden;
-}
-
-.target__pill {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 12px 14px;
-}
-
-.target__pill-mol {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 64px;
-  flex: 0 0 64px;
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface-2);
-  overflow: hidden;
-}
-
-.target__pill-info {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.target__pill-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--rw-text-2);
-}
-
-.target__pill-props {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  font-size: 12px;
-  color: var(--rw-text-2);
-}
-
-.target__pill-props span {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  white-space: nowrap;
-}
-
-.target__pill-props i {
-  font-style: normal;
-  color: var(--rw-text-3);
-}
-
-.target__pill-smiles {
-  font-size: 11px;
-  color: var(--rw-text-3);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.target__pill-ops {
-  flex-shrink: 0;
 }
 
 .target__input :deep(textarea) {
@@ -588,5 +502,76 @@ watch(collapsed, async (isCollapsed) => {
   font-style: normal;
   color: var(--rw-text-3);
   margin-right: 6px;
+}
+
+/* ---------- 未设定目标时的占位（不用 el-empty：那个默认 180+px 高，
+   标定卡里会撑出一大片死白，把整个卡片拉得又高又空） ---------- */
+.target__blank {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px dashed var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface-2);
+}
+
+.target__blank-mol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 56px;
+  flex: 0 0 64px;
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+  border: 1px solid var(--rw-border);
+  overflow: hidden;
+  /* 占位图压暗，明确告诉用户"这不是你的分子，只是示意" */
+  opacity: 0.55;
+}
+
+.target__blank-text {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--rw-text-3);
+}
+
+.target__blank-text strong {
+  color: var(--rw-text-2);
+  font-weight: 600;
+}
+
+/* ---------- 标定面板底部的「开始分析」 ---------- */
+.target__start {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--rw-border);
+}
+
+.target__start-btn {
+  flex: 0 0 auto;
+  font-weight: 600;
+}
+
+.target__start-hint {
+  font-size: 12px;
+  color: var(--rw-text-3);
+  line-height: 1.5;
+}
+
+@media (max-width: 768px) {
+  .target__start {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .target__start-btn {
+    width: 100%;
+  }
 }
 </style>

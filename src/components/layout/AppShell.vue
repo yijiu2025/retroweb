@@ -2,9 +2,14 @@
 /**
  * 应用外壳：侧边导航 + 顶栏 + 内容区。
  *
+ * 侧栏自下而上分三段：
+ *   ① 品牌
+ *   ② 主导航（工作台 / 历史记录 / 个人中心）
+ *   ③ **最近的任务**（常驻列表，不是一个按钮 + 抽屉 —— 任务入口应当随手可点）
+ *
  * 布局断点：
  *   ≥1280px  侧栏展开
- *   <1024px  侧栏自动收成图标条（.app.is-collapsed）
+ *   <1024px  侧栏自动收成图标条（.app.is-collapsed，此时最近任务列表隐藏）
  *   <768px   侧栏变抽屉（由 isMobile 控制覆盖层）
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue';
@@ -22,8 +27,6 @@ const route = useRoute();
 const router = useRouter();
 
 const isMobile = ref(false);
-/** 会话抽屉（「进行中」入口在侧栏底部；这里只负责展示） */
-const sessionDrawer = ref(false);
 
 const collapsed = computed({
   get: () => settings.sidebarCollapsed || isMobile.value,
@@ -32,17 +35,9 @@ const collapsed = computed({
   }
 });
 
-/**
- * 未完成 / 进行中的会话数 —— 侧栏角标。
- * 只在工作台之外也可见（用户切到历史记录页时仍能看到"还有任务在跑"）。
- */
-const runningCount = computed(
-  () => store.sessions.filter((s) => s.status !== 'done' && s.snapshot.rootId).length
-);
-
+/** 打开某个历史任务：恢复它的路线树 + 收起标定面板，必要时跳回工作台 */
 function openSession(id: string): void {
   store.loadSession(id);
-  sessionDrawer.value = false;
   if (route.path !== '/') void router.push('/');
 }
 
@@ -94,19 +89,12 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </button>
       </nav>
 
+      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树 -->
+      <div v-show="!collapsed" class="app__recent rw-scroll">
+        <SessionPanel @open="openSession" />
+      </div>
+
       <div class="app__aside-foot">
-        <button
-          type="button"
-          class="app__nav-item app__sessions"
-          :title="`进行中 ${runningCount}`"
-          @click="sessionDrawer = true"
-        >
-          <span class="app__nav-icon">
-            ⟳
-            <i v-if="runningCount" class="app__badge">{{ runningCount }}</i>
-          </span>
-          <span v-show="!collapsed">进行中</span>
-        </button>
         <button type="button" class="app__collapse" @click="collapsed = !collapsed">
           <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
           <span v-show="!collapsed">收起侧栏</span>
@@ -137,22 +125,6 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </router-view>
       </main>
     </div>
-
-    <!-- 进行中任务抽屉：会话列表只在需要时占屏幕 -->
-    <el-drawer
-      v-model="sessionDrawer"
-      title="进行中的任务"
-      direction="ltr"
-      size="420px"
-      class="app__drawer"
-    >
-      <SessionPanel
-        v-if="store.sessions.length"
-        @open="openSession"
-        @remove="store.removeSession($event)"
-      />
-      <el-empty v-else description="还没有保存的任务" :image-size="80" />
-    </el-drawer>
   </div>
 </template>
 
@@ -224,8 +196,9 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 14px 10px;
-  flex: 1;
+  padding: 14px 10px 10px;
+  /* 导航只占自身高度，"最近的任务"才是可伸缩的那一段 */
+  flex: 0 0 auto;
 }
 
 .app__nav-item {
@@ -268,42 +241,16 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 0 0 auto;
 }
 
-/* 「进行中」入口：与导航项同一套视觉，底部常驻 */
-.app__sessions {
-  width: 100%;
-}
-
-.app__nav-icon {
-  position: relative;
-}
-
-.app__badge {
-  position: absolute;
-  top: -6px;
-  right: -2px;
-  min-width: 15px;
-  height: 15px;
-  padding: 0 4px;
-  border-radius: 999px;
-  background: var(--rw-brand);
-  color: #fff;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 600;
-  line-height: 15px;
-  text-align: center;
-}
-
-.app__drawer :deep(.el-drawer__body) {
-  padding: 16px;
-  overflow: auto;
-}
-
-.app__drawer :deep(.rw-card) {
-  border: 0;
-  box-shadow: none;
+/* 「最近的任务」：夹在导航与底部之间，占满剩余高度，超出滚动 */
+.app__recent {
+  flex: 1;
+  min-height: 0;
+  padding: 10px 0 4px;
+  border-top: 1px solid var(--rw-border);
+  overflow-y: auto;
 }
 
 .app__collapse {

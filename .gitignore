@@ -1,6 +1,8 @@
 node_modules/
 dist/
 dist-ssr/
+# 版式验收 / 量首屏用的临时构建目录（约定命名为 dist-verify 等，一律不入库）
+dist-*/
 .vite-dev.log
 *.local
 

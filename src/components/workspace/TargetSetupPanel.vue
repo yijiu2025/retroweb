@@ -1,0 +1,168 @@
+<script setup lang="ts">
+/**
+ * 工作台「首次进入」的标定面板 —— 整屏居中的一张大卡片。
+ *
+ * 为什么是这个形态：
+ *   一个目标分析 = 一个任务。任务的**开头**只有一件事要做 —— 说清楚「拆什么、怎么拆」。
+ *   所以首次进入时不展示任何路线区（那时还什么都没有，展示空树只会让人分心），
+ *   而是把三样东西合到一张卡里，视觉聚焦、一次填完：
+ *       ① 结构式画布（可直接手画）
+ *       ② 粘贴结构 / SMILES 的输入框
+ *       ③ 运行参数（模型 / 候选数 / 拆分约束 / AI 分析）
+ *
+ *   一旦设定目标并分析，这张卡**整体消失**（不是收起、不是留在原位），
+ *   工作台切换到「路线为主」的常态版式 —— 运行参数挪到主区右侧、可伸缩。
+ *   目标本身降级成路线区顶部的一条胶囊（见 TargetBar.vue）。
+ *
+ * 分工：输入与解析逻辑仍归 `TargetInput.vue`（那里有 RDKit 诊断、画板、示例等），
+ *       本组件只负责「居中卡片 + 参数并排」的版式与切换时机。
+ */
+import { computed } from 'vue';
+import { useWorkspaceStore } from '@/stores/workspace';
+import TargetInput from './TargetInput.vue';
+import RunParams from './RunParams.vue';
+
+const store = useWorkspaceStore();
+
+/**
+ * 🔴 是否展示标定面板 —— 唯一判据是 `store.targetSetupOpen`，**不是** `!store.rootId`。
+ *
+ * 为什么不能用「有没有目标」来判：
+ *   「换目标」是**开始一个新任务的准备阶段**，此刻旧目标还在树上（rootId 非空），
+ *   若用 `!rootId` 判可见性，点了「换目标」面板根本不会出现 —— store 打开了也没用。
+ *   反过来说，用户在标定面板里填完结构、还没点「解析结构」时 rootId 也是空的，
+ *   但这正是最需要看到面板的时刻。
+ *   一句话：**可见性只归 targetSetupOpen 管，rootId 只影响「能不能直接关掉面板」**
+ *   （见 store.closeTargetSetup 的守卫）。
+ */
+const visible = computed(() => store.targetSetupOpen);
+</script>
+
+<template>
+  <div v-if="visible" class="setup">    <section class="setup__card">
+      <header class="setup__head">
+        <h2 class="setup__title">新建逆合成分析</h2>
+        <p class="setup__sub">画一个结构、或粘贴 ChemDraw / MOL / SMILES，设好参数即可开始拆解</p>
+      </header>
+
+      <div class="setup__grid">
+        <!-- 左：目标分子（画布 + 粘贴框 + 解析结果） -->
+        <div class="setup__target">
+          <TargetInput />
+        </div>
+
+        <!-- 右：这次分析的运行参数 -->
+        <aside class="setup__params">
+          <RunParams />
+        </aside>
+      </div>
+    </section>
+  </div>
+</template>
+
+<style scoped>
+/* 标定态：这是一张**整屏居中**的卡片，不受路线态栅格影响。
+   🔴 做法是绝对定位铺满内容区：路线态的内容区 `.app__content` 里，
+      主区被 `minmax(0,1fr) 300px` 的双栏栅格挤成"左 1fr + 右 316px 空列"，
+      卡片若参与那个流向，重心就永远偏 80px（实测各视口恒差 -80，与栏宽无关，
+      是内容区自身 padding + 空列的合力）。
+      这里改成 `position:absolute; inset:0` 直接脱离文档流、
+      相对**最近定位祖先**（见 WorkspaceView 的 .workspace__layer）铺满，
+      再用 flex 居中 —— 位置就只由"层"决定，与栅格无关。 */
+.setup {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 22px 24px;
+  overflow: auto;
+}
+
+.setup__card {
+  width: 100%;
+  /* 够宽才放得下「画布 | 参数」两栏；再宽就散了 */
+  max-width: 1180px;
+  padding: 26px 28px 24px;
+  border: 1px solid var(--rw-border);
+  border-radius: 16px;
+  background: var(--rw-surface);
+  box-shadow: 0 12px 40px rgb(15 23 42 / 7%);
+  /* 卡片自身高度可能超过层高（窄屏堆叠时）⇒ 用 auto 让 flex 不去压缩它 */
+  flex: 0 0 auto;
+}
+
+.setup__head {
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.setup__title {
+  margin: 0 0 6px;
+  font-size: 19px;
+  font-weight: 650;
+  color: var(--rw-text);
+}
+
+.setup__sub {
+  margin: 0;
+  font-size: 13px;
+  color: var(--rw-text-3);
+}
+
+.setup__grid {
+  display: grid;
+  /* 左边给输入区，右边给参数；参数栏窄一些 */
+  grid-template-columns: minmax(0, 1fr) 320px;
+  gap: 22px;
+  align-items: start;
+}
+
+.setup__target {
+  min-width: 0;
+}
+
+.setup__params {
+  min-width: 0;
+}
+
+/* 卡片内部的两个组件不再各带一层边框（避免卡中卡） */
+.setup__target :deep(.rw-card),
+.setup__params :deep(.rw-card) {
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+}
+
+.setup__params :deep(.rw-card__head) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.setup__params :deep(.rw-card__body) {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* 窄屏/矮屏：两栏堆叠，且不再强制居中（否则内容超出后顶部被裁） */
+@media (max-width: 1080px) {
+  .setup {
+    align-items: flex-start;
+  }
+
+  .setup__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 768px) {
+  .setup {
+    padding: 8px 12px 20px;
+  }
+
+  .setup__card {
+    padding: 18px 14px 16px;
+    border-radius: 12px;
+  }
+}
+</style>
