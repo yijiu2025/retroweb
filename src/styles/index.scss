@@ -1,0 +1,260 @@
+/* ==========================================================================
+   RetroWeb 设计 token + 全局样式
+   --------------------------------------------------------------------------
+   单一来源：所有颜色 / 圆角 / 阴影都走这里的 CSS 变量，组件内不写死颜色。
+   暗色通过 html.dark 覆盖同一批变量（Element Plus 的暗色由官方 dark/css-vars 提供）。
+   ========================================================================== */
+
+:root {
+  --rw-bg: #f4f6fb;
+  --rw-surface: #ffffff;
+  --rw-surface-2: #f8fafc;
+  --rw-surface-3: #f1f5f9;
+  --rw-border: #e4e9f0;
+  --rw-border-strong: #d5dce6;
+
+  --rw-text: #0f172a;
+  --rw-text-2: #475569;
+  --rw-text-3: #8794a8;
+
+  --rw-brand: #2563eb;
+  --rw-brand-d: #1d4ed8;
+  --rw-brand-l: #eff6ff;
+  --rw-brand-soft: #dbeafe;
+
+  --rw-ok: #059669;
+  --rw-ok-l: #ecfdf5;
+  --rw-warn: #b45309;
+  --rw-warn-l: #fffbeb;
+  --rw-bad: #dc2626;
+  --rw-bad-l: #fef2f2;
+
+  --rw-radius-sm: 8px;
+  --rw-radius: 12px;
+  --rw-radius-lg: 16px;
+
+  --rw-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04), 0 1px 3px rgba(15, 23, 42, 0.06);
+  --rw-shadow-2: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 26px -14px rgba(15, 23, 42, 0.22);
+  --rw-shadow-3: 0 2px 4px rgba(15, 23, 42, 0.05), 0 18px 40px -20px rgba(15, 23, 42, 0.28);
+
+  --rw-font-mono: Consolas, 'SFMono-Regular', 'Courier New', monospace;
+
+  /* Element Plus 主色对齐 */
+  --el-color-primary: var(--rw-brand);
+  --el-border-radius-base: 8px;
+}
+
+html.dark {
+  --rw-bg: #0b1220;
+  --rw-surface: #111a2b;
+  --rw-surface-2: #0f1729;
+  --rw-surface-3: #17233a;
+  --rw-border: #1f2b45;
+  --rw-border-strong: #2b3a5c;
+
+  --rw-text: #e6edf7;
+  --rw-text-2: #9fb0c9;
+  --rw-text-3: #7b8ba5;
+
+  --rw-brand: #5b93ff;
+  --rw-brand-d: #3b76f0;
+  --rw-brand-l: #14243f;
+  --rw-brand-soft: #1e3a6b;
+
+  --rw-ok: #34d399;
+  --rw-ok-l: #06281f;
+  --rw-warn: #fbbf24;
+  --rw-warn-l: #2b1f05;
+  --rw-bad: #f87171;
+  --rw-bad-l: #2d1113;
+
+  --rw-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --rw-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 26px -14px rgba(0, 0, 0, 0.6);
+  --rw-shadow-3: 0 2px 4px rgba(0, 0, 0, 0.35), 0 18px 40px -20px rgba(0, 0, 0, 0.7);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background:
+    radial-gradient(1200px 480px at 50% -180px, rgba(37, 99, 235, 0.07) 0%, rgba(37, 99, 235, 0) 70%),
+    var(--rw-bg);
+  color: var(--rw-text);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: var(--rw-brand);
+  text-decoration: none;
+}
+
+/* ---------- 通用卡片 ---------- */
+.rw-card {
+  background: var(--rw-surface);
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius);
+  box-shadow: var(--rw-shadow-1);
+}
+
+.rw-card__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--rw-border);
+}
+
+.rw-card__title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--rw-text);
+}
+
+.rw-card__body {
+  padding: 16px 18px;
+}
+
+/* ---------- 分子结构图容器 ---------- */
+.rw-mol {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.rw-mol svg {
+  display: block;
+}
+
+.rw-mono {
+  font-family: var(--rw-font-mono);
+  font-size: 12px;
+  color: var(--rw-text-2);
+  word-break: break-all;
+}
+
+/* ---------- 概率条 ---------- */
+.rw-prob {
+  position: relative;
+  width: 64px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--rw-surface-3);
+  overflow: hidden;
+}
+
+.rw-prob > i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--rw-brand);
+}
+
+.rw-prob.is-high > i {
+  background: var(--rw-ok);
+}
+
+.rw-prob.is-mid > i {
+  background: var(--rw-warn);
+}
+
+.rw-prob.is-low > i {
+  background: var(--rw-text-3);
+}
+
+/* ---------- 滚动条 ---------- */
+.rw-scroll {
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.rw-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.rw-scroll::-webkit-scrollbar-thumb {
+  background: var(--rw-border-strong);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+}
+
+/* ---------- Element Plus 微调 ---------- */
+.el-card {
+  --el-card-border-color: var(--rw-border);
+}
+
+.el-tabs__item {
+  font-weight: 500;
+}
+
+/* 弹窗内 iframe 无边框 */
+.rw-sso-iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: var(--rw-surface);
+}
+
+/* ---------- 打印（另存为 PDF） ----------
+   只留路线主体：隐藏侧栏、顶栏、左栏参数与所有操作按钮。 */
+@media print {
+  .app__aside,
+  .app__header,
+  .workspace__left,
+  .workspace__alert,
+  .rw-card__head,
+  .summary__ops,
+  .step-row__ops,
+  /* 折叠分组头与操作区在纸上没有意义 */
+  .params__group-head,
+  .params__auto,
+  .tree__ops,
+  .schemes__ops {
+    display: none !important;
+  }
+
+  /* 打印时所有折叠分组强制展开，别把内容留在屏幕外 */
+  .params__group-body,
+  details > .params__group-body {
+    display: flex !important;
+  }
+
+  details:not([open]) > * {
+    display: revert !important;
+  }
+
+  .app__content {
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+
+  .workspace {
+    display: block !important;
+  }
+
+  .rw-card {
+    border: 0;
+    box-shadow: none;
+  }
+}

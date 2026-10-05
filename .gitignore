@@ -1,0 +1,16 @@
+node_modules/
+dist/
+dist-ssr/
+.vite-dev.log
+*.local
+
+# 集成测试的构建产物（npm run test:store）
+tests/.out/
+
+# 编辑器
+.vscode/
+.idea/
+
+# 系统
+.DS_Store
+Thumbs.db
