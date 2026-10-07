@@ -74,6 +74,14 @@ scope.run(() => {
   } as never);
   const rootId = store.rootId as string;
   check('根节点已建立', !!rootId);
+  // 🔴 解析**不建任务**：任务要等「确定目标，开始分析」（closeTargetSetup）才诞生。
+  //    旧实现在这里无条件新建会话 ⇒ 每点一次「解析结构」就在侧栏多一条任务
+  //    （用户报的 bug，端到端见 .tmp-probe/verify-parse-notask.cjs）。
+  check(
+    '🔴 只解析、还没开始分析 ⇒ 一条任务都不建',
+    store.sessions.length === 0,
+    `会话数 ${store.sessions.length}`
+  );
 
   const r1 = rxn(rootId, [A, B], 0.98);
   const r2 = rxn(rootId, [C], 0.41);
@@ -246,6 +254,10 @@ scope.run(() => {
   );
 
   console.log('\n=== 11) 会话快照落盘包含方案 ===');
+  // 🔴 必须先「开始分析」才有任务可落盘：解析（setTarget）只把结构放进工作台，
+  //    会话由 `closeTargetSetup()`（真实 UI 里 = 「确定目标，开始分析」/「自动往下拆」）
+  //    那一刻诞生 —— 否则「每点一次解析就在侧栏多一条任务」（2026-10-07 修的 bug）。
+  store.closeTargetSetup();
   store.persistSession();
   const json = JSON.parse(store.exportJson()) as { schemes: unknown[]; stepAnalyses: unknown[] };
   const raw = localStorageShim.getItem('retroweb_sessions') || '[]';

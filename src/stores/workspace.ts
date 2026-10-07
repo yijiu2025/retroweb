@@ -735,15 +735,21 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     nodes.value[root.id] = root;
     rootId.value = root.id;
     activeNodeId.value = null;
-    // 🔴 归属判断：优先复用「标定面板正在编辑的会话」（打开任务 / 换目标后重新填结构），
-    //    否则才开新会话。原来这里**无条件** `uid('sess')`，于是「打开一个任务 → 清空 →
-    //    点示例 / 重粘」会在列表里冒出一条新任务、把旧任务顶走 —— 用户要的是**编辑原任务**。
-    //    （新建只发生在「＋新任务」「换目标」—— 那两处会把 editingSessionId 置 null。）
+    // 🔴 **解析结构不创建任务**。任务由 `closeTargetSetup()`（「确定目标，开始分析」/
+    //    自动往下拆）那一刻诞生 —— 那里才分配会话 id 并落第一次盘。
+    //    这里只做一件事：**认领**「标定面板正在编辑的那条已有会话」（从侧栏打开一条
+    //    草稿任务再改结构 ⇒ 改的仍是它）；没有归属就保持无归属（不建、不写盘）。
+    //
+    //    ⚠️ 原实现在没有归属时**无条件** `uid('sess')`，于是同一次标定里每点一次
+    //    「解析结构」就在侧栏「最近的任务」里多出一条同名任务（实测点 3 次 → 3 条，
+    //    用户报的正是这个）；而「＋新任务」「换目标」只会在**开始**标定时把
+    //    editingSessionId 置 null，挡不住解析阶段的重复调用。
     const reuse = editingSessionId.value;
     if (reuse && sessions.value.some((s) => s.id === reuse)) {
       currentSessionId.value = reuse;
     } else {
-      currentSessionId.value = uid('sess');
+      // 清掉可能残留的旧 id —— 否则接下来那次落盘可能写到**别的任务**身上
+      currentSessionId.value = null;
       editingSessionId.value = null;
     }
     // 🔴 这里**有意不关面板**：解析成功只代表「目标填好了」，用户可能还要改模型参数。
@@ -776,6 +782,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   function closeTargetSetup(): void {
     if (!rootId.value) return; // 没有目标 → 面板必须开着，没得商量
     targetSetupOpen.value = false;
+    // 🔴 **任务在这一刻诞生**：分配会话 id + 落第一次盘。
+    //    放在解析时（setTarget）会变成「点几次解析就多几条任务」；
+    //    只靠那个 deep watcher 兜则会漏 —— 目标本身就是可购买起始物料时，
+    //    节点状态从 makeNode 起就是终态，watcher 一次都不触发，
+    //    任务永远不会出现在侧栏、刷新也就丢了。
+    //    （打开草稿再点开始分析的那条路：currentSessionId 已经是那条会话，原样写回。）
+    if (!currentSessionId.value) currentSessionId.value = uid('sess');
+    persistSession();
   }
 
   /**
@@ -1270,6 +1284,13 @@ function persistSession(): void {
     currentSessionId.value = null;
     return;
   }
+  // 🔴 **还没有任务归属 ⇒ 不落盘、也不新建**。
+  //    标定态里刚解析出来的结构只活在内存中：用户连点几次「解析结构」、
+  //    或点示例换来换去，都不该在侧栏「最近的任务」里堆出一串同名任务。
+  //    任务从「确定目标，开始分析」那一刻诞生（closeTargetSetup 先发 id 再调这里）。
+  //    ⚠️ 判据是**有没有归属**，不是「在不在标定态」：从侧栏打开一条草稿任务、
+  //       在标定面板里改结构，仍然要写回**那一条**（否则改动会静默丢掉）。
+  if (!currentSessionId.value) return;
     const snap: WorkspaceSnapshot = {
       rootId: rootId.value,
       nodes: snapshotNodes(),
@@ -1419,8 +1440,15 @@ function persistSession(): void {
         if (!rootId.value) continue;
         currentSessionId.value = s.id;
         editingSessionId.value = s.id;
-        // 恢复出来的会话有根节点 ⇒ 直接进路线态（与 loadSession 同理）
-        targetSetupOpen.value = false;
+        // 🔴 口径必须与 `loadSession` 一致（同一份快照，点侧栏打开 vs 刷新自动恢复
+        //    不能落到两个不同阶段）：**已开始**的任务直接进路线态；
+        //    **草稿**（只解析了目标、还没点「开始分析」）回标定面板让用户接着编 ——
+        //    否则刷新后面板凭空消失，只剩一棵光秃秃的单目标树，用户以为任务没了。
+        if (!isDraftSession(s)) {
+          targetSetupOpen.value = false;
+        } else {
+          targetSetupOpen.value = true;
+        }
         mainTab.value = 'overview'; // 打开任务先看目标 + 已确认路线，不直接甩一屏树
         resumeLoading();
         return;
