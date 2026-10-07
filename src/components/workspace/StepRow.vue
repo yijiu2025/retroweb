@@ -87,7 +87,7 @@ function onQuery(supplierId: string): void {
           <MolView :smiles="node.smiles" fit :dark="false" />
         </div>
 
-        <!-- 文本信息 -->
+        <!-- 文本信息 + 标签 -->
         <div class="step-row__main">
           <code class="rw-mono step-row__smiles" :title="node.smiles">{{ node.smiles }}</code>
           <div class="step-row__meta">
@@ -98,34 +98,35 @@ function onQuery(supplierId: string): void {
             <span>累计 {{ chainPercent }}</span>
             <span v-if="runCount > 1">{{ runCount }} 次分析</span>
           </div>
-        </div>
 
-        <!-- 标签 -->
-        <div class="step-row__tags">
-          <span class="step-tag" :class="roleClass[node.role]">{{ roleText[node.role] }}</span>
-          <span v-if="node.purchased" class="step-tag is-buy">可购买</span>
-          <el-dropdown
-            v-if="node.purchased"
-            trigger="click"
-            size="small"
-            @command="onQuery"
-          >
-            <span class="step-row__query" title="点击查价">¥</span>
-            <template #dropdown>
-              <el-dropdown-menu>
-                <el-dropdown-item v-for="s in SUPPLIERS" :key="s.id" :command="s.id">
-                  <span class="step-row__supplier-name">{{ s.name }}</span>
-                  <span class="step-row__supplier-tag">{{ s.tag }}</span>
-                </el-dropdown-item>
-                <div class="step-row__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
-              </el-dropdown-menu>
-            </template>
-          </el-dropdown>
-          <span v-if="node.reusedFrom" class="step-tag is-reuse">复用分析</span>
-          <span v-if="node.duplicateOf" class="step-tag is-dup">同分支重复</span>
-          <span v-if="analysisStatus === 'done'" class="step-tag is-analyzed">已分析</span>
-          <span v-else-if="analysisStatus === 'streaming'" class="step-tag is-analyzing">分析中</span>
-          <span v-if="node.status === 'failed'" class="step-tag is-err">失败</span>
+          <!-- 标签：**排在分子信息下面的一行**（见 .step-row__tags 注释）。
+               🔴 「¥」必须挂在「可购买」这个 pill **内部**：
+                  它原来是标签列的一个兄弟节点 ⇒ 各占一格，中间会空出一个 chip 的间距，
+                  看着像两个不相干的标签（用户截图里那个"孤立的 ¥ 圆点"）。
+                  放进 pill 里则永远是「可购买 [¥]」一体，窄屏换行时也不会被拆开。
+               🔴 `el-dropdown` 必须在 pill **外面**：pill 整块都要是查价的选择热区。
+                  放里面（只有 ¥ 是 trigger）时，点「可购买」三个字没反应 ——
+                  用户以为整块能点，实测只有那 16px 的圆点管用。 -->
+          <div class="step-row__tags">
+            <span class="step-tag" :class="roleClass[node.role]">{{ roleText[node.role] }}</span>
+            <el-dropdown v-if="node.purchased" trigger="click" size="small" @command="onQuery">
+              <span class="step-tag is-buy" title="点击选择供应商查价">可购买<i class="step-row__query" aria-hidden="true">¥</i></span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="s in SUPPLIERS" :key="s.id" :command="s.id">
+                    <span class="step-row__supplier-name">{{ s.name }}</span>
+                    <span class="step-row__supplier-tag">{{ s.tag }}</span>
+                  </el-dropdown-item>
+                  <div class="step-row__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <span v-if="node.reusedFrom" class="step-tag is-reuse">复用分析</span>
+            <span v-if="node.duplicateOf" class="step-tag is-dup">同分支重复</span>
+            <span v-if="analysisStatus === 'done'" class="step-tag is-analyzed">已分析</span>
+            <span v-else-if="analysisStatus === 'streaming'" class="step-tag is-analyzing">分析中</span>
+            <span v-if="node.status === 'failed'" class="step-tag is-err">失败</span>
+          </div>
         </div>
 
         <!-- 操作 -->
@@ -159,8 +160,13 @@ function onQuery(supplierId: string): void {
             >
               工艺分析
             </el-button>
+            <!-- 🔴 两态**同权重**（都是描边按钮）：原来「取消可购买」是纯绿实心
+                 （`type="success"` 不带 plain），在一行里比主操作「查看候选」还抢眼，
+                 而同一个「可购买」状态右边的标签已经用绿色表示过一次了。
+                 加 `plain` ⇒ 语义色保留（绿=可购买），权重回到二级操作。 -->
             <el-button
               size="small"
+              plain
               :type="node.purchased ? 'success' : 'default'"
               @click="store.markPurchased(nodeId, !node.purchased)"
             >
@@ -277,17 +283,38 @@ function onQuery(supplierId: string): void {
   color: var(--rw-text-3);
 }
 
+/* 标签：跟在分子信息下面的一行 chip。
+   🔴 原来它在 `.step-row__inner` 里占**独立的一列**，而且是 `flex-direction: column`
+      ⇒ 每个标签各占一行，还被 `align-items: stretch` 拉伸到同宽（最宽的「起始物料」60px，
+      「已分析」3 个字也被拉满）。后果：
+        ① 标签一多就把整行撑高（实测 5 个标签 → 标签列 112px > 结构盒 64px ⇒
+           那一行 128px，其它行只有 80px，一屏里行高参差）；
+        ② 「可购买」下面的 ¥ 掉成第三行、单独一个圆点（用户截图上"孤立的 ¥"）。
+      搬到主列下方后：标签拿到**整列宽度**（5~6 个也排得下），高度恒等于一行文字（21px）；
+      右列只剩操作按钮 ⇒ 按钮右缘天然对齐，行高重新由结构盒（64px）决定。
+   🔴 不设 `max-width`：主列本身就是 `flex: 1; min-width: 0`，可用宽度由它决定，
+      再套一层上限只会让宽屏上也提前换行。
+   🔴 `.step-row__main` 自己不是 flex 容器（SMILES 的 `-webkit-line-clamp` 需要它是块级），
+      所以这里必须显式 `margin-top` 来和上面那行属性拉开距离。 */
 .step-row__tags {
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  margin-top: 5px;
 }
 
 .step-tag {
+  /* 横排后不再被拉伸 ⇒ 宽度回到内容宽度；也不许被压缩，否则文字会被压扁 */
+  flex: 0 0 auto;
   padding: 1px 7px;
   border-radius: 999px;
   font-size: 11px;
+  /* 🔴 行高必须写死，不能靠继承。标签高度 = 行高 + 上下内距(1×2) + 边框(1×2) = 21px。
+     为什么：`.step-tag.is-buy` 是 `inline-flex`（里面要放 ¥ 图标），它的文字被包成
+     **匿名 flex item**，行盒高度和普通块级标签算出来会差 1px ⇒ 同一排里「可购买」pill
+     比兄弟标签矮一截（实测 21px vs 20px，肉眼看得出来）。两边都写死 17px 后都是 21px。 */
+  line-height: 17px;
   font-weight: 500;
   white-space: nowrap;
   border: 1px solid transparent;
@@ -309,31 +336,49 @@ function onQuery(supplierId: string): void {
   background: var(--rw-ok-l);
 }
 
+/* 「可购买」pill：整块都是查价的**选择热区**（用户要求"整体可以点击选择"）。
+   🔴 `el-dropdown` 是它的**父层**（见模板注释）⇒ 这里只负责长得像一个可点的 pill：
+      inline-flex 让 ¥ 与文字同一行（否则 pill 变两行、又把整行撑高），
+      cursor/hover 让"整块可点"这件事在视觉上成立。 */
 .step-tag.is-buy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 3px;
   color: #0369a1;
   background: #e0f2fe;
+  cursor: pointer;
+  transition: background 0.15s, box-shadow 0.15s;
 }
 
-/* 询价入口：¥ 小圆钮（紧贴「可购买」标签下方） */
+.step-tag.is-buy:hover {
+  background: #bae6fd;
+}
+
+/* el-dropdown 自己带一层块级外壳 ⇒ 显式收成 inline-flex，
+   否则它会撑满一行、把后面的标签挤到下一行；宽度也必须等于 pill 本身。 */
+.step-row__tags :deep(.el-dropdown) {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 询价图标：¥ 小圆钮（**在「可购买」pill 内**，紧跟文字右侧）。
+   现在它只是装饰 —— 热区是整块 pill，所以这里不要单独的 cursor/hover，
+   否则鼠标移到圆点上变色、移到文字上不变色，"整块可点"的信号又乱了。 */
 .step-row__query {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 16px;
   height: 16px;
-  margin-left: 3px;
   border-radius: 50%;
   background: var(--rw-brand);
   color: #fff;
   font-size: 10px;
   font-weight: 700;
+  font-style: normal;
   line-height: 1;
-  cursor: pointer;
   user-select: none;
-}
-
-.step-row__query:hover {
-  background: var(--rw-brand-d);
 }
 
 .step-row__supplier-name {
