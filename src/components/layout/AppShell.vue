@@ -518,7 +518,8 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   flex: 1;
   min-width: 0;
   min-height: 0;
-  padding: 18px 22px;
+  /* 上下走变量（页面要算「可用高度」时引用同一处，见 index.scss） */
+  padding: var(--rw-content-pad-y) 22px;
 }
 
 /* 辅助面板：只在没内容时整条不出现（v-if），宽度由组件自己管 */
@@ -541,7 +542,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 
 @media (max-width: 768px) {
   .app__content {
-    padding: 12px;
+    padding: var(--rw-content-pad-y) 12px;
   }
   .app__heading p {
     display: none;
@@ -561,6 +562,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   }
   :global(html:root) {
     --rw-header-h: 52px;
+    --rw-content-pad-y: 12px;
   }
 }
 </style>

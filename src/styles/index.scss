@@ -51,6 +51,12 @@
         不要就地写 calc(100vh - 60px - ...)，否则顶栏一改高就静默错位。 */
   --rw-header-h: 60px;
 
+  /* 内容区**上下**内边距：与顶栏同理的单一来源。
+     🔴 页面里凡要算「可用高度」（100vh − 顶栏 − 内容区上下留白）都得减掉它，
+        就地写 36px 的话，改动 `.app__content` 的 padding 就会静默错位
+        （标定卡居中基准、「路线网络」页签的画布撑满高度都吃这个数）。 */
+  --rw-content-pad-y: 18px;
+
   /* Element Plus 主色对齐 */
   --el-color-primary: var(--rw-brand);
   --el-border-radius-base: 8px;

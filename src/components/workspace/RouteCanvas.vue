@@ -325,8 +325,41 @@ watch([() => store.rootId, () => store.nodes, flipped], build, { deep: true, imm
 const MIN_ZOOM = 0.2;
 const MAX_ZOOM = 3;
 
+/**
+ * 画布四周垫出的**可平移余量**（px）。这是「缩小时鼠标左键拖不动」的正解，别删。
+ *
+ * 🔴 为什么需要它：平移是改 `scrollLeft/Top` 实现的，而滚动位置只在
+ *    **内容比容器大**时才存在。图一缩小（或路线本来就窄），`sizer` 比容器还小
+ *    ⇒ `scrollWidth === clientWidth` ⇒ `scrollLeft` 恒为 0 ⇒ 按住左键拖动**毫无反应**。
+ *    给 sizer 四周垫一圈余量后，可拖空间**恒存在**（≥ 2 × PAN_PAD），
+ *    缩到 20% 也能把图拖到视野里任意位置。
+ *
+ * 取值：要够把图从贴边挪到视野另一端；太小会变成"能拖但挪不了多远"，体感还是卡。
+ */
+const PAN_PAD = 320;
+/** 「适应视图」留的边距 —— 别让图贴着画布内缘 */
+const FIT_GAP = 28;
+
 function clampZoom(z: number): number {
   return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+}
+
+/**
+ * sizer 尺寸 = `max(画布 × 缩放, 容器尺寸) + 四周各 PAN_PAD`。
+ *
+ * 🔴 `max(…, 容器)` 这一项不能省：图很小时 `画布 × 缩放` 可能比容器还小，
+ *    此时 sizer 若取它，滚动空间与可拖余量**一起归零**（就是用户报的那个毛病）。
+ *    用容器尺寸打底后，任何缩放下都至少留出 2 × PAN_PAD 的可拖空间。
+ * 🔴 只在尺寸真变了才写 style：ResizeObserver 盯着容器，无脑写会来回触发。
+ */
+function syncSizer(): void {
+  const s = sizerEl.value;
+  if (!s) return;
+  const el = wrap.value;
+  const w = `${Math.max(canvasW.value * zoom.value, el?.clientWidth ?? 0) + PAN_PAD * 2}px`;
+  const h = `${Math.max(canvasH.value * zoom.value, el?.clientHeight ?? 0) + PAN_PAD * 2}px`;
+  if (s.style.width !== w) s.style.width = w;
+  if (s.style.height !== h) s.style.height = h;
 }
 
 /**
@@ -336,23 +369,22 @@ function clampZoom(z: number): number {
  *    ① 只改 `zoom` 就写 scrollLeft ⇒ 被**旧的** scrollWidth 夹住，放大时必然偏移；
  *    ② 改成 `await nextTick()` 再写 ⇒ 连续滚轮之间会读到"还没应用"的 scrollLeft，
  *       锚点一路漂。手动写一次 style 把两个问题一起解决（Vue 随后写入的是同一个值）。
+ *    现在多一个理由：sizer 尺寸还依赖容器尺寸（`max(…, 容器) + 余量`），
+ *    不先写就写 scrollLeft，读到的是**上一倍率**的滚动范围。
  */
 function zoomAt(next: number, anchorX: number, anchorY: number): void {
   const el = wrap.value;
   if (!el) return;
   const z = clampZoom(next);
   if (z === zoom.value) return;
-  // 锚点当前对应的**内容坐标**（缩放前）
-  const cx = (el.scrollLeft + anchorX) / zoom.value;
-  const cy = (el.scrollTop + anchorY) / zoom.value;
+  // 锚点当前对应的**内容坐标**（缩放前）。
+  // 🔴 要减掉左上那圈余量：plane 不在 sizer 的原点，而在 (PAN_PAD, PAN_PAD) 处。
+  const cx = (el.scrollLeft + anchorX - PAN_PAD) / zoom.value;
+  const cy = (el.scrollTop + anchorY - PAN_PAD) / zoom.value;
   zoom.value = z;
-  const s = sizerEl.value;
-  if (s) {
-    s.style.width = `${canvasW.value * z}px`;
-    s.style.height = `${canvasH.value * z}px`;
-  }
-  el.scrollLeft = cx * z - anchorX;
-  el.scrollTop = cy * z - anchorY;
+  syncSizer();
+  el.scrollLeft = cx * z + PAN_PAD - anchorX;
+  el.scrollTop = cy * z + PAN_PAD - anchorY;
 }
 
 /** 按钮缩放没有指针位置，取视口中心最不突兀 */
@@ -364,14 +396,31 @@ function centerAnchor(): [number, number] {
 function fitView(): void {
   const el = wrap.value;
   const w = el?.clientWidth ?? 0;
-  if (!el || !w || !canvasW.value) {
+  const h = el?.clientHeight ?? 0;
+  if (!el || !w || !h || !canvasW.value || !canvasH.value) {
     zoom.value = 1;
+    syncSizer();
     return;
   }
-  zoom.value = clampZoom(Math.min(1, (w - 28) / canvasW.value));
-  // 「适应视图」= 看到全部，所以滚动也回到左上角
-  el.scrollLeft = 0;
-  el.scrollTop = 0;
+  // 🔴 宽、高**两个方向都判**：只看宽度的话，矮窗口里"适应视图"仍会把高度撑出去，
+  //    用户点了还是看不全 —— 取两个方向里能装下的那个更小的倍数。
+  zoom.value = clampZoom(
+    Math.min(1, (w - FIT_GAP) / canvasW.value, (h - FIT_GAP) / canvasH.value)
+  );
+  syncSizer();
+  centerView();
+}
+
+/**
+ * 把图摆到画布正中。
+ * 现在是「图四周有一圈可拖余量」的坐标系，滚动到 0 会看到的一大片留白 ——
+ * 所以"看到全部"的落点不是左上角，而是**让 sizer 里图那一块的中央对准容器中央**。
+ */
+function centerView(): void {
+  const el = wrap.value;
+  if (!el) return;
+  el.scrollLeft = PAN_PAD + (canvasW.value * zoom.value - el.clientWidth) / 2;
+  el.scrollTop = PAN_PAD + (canvasH.value * zoom.value - el.clientHeight) / 2;
 }
 
 /** ① 工具条 ± ：乘法步进（连续量，而不是固定 ±0.1 —— 缩到 20% 时 ±0.1 就没手感了） */
@@ -444,17 +493,43 @@ function onPointerUp(e: PointerEvent): void {
  * `preventDefault()` 就是空转：画布缩放了，整个页面**同时**跟着滚。
  */
 let wheelBound: HTMLElement | null = null;
-function bindWheel(): void {
+/** 盯着容器尺寸：窗口缩放 / 侧栏收起后，`max(画布, 容器)` 里那一项要跟着更新 */
+let ro: ResizeObserver | null = null;
+/** 画布此刻是否真的可见（有尺寸）—— 用来识别"从隐藏变成可见"这个瞬间 */
+let wrapVisible = false;
+
+function bindWrap(): void {
   const el = wrap.value;
-  if (el === wheelBound) return;
-  wheelBound?.removeEventListener('wheel', onWheel);
-  wheelBound = el;
-  wheelBound?.addEventListener('wheel', onWheel, { passive: false });
+  if (el !== wheelBound) {
+    wheelBound?.removeEventListener('wheel', onWheel);
+    wheelBound = el;
+    wheelBound?.addEventListener('wheel', onWheel, { passive: false });
+  }
+  ro?.disconnect();
+  ro = null;
+  wrapVisible = false;
+  if (el && typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => {
+      const on = !!wrap.value && wrap.value.clientWidth > 0 && wrap.value.clientHeight > 0;
+      // 🔴 画布所在的页签是**懒显示**的：组件挂载时它是 `display: none`，
+      //    `wrap` 的尺寸全是 0 ⇒ 那一刻的 fitView 只会走"尺寸不合法"的早退分支。
+      //    所以要在**第一次真正可见**时补一次适应视图：否则用户切到本页签，
+      //    看到的是左上角一大片留白（四周那圈可拖余量让这更刺眼）。
+      if (on && !wrapVisible) fitView();
+      wrapVisible = on;
+      syncSizer();
+    });
+    ro.observe(el);
+  }
+  if (el) syncSizer();
 }
-watch(wrap, bindWheel, { immediate: true, flush: 'post' });
+
+watch(wrap, bindWrap, { immediate: true, flush: 'post' });
 onBeforeUnmount(() => {
   wheelBound?.removeEventListener('wheel', onWheel);
   wheelBound = null;
+  ro?.disconnect();
+  ro = null;
 });
 
 onMounted(async () => {
@@ -633,10 +708,18 @@ const LEGEND: Array<{ key: string; text: string }> = [
   { key: 'step', text: '边上的小方块 = 第几步 + 该步概率' }
 ];
 
-const scaleStyle = computed(() => ({
+/**
+ * plane 的几何：尺寸 = **未缩放的**画布，靠 `transform: scale` 放大到 zoom 倍；
+ * 位置固定在内缩 PAN_PAD 处 —— 那圈余量就是"缩小时也能拖"的空间（见 PAN_PAD 注释）。
+ * 🔴 缩放原点在左上角（样式里的 `transform-origin: 0 0`），
+ *    `zoomAt` 的锚点换算正是按这个原点推的，两处必须一致。
+ */
+const planeStyle = computed(() => ({
   width: `${canvasW.value}px`,
   height: `${canvasH.value}px`,
-  transform: `scale(${zoom.value})`
+  transform: `scale(${zoom.value})`,
+  left: `${PAN_PAD}px`,
+  top: `${PAN_PAD}px`
 }));
 
 /** 方向说明跟着「旋转方向」一起变，别写死一句话 */
@@ -649,67 +732,65 @@ const dirHint = computed(() =>
 
 <template>
   <section class="rw-card rcanvas">
-    <div class="rw-card__head">
-      <div class="rw-card__title">
-        合成路线图
-        <span v-if="schemeName" class="rcanvas__scheme">方案：{{ schemeName }}</span>
-      </div>
-
-      <!-- 工具条 —— 学 Reaxys 那一排：Rotate / Fit view / Copy route / 缩放 / Legend -->
-      <div class="rcanvas__tools">
-        <el-button size="small" @click="rotate">
-          {{ flipped ? '逆合成方向' : '合成方向' }} ⇄
-        </el-button>
-        <el-button size="small" @click="fitView">适应视图</el-button>
-        <div class="rcanvas__zoom">
-          <el-button size="small" text title="缩小" @click="zoomBy(-1)">−</el-button>
-          <button type="button" class="rcanvas__zoom-val" title="点击还原 100%" @click="resetZoom">
-            {{ Math.round(zoom * 100) }}%
-          </button>
-          <el-button size="small" text title="放大" @click="zoomBy(1)">＋</el-button>
-        </div>
-        <el-button size="small" :type="showLegend ? 'primary' : 'default'" plain @click="showLegend = !showLegend">
-          图例
-        </el-button>
-        <el-button size="small" @click="copyRoute">复制路线</el-button>
-        <el-dropdown trigger="click">
-          <el-button size="small">导出<span class="rcanvas__caret">▾</span></el-button>
-          <template #dropdown>
-            <el-dropdown-menu>
-              <el-dropdown-item @click="exportJson">导出 JSON</el-dropdown-item>
-              <el-dropdown-item @click="exportCsv">导出 CSV</el-dropdown-item>
-              <el-dropdown-item divided @click="onPrint">打印 / 另存 PDF</el-dropdown-item>
-            </el-dropdown-menu>
-          </template>
-        </el-dropdown>
-      </div>
-    </div>
-
-    <!-- 图例（可开关） -->
-    <ul v-if="showLegend" class="rcanvas__legend">
-      <li v-for="l in LEGEND" :key="l.key" class="rcanvas__legend-item">
-        <span class="rcanvas__legend-swatch" :class="`is-${l.key}`" aria-hidden="true"></span>
-        {{ l.text }}
-      </li>
-    </ul>
-
     <div class="rw-card__body rcanvas__body">
-      <div class="rcanvas__score">
-        <div>
-          <span class="rcanvas__score-label">总步数</span>
-          <b>{{ route.length }}</b>
+      <!-- 浮层工具条：绝对定位贴画布顶部，**不占画布高度**。
+           原来「卡片头 + 计分条 + 免责声明」三块都占流（合计约 165px），
+           那正是画布看起来"不够大"的主因；收成一条浮层后，画布吃满整张卡片。
+           🔴 容器 `pointer-events: none` + 子元素 `auto`：工具条里的空白缝隙要**穿透**
+              到画布，否则画布顶部一整条带拖不动（正是这轮要修的毛病之一）。 -->
+      <div class="rcanvas__bar">
+        <div class="rcanvas__score">
+          <div>
+            <span class="rcanvas__score-label">总步数</span>
+            <b>{{ route.length }}</b>
+          </div>
+          <div title="各步概率连乘">
+            <span class="rcanvas__score-label">总概率</span>
+            <b>{{ route.length ? (totalProb * 100).toFixed(2) + '%' : '—' }}</b>
+          </div>
+          <div>
+            <span class="rcanvas__score-label">起始物料</span>
+            <b>{{ materials.length }}</b>
+          </div>
         </div>
-        <div>
-          <span class="rcanvas__score-label">总概率（连乘）</span>
-          <b>{{ route.length ? (totalProb * 100).toFixed(2) + '%' : '—' }}</b>
+
+        <!-- 工具条 —— 学 Reaxys 那一排：Rotate / Fit view / Copy route / 缩放 / Legend -->
+        <div class="rcanvas__tools">
+          <span v-if="schemeName" class="rcanvas__scheme">方案：{{ schemeName }}</span>
+          <el-button size="small" @click="rotate">
+            {{ flipped ? '逆合成方向' : '合成方向' }} ⇄
+          </el-button>
+          <el-button size="small" @click="fitView">适应视图</el-button>
+          <div class="rcanvas__zoom">
+            <el-button size="small" text title="缩小" @click="zoomBy(-1)">−</el-button>
+            <button type="button" class="rcanvas__zoom-val" title="点击还原 100%" @click="resetZoom">
+              {{ Math.round(zoom * 100) }}%
+            </button>
+            <el-button size="small" text title="放大" @click="zoomBy(1)">＋</el-button>
+          </div>
+          <el-button size="small" :type="showLegend ? 'primary' : 'default'" plain @click="showLegend = !showLegend">
+            图例
+          </el-button>
+          <el-button size="small" @click="copyRoute">复制路线</el-button>
+          <el-dropdown trigger="click">
+            <el-button size="small">导出<span class="rcanvas__caret">▾</span></el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item @click="exportJson">导出 JSON</el-dropdown-item>
+                <el-dropdown-item @click="exportCsv">导出 CSV</el-dropdown-item>
+                <el-dropdown-item divided @click="onPrint">打印 / 另存 PDF</el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
         </div>
-        <div>
-          <span class="rcanvas__score-label">起始物料</span>
-          <b>{{ materials.length }}</b>
-        </div>
-        <div class="rcanvas__score-hint">
-          {{ dirHint }} —— 拖动可平移、滚轮可缩放；点卡片底部图标可展开 / 分析 / 标记可购买
-        </div>
+
+        <!-- 图例（可开关）—— 不再占一条横向空间，改成工具条下方的浮层卡片 -->
+        <ul v-if="showLegend" class="rcanvas__legend">
+          <li v-for="l in LEGEND" :key="l.key" class="rcanvas__legend-item">
+            <span class="rcanvas__legend-swatch" :class="`is-${l.key}`" aria-hidden="true"></span>
+            {{ l.text }}
+          </li>
+        </ul>
       </div>
 
       <div v-if="!hasRoute" class="rcanvas__empty">
@@ -733,8 +814,11 @@ const dirHint = computed(() =>
         @pointerup="onPointerUp"
         @pointercancel="onPointerUp"
       >
-        <div ref="sizerEl" class="rcanvas__sizer" :style="{ width: canvasW * zoom + 'px', height: canvasH * zoom + 'px' }">
-          <div class="rcanvas__plane" :style="scaleStyle">
+        <!-- 🔴 sizer 的尺寸由 syncSizer() 直接写 style（宽高 = max(画布×缩放, 容器) + 四周余量）。
+             不在这里用 :style 绑 —— 两处来源会打架，而且缩放时必须**同步**写，
+             紧随其后的那句 scrollLeft 才不会被旧尺寸夹住（见 syncSizer / zoomAt）。 -->
+        <div ref="sizerEl" class="rcanvas__sizer">
+          <div class="rcanvas__plane" :style="planeStyle">
             <!-- 连线（在卡片下层，不接鼠标事件） -->
             <svg class="rcanvas__wires" :width="canvasW" :height="canvasH" aria-hidden="true">
               <polyline
@@ -821,8 +905,12 @@ const dirHint = computed(() =>
         </div>
       </div>
 
-      <p v-if="hasRoute" class="rcanvas__disclaimer">
-        以上结果由模型预测生成，可能包含错误；排名靠后的候选更可能不合理，实验前须经专业人员验证。
+      <!-- 提示条：贴画布左下角（绝对定位 ⇒ 不占画布高度、不吃指针）。
+           🔴 合规话术**没有删**，只是从"占一整行"挪到浮层 —— 顶部通知条那条同义，
+              但它是可关闭的，两处都留着才不会一关就一处不剩。 -->
+      <p v-if="hasRoute" class="rcanvas__hint">
+        <span class="rcanvas__hint-warn">模型预测结果，实验前须经专业人员验证。</span>
+        {{ dirHint }} · 拖动平移 · 滚轮缩放
       </p>
     </div>
   </section>
@@ -833,13 +921,46 @@ const dirHint = computed(() =>
   display: flex;
   flex-direction: column;
   min-height: 0;
+  /* 🔴 高度吃满父容器（`el-tab-pane`）——「路线网络」页签下整屏只放这一块画布。
+     父级那条 flex 链见 WorkspaceView 的 `.workspace.is-canvas`；
+     不在该页签时这里解析成 auto，无副作用。 */
+  height: 100%;
+  /* 浮层工具条 / 提示条的定位祖先 */
+  position: relative;
+  /* 画布要顶到卡片圆角边上 ⇒ 由卡片自己裁切 */
+  overflow: hidden;
 }
 
+/* 方案名 —— 挪进工具条里当第一项（原来挂在卡片标题后面） */
 .rcanvas__scheme {
-  margin-left: 8px;
   font-size: 12px;
-  font-weight: 400;
+  font-weight: 600;
   color: var(--rw-brand-d);
+  white-space: nowrap;
+}
+
+/* ---------- 浮层工具条 ----------
+   卡片头 / 计分条 / 图例原来各占一行（合计约 165px），现在全收进这一条**贴顶浮层**，
+   画布因此吃满整张卡片。
+   🔴 `pointer-events: none` + 子元素 `auto`：浮层自己的空白缝隙要能**穿透**到画布，
+      否则画布顶部一整条带按下去拖动没反应（这轮修的毛病之一）。 */
+.rcanvas__bar {
+  position: absolute;
+  inset: 0 0 auto 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--rw-border);
+  background: color-mix(in srgb, var(--rw-surface) 88%, transparent);
+  backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+
+.rcanvas__bar > * {
+  pointer-events: auto;
 }
 
 /* ---------- 工具条 ---------- */
@@ -876,16 +997,22 @@ const dirHint = computed(() =>
   opacity: 0.6;
 }
 
-/* ---------- 图例 ---------- */
+/* ---------- 图例（挂在工具条下方的浮层卡片，不再占一条横向空间） ---------- */
 .rcanvas__legend {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 10px;
+  z-index: 6;
   display: flex;
-  flex-wrap: wrap;
-  gap: 8px 20px;
+  flex-direction: column;
+  gap: 7px;
   margin: 0;
-  padding: 8px 18px;
+  padding: 10px 12px;
   list-style: none;
-  border-bottom: 1px solid var(--rw-border);
-  background: var(--rw-surface-2);
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+  box-shadow: var(--rw-shadow-2);
   font-size: 12px;
   color: var(--rw-text-2);
 }
@@ -924,52 +1051,52 @@ const dirHint = computed(() =>
   background: var(--rw-surface-3);
 }
 
-/* ---------- 计分条 ---------- */
+/* ---------- 画布容器 ----------
+   卡片头 / 计分条已浮层化 ⇒ 这里不再有内边距与纵向间距，画布直接吃满整张卡片。 */
 .rcanvas__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding: 12px 16px 16px;
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  /* 🔴 必须清掉 `.rw-card__body` 那一圈 padding（16px 上下）——
+     画布要顶到卡片内缘，留一圈内边距就等于白送 32px（实测画布比卡片矮 34px）。 */
+  padding: 0;
 }
 
+/* 计分（浮层里的一组，不再是独立色块 —— 它现在浮在画布上，
+   再带一层边框底色会在图上看出一道"横条"） */
 .rcanvas__score {
   display: flex;
   align-items: center;
-  gap: 28px;
-  padding: 9px 14px;
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface-2);
+  gap: 22px;
 }
 
 .rcanvas__score-label {
   display: block;
-  font-size: 11px;
+  font-size: 10.5px;
+  line-height: 1.3;
   color: var(--rw-text-3);
 }
 
 .rcanvas__score b {
-  font-size: 18px;
+  font-size: 17px;
+  line-height: 1.1;
   color: var(--rw-text);
-}
-
-.rcanvas__score-hint {
-  margin-left: auto;
-  max-width: 46%;
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--rw-text-3);
-  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 画布 ---------- */
 .rcanvas__wrap {
   position: relative;
-  overflow: auto;
+  /* 🔴 高度交给 flex 分配（吃掉卡片剩余空间），**不再写** `max-height: calc(100vh - 330px)`：
+      那个魔法数把画布上限钉死在一个跟"上方有几块"无关的值上，
+      上面每多一行（通知条 / 方案栏 / 页签）它就失准一次，窗口越小越吃亏。
+      `min-height` 则是**小窗口的兜底**：空间真不够时宁可整页滚动，
+      也不把画布压成一条细缝。 */
+  flex: 1;
   min-height: 320px;
-  max-height: calc(100vh - 330px);
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
+  overflow: auto;
   /* 淡淡的点阵底 —— 让空白区域看起来是"画布"而不是"没渲染出来" */
   background-color: var(--rw-surface);
   background-image: radial-gradient(var(--rw-border) 1px, transparent 1px);
@@ -995,8 +1122,8 @@ const dirHint = computed(() =>
 
 .rcanvas__plane {
   position: absolute;
-  top: 0;
-  left: 0;
+  /* 左上角由内联 `planeStyle` 给（= PAN_PAD）——
+     那圈余量就是"图比容器小也拖得动"的空间，别写死回 0。 */
   transform-origin: 0 0;
 }
 
@@ -1202,6 +1329,8 @@ const dirHint = computed(() =>
 
 /* ---------- 空态 / 免责 ---------- */
 .rcanvas__empty {
+  /* body 已无内边距 ⇒ 空态自己带一圈外边距，别贴着卡片边 */
+  margin: 14px;
   padding: 30px 16px;
   border: 1px dashed var(--rw-border);
   border-radius: var(--rw-radius-sm);
@@ -1221,18 +1350,37 @@ const dirHint = computed(() =>
   color: var(--rw-text-3);
 }
 
-.rcanvas__disclaimer {
+/* 提示条：贴画布左下角。绝对定位 ⇒ 不占画布高度；
+   `pointer-events: none` ⇒ 不挡拖动（它是浮在画布上的，不能吃掉鼠标）。 */
+.rcanvas__hint {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  z-index: 4;
+  max-width: min(72%, 620px);
   margin: 0;
-  padding: 8px 12px;
+  padding: 5px 10px;
   border-radius: var(--rw-radius-sm);
-  background: var(--rw-warn-l);
+  background: color-mix(in srgb, var(--rw-warn-l) 94%, transparent);
   color: var(--rw-warn);
-  font-size: 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  box-shadow: var(--rw-shadow-1);
+  pointer-events: none;
+}
+
+.rcanvas__hint-warn {
+  font-weight: 600;
 }
 
 @media (max-width: 900px) {
-  .rcanvas__score-hint {
+  /* 窄屏：计分只留数字，标签收掉，腾出宽度给工具条（浮层越高越遮画布） */
+  .rcanvas__score-label {
     display: none;
+  }
+
+  .rcanvas__hint {
+    max-width: 100%;
   }
 }
 </style>

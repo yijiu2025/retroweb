@@ -102,7 +102,7 @@ onMounted(() => {
 
   <!-- ============ 路线态 ============
        🔴 单列：参数栏已交给 AppShell 的右辅助面板，这里不再有第二列栅格。 -->
-  <div v-else class="workspace">
+  <div v-else class="workspace" :class="{ 'is-canvas': tab === 'route' }">
     <!-- 目标分子已移到左侧栏的「目标分析」卡（与「最近的任务」并列），
          主区顶部不再占这一行 —— 见 AppShell 的 .app__target。 -->
 
@@ -212,7 +212,7 @@ onMounted(() => {
       一旦各自写死，改顶栏就会只改到一处（这正是这次重构前的老问题）。 */
 .workspace__layer {
   position: relative;
-  min-height: calc(100vh - var(--rw-header-h) - 36px);
+  min-height: calc(100vh - var(--rw-header-h) - var(--rw-content-pad-y) * 2);
 }
 
 /* 路线态：单列纵向流。
@@ -224,6 +224,53 @@ onMounted(() => {
   /* 顶部到主区整条竖栈都吃这个间距，10px 比 12px 更紧但仍分得开各块 */
   gap: 10px;
   min-width: 0;
+}
+
+/* ---------- 「路线网络」页签：把一屏的高度让给画布 ----------
+   这个页签的主角是一整块画布，它的高度应当由**剩余空间**决定，而不是由内容决定：
+   窗口越高画布越大，用户要的"画布面积足够大"就是这个意思。
+   🔴 只在这个页签启用 —— 其它页签是长文，让它们撑满一屏只会把内容裁掉。
+
+   高度链（缺一环画布就退回内容高度）：
+     .workspace(min-height 保底)
+       → .el-tabs            (flex:1)
+         → .el-tabs__content (flex:1)
+           → .el-tab-pane    (flex:1)
+             → .rcanvas      (height:100%)
+               → … → .rcanvas__wrap (flex:1)
+   Element Plus 自带 `el-tabs{display:flex}`（`--top` 时 flex-direction: column）
+   与 `el-tabs__content{flex-grow:1}`，所以只补上面缺的几环。 */
+.workspace.is-canvas {
+  /* 🔴 必须是**确定高度**（`height`，不是 `min-height`）：
+     flex 链下一环的 `flex: 1` 只有在容器高度确定时才会真正分配到空间。
+     容器高度 auto 的话，`.rcanvas__wrap` 会退回"由内容决定"，
+     而它的内容（sizer）高度又依赖 wrap 自身高度
+     （`max(画布, 容器) + 余量`）⇒ 正反馈，画布一路涨到几万像素（实测 95480px）。
+     钉死高度后这条环就断开了。 */
+  height: calc(100vh - var(--rw-header-h) - var(--rw-content-pad-y) * 2);
+  /* 兜底：窗口很矮时保住画布下限（≥ 其自身 320px 的 min-height + 上方各块），
+     宁可整页滚动也不把画布压扁。 */
+  min-height: 480px;
+}
+
+.workspace.is-canvas :deep(.el-tabs) {
+  flex: 1;
+  min-height: 0;
+}
+
+/* 🔴 content 必须变成纵向 flex：它里面除了页签还夹着「路线方案栏」，
+     两者要竖着排 —— 方案栏占自身高度、页签吃掉剩下的。
+     不这么做的话，pane 的 height:100% 会按 content 的**整个**高度算，
+     跟方案栏叠在一起把画布顶出容器。 */
+.workspace.is-canvas :deep(.el-tabs__content) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.workspace.is-canvas :deep(.el-tab-pane) {
+  flex: 1;
+  min-height: 0;
 }
 
 .workspace__alert :deep(.el-alert__title) {
