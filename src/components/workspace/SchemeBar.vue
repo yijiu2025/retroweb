@@ -15,10 +15,16 @@
  * 🔴 总概率是选优的**主指标**，必须独立出来加重显示：
  *    混在灰色小字里时，五个 `·` 串成一行，概率等于看不见（原表格反倒是靠"排成一列"
  *    才让它显眼）。所以把原表格唯一多出来的价值 —— 一眼能比的总概率 —— 并进卡片。
+ *
+ * 🔴 **点整行即切换**（整行都是热区，不必非去点右边那个小按钮）：
+ *    同一份数据的三处入口里，侧栏的 `.tan__net-btn` 与「目标分析」页签的 `.ov__net`
+ *    本来就**整张卡就是一个 button**，只有这一处要精确命中那个小按钮 —— 手感不能两样。
+ *    行内的 确认 / 改名 / 删除 必须被挡住（`.schemes__actions` 上挂 `@click.stop`），
+ *    否则点「改名」会顺手把路线也切了。
  */
 import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
-import { useWorkspaceStore } from '@/stores/workspace';
+import { useWorkspaceStore, type SchemeStat } from '@/stores/workspace';
 import { promptSaveScheme } from '@/utils/scheme-save';
 
 const store = useWorkspaceStore();
@@ -56,6 +62,20 @@ async function onRename(id: string, old: string): Promise<void> {
 function onApply(id: string): void {
   store.applyScheme(id);
   ElMessage.success('已切换到该路线网络');
+}
+
+/**
+ * 点整行 = 切换。整行都是热区，用户不必先找到右边那个小按钮。
+ *
+ * 🔴 已经是当前行 ⇒ 直接返回：那一行本来就没换，弹一句「已切换到…」等于骗人。
+ * 🔴 拖着选字（想复制方案名）时会触发 click ⇒ 有选区就不切，否则一选名就跳走。
+ *    只在 mousedown→mouseup 跨过文字时选区才非空；普通单击的选区已在 mousedown 清掉。
+ * 行内按钮不会走到这里 —— 它们被 `.schemes__actions` 的 `@click.stop` 挡住了。
+ */
+function onRowClick(s: SchemeStat): void {
+  if (s.schemeId === store.currentSchemeId) return;
+  if (window.getSelection()?.toString()) return;
+  onApply(s.schemeId);
 }
 
 /**
@@ -131,7 +151,13 @@ async function onRemove(id: string, name: string): Promise<void> {
           v-for="s in stats"
           :key="s.schemeId"
           class="schemes__item"
-          :class="{ 'is-current': s.schemeId === store.currentSchemeId, 'is-confirmed': s.confirmed }"
+          :class="{
+            'is-current': s.schemeId === store.currentSchemeId,
+            'is-confirmed': s.confirmed,
+            'is-switchable': s.schemeId !== store.currentSchemeId
+          }"
+          :title="s.schemeId === store.currentSchemeId ? undefined : `点击切换到「${s.name}」`"
+          @click="onRowClick(s)"
         >
           <div class="schemes__main">
             <div class="schemes__line">
@@ -160,7 +186,10 @@ async function onRemove(id: string, name: string): Promise<void> {
             <span class="schemes__prob-v">{{ pct(s.probability) }}</span>
           </div>
 
-          <div class="schemes__actions">
+          <!-- 🔴 整行可点（切换）⇒ 操作区必须自己把事件停住：
+               否则「改名 / 删除 / 确认」都会顺带把这条路线切过去。
+               挂在容器上而不是逐个按钮上 —— 将来加按钮也不用记得补 `.stop`。 -->
+          <div class="schemes__actions" @click.stop>
             <el-button
               v-if="s.schemeId !== store.currentSchemeId"
               size="small"
@@ -263,6 +292,24 @@ async function onRemove(id: string, name: string): Promise<void> {
 .schemes__item.is-current {
   border-color: var(--rw-brand);
   background: var(--rw-brand-l);
+}
+
+/* 可切换的行给手型 + 悬停底色 —— 否则没人会想到整行能点。
+   当前行**刻意不给**：它点了也没反应（`onRowClick` 直接返回），
+   给了手型反而像点了没生效。
+   守门：verify-scheme-rowclick.cjs 断言可切换行 cursor=pointer、当前行 cursor≠pointer。 */
+.schemes__item.is-switchable {
+  cursor: pointer;
+}
+
+.schemes__item.is-switchable:hover {
+  border-color: var(--rw-brand);
+  background: var(--rw-brand-l);
+}
+
+/* 悬停底色不能盖掉「已确认」的绿色左线（那条线是这几处网络列表的统一视觉语言） */
+.schemes__item.is-switchable.is-confirmed:hover {
+  border-left-color: var(--rw-ok);
 }
 
 /* 已确认 = 采用中的路线网络：左侧一条绿色实线（与侧栏网络列表同一套视觉语言） */
