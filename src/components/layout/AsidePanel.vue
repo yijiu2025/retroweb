@@ -96,10 +96,10 @@ const collapsed = computed({
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 10px;
+  gap: 0;
   width: 100%;
   height: 100%;
-  padding: 14px 0;
+  padding: 0 0 14px;
   border: 0;
   background: transparent;
   color: var(--rw-text-3);
@@ -114,15 +114,30 @@ const collapsed = computed({
   color: var(--rw-brand);
 }
 
+/* 🔴 收起后的箭头必须落在**展开态那个「›」的位置**上。
+   展开态：`›` 在 `.aside__head`（高 = --rw-header-h）里垂直居中 ⇒ 中心在 header 中线。
+   收起态若靠 `padding-top: 14px` 硬凑，中心会落在 21.5px ⇒ 收起瞬间按钮向上漂 8.5px，
+   用户得重新找这个「展开」入口。
+   做法：让箭头自己就占满与 header 同高的一块并居中（不写死数字，引用同一个 token），
+   并补上与 header 一致的底边框 ⇒ 两种状态在这一行上像素级对齐。 */
 .aside__rail-chevron {
-  font-size: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: var(--rw-header-h);
+  flex: 0 0 var(--rw-header-h);
+  font-size: 16px;
   line-height: 1;
+  border-bottom: 1px solid var(--rw-border);
 }
 
-/* 竖排文字：比把 "辅助面板" 横过来塞进 40px 更易读 */
+/* 竖排文字：比把 "辅助面板" 横过来塞进 40px 更易读。
+   padding-top = `.aside__body` 的 padding-top，让两种状态下正文从同一条水平线开始。 */
 .aside__rail-text {
   writing-mode: vertical-rl;
   letter-spacing: 0.12em;
+  padding-top: 14px;
 }
 
 /* ---------- 展开态 ---------- */
@@ -201,16 +216,26 @@ const collapsed = computed({
     flex-basis: auto;
   }
 
-  /* 窄屏的收起态横过来：竖排文字在这里反而占掉一整行 */
+  /* 窄屏的收起态横过来：竖排文字在这里反而占掉一整行。
+     箭头那块要还原成「跟着行内走」—— 否则它仍占满整宽 + 60px 高，会把文字挤出去。 */
   .aside__rail {
     flex-direction: row;
     justify-content: center;
+    gap: 8px;
     height: auto;
     padding: 10px 12px;
   }
 
+  .aside__rail-chevron {
+    width: auto;
+    height: auto;
+    flex: 0 0 auto;
+    border-bottom: 0;
+  }
+
   .aside__rail-text {
     writing-mode: horizontal-tb;
+    padding-top: 0;
   }
 }
 </style>

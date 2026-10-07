@@ -357,6 +357,27 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   flex: 0 0 auto;
 }
 
+/* 🔴 收起态必须把页脚**钉回底部**。
+   原因：侧栏里唯一 `flex: 1` 的是 `.app__recent`，而收起时它与 `.app__target` 一起被
+   `v-show` 置成 `display: none` ⇒ 剩余高度没人认领 ⇒ 页脚（↑展开按钮）会从底部弹到导航下方
+   （实测 Δy = -738px，用户收起后找不到展开按钮）。
+   只在收起态加 `margin-top: auto`，而不是无条件加：展开态本来就由 `.app__recent` 的 flex:1 顶住，
+   此处显式区分两种情形，免得依赖「flex-grow 与 auto margin 谁先分配空间」这种实现细节。 */
+.app.is-collapsed .app__aside-foot {
+  margin-top: auto;
+}
+
+/* 收起态（64px 图标条）：三个控件统一居中。
+   否则 `.app__nav-item` / `.app__collapse` 保留的 padding-left 会让图标偏在左边，
+   与垂直居中放置的品牌 logo 不在同一条竖线上。 */
+.app.is-collapsed .app__brand,
+.app.is-collapsed .app__nav-item,
+.app.is-collapsed .app__collapse {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* 「最近的任务」：导航之下，占满剩余高度，超出滚动 —— 侧栏的主干 */
 .app__recent {
   flex: 1;
@@ -390,8 +411,17 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   background: transparent;
   color: var(--rw-text-3);
   font-size: 13px;
+  /* 🔴 行高定死 1.5，并让图标取同一个 1.5em —— 两处都从 font-size 派生，不写死像素。
+     原因：文字行盒（约 17px）比 el-icon（1em = 13px）高，收起时文字 `display:none`
+     ⇒ 按钮从 33px 缩到 29px；页脚是贴底的，按钮中心因此漂 2px。
+     把两种内容都撑到 1.5em 后，按钮高度不再随文字显隐变化。 */
+  line-height: 1.5;
   cursor: pointer;
   white-space: nowrap;
+}
+
+.app__collapse .el-icon {
+  height: 1.5em;
 }
 
 .app__collapse:hover {
