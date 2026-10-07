@@ -102,15 +102,40 @@ const profiles = ref<ProfileDraft[]>([]);
 const editingId = ref('');
 const savingSettings = ref(false);
 const switching = ref(false);
+/** 「刷新」进行中：重读后端设置 + 状态，**不**真打大模型请求（那是「验证」的事） */
+const refreshing = ref(false);
 const newKey = ref('');
 const modelOptions = ref<string[]>([]);
 const loadingModels = ref(false);
 /** 上次与服务端对齐的内容指纹 —— 「有未保存改动」的判据 */
 const savedSig = ref('');
 
-function toDraft(p: LlmProfile): ProfileDraft {
-  // keys 兜底：后端若比前端旧（字段缺失），宁可显示空列表也不能整块崩掉
-  const keys = Array.isArray(p.keys) ? p.keys : [];
+/**
+ * 某套配置在 UI 上要显示的 key 状态。
+ *
+ * 🔴 `profiles[].keys` 为空时，**激活那套**用服务端的扁平回显兜一层 —— 有实测来源：
+ * 后端 `_norm_profiles` 的 `.env` 懒迁移曾经漏读单数名 `RETRO_LLM_API_KEY`，
+ * 于是 `profiles[0].keys` 是空数组、而顶层扁平 `keys` 有值（运行时的 key_pool 另有回落）。
+ * 结果就是面板显示「API Keys（0）」+ 保存被「至少一个 API Key 必填」拦住，
+ * 但模型其实跑得动 —— 三种说法互相矛盾，最难排查。
+ * 只补**激活**那套、且仅在它自己为空时补：扁平回显按定义就是激活配置的运行时 key 池。
+ */
+function profileKeyStates(s: LlmSettings, p: LlmProfile): LlmKeyState[] {
+  const own = Array.isArray(p.keys) ? p.keys : [];
+  if (own.length || !p.active) return own;
+  // 后端没把这把 key 算进配置、却给了扁平回显 ⇒ 它只可能来自 `.env` 的回落。标出来，
+  // UI 才知道这把「删不掉」（老后端不返回 `source`，这里替它补上）。
+  return (Array.isArray(s.keys) ? s.keys : []).map((k) => ({ ...k, source: k.source ?? 'env' }));
+}
+
+/** 这把 key 的来源（缺省按 `profile` 处理：老后端不返回该字段） */
+function keySourceOf(masked: string): 'profile' | 'env' {
+  return keyStateOf(masked)?.source === 'env' ? 'env' : 'profile';
+}
+
+function toDraft(p: LlmProfile, keyStates?: LlmKeyState[]): ProfileDraft {
+  // keys 兜底：后端若比前端旧（字段缺失 / 名字没对上），宁可显示空列表也不能整块崩掉
+  const keys = Array.isArray(keyStates) ? keyStates : Array.isArray(p.keys) ? p.keys : [];
   return {
     id: p.id,
     name: p.name,
@@ -173,29 +198,64 @@ function applySettings(s: LlmSettings): void {
   //    返回扁平字段的老代码（`ok:true` 但没有 profiles）。直接 `.map` 会让异常冒到
   //    渲染层，整块面板连带页面一起白屏 —— 这是实测踩到的。
   const list = Array.isArray(s.profiles) ? s.profiles : [];
-  profiles.value = list.map(toDraft);
+  profiles.value = list.map((p) => toDraft(p, profileKeyStates(s, p)));
   editingId.value = s.active_profile || profiles.value[0]?.id || '';
   savedSig.value = signature(profiles.value);
 }
 
 /** 只把 key 状态贴回去（「重试失效 Key」用）—— 不碰用户正在编辑的内容 */
 function applyKeyStates(s: LlmSettings): void {
-  const map = new Map((Array.isArray(s.profiles) ? s.profiles : []).map((p) => [p.id, p.keys]));
+  const map = new Map((Array.isArray(s.profiles) ? s.profiles : []).map((p) => [p.id, p]));
   for (const p of profiles.value) {
-    const st = map.get(p.id);
-    if (st) p.keyStates = st;
+    const prof = map.get(p.id);
+    // 🔴 走同一个 `profileKeyStates`：不然这里会用「空的 profiles[].keys」把
+    //    上面兜下来的那一条状态又擦掉（面板变成有 key 行、没状态标签）
+    if (prof) p.keyStates = profileKeyStates(s, prof);
   }
 }
 
-async function loadSettings(): Promise<void> {
+/** 读后端的端点配置；返回是否**真的读到了**（`false` = 请求失败或后端版本不对） */
+async function loadSettings(): Promise<boolean> {
   const s = await llmApi.settings();
-  if (!s.ok) return;
+  if (!s.ok) return false;
   if (!Array.isArray(s.profiles)) {
     // 后端没重启仍在跑旧版本：空面板会让人以为「配置丢了」，必须说清楚
     ElMessage.warning('后端还在跑旧版本（不支持端点配置），请重启后端服务后再试');
-    return;
+    return false;
   }
   applySettings(s);
+  return true;
+}
+
+/**
+ * 「刷新」：重新读一遍后端（端点配置 + key 状态 + 顶部的模型状态标签）。
+ *
+ * 🔴 与「验证」的分工：刷新**只读配置**，不真打大模型请求（网关有限流）；
+ *    要确认 key / 模型真能用，仍然走「验证」。
+ * 🔴 有未保存改动时必须先问：刷新会整块覆盖编辑区，默默丢掉用户刚粘的 key 是最坏的结果。
+ */
+async function reloadSettings(): Promise<void> {
+  if (dirty.value) {
+    try {
+      await ElMessageBox.confirm('当前有未保存的改动，刷新会用后端的内容覆盖它们。', '刷新端点配置', {
+        type: 'warning',
+        confirmButtonText: '丢弃改动并刷新',
+        cancelButtonText: '取消'
+      });
+    } catch {
+      return; // 用户取消
+    }
+  }
+  refreshing.value = true;
+  try {
+    const ok = await loadSettings();
+    await store.loadLlmStatus(false); // 顶部标签也一起对一遍
+    if (ok) ElMessage.success('已从后端重新读取端点配置');
+  } catch (e) {
+    ElMessage.error((e as Error).message || '刷新失败');
+  } finally {
+    refreshing.value = false;
+  }
 }
 
 /**
@@ -607,6 +667,9 @@ onMounted(() => {
                   <span class="params__hint">?</span>
                 </el-tooltip>
               </label>
+              <!-- 「刷新」= 只重读配置与 key 状态（不真打大模型，那要留给「验证」）：
+                   在别处改过 .env / 后端重启过 / 另一个标签页存过配置，点这里就能对上 -->
+              <el-button size="small" text :loading="refreshing" @click="reloadSettings">刷新</el-button>
             </div>
             <div class="params__api">
               <!-- 🔴 用 :model-value 而不是 v-model：选中要等后端真的切完才算数。
@@ -627,6 +690,10 @@ onMounted(() => {
                     </span>
                   </el-option>
                 </el-select>
+              </div>
+              <!-- 🔴 三个操作按钮**另起一行**：跟下拉挤同一行时，240px 侧栏里下拉只剩几十像素，
+                   配置名被截成「T…」（实测）。下拉独占一行才有宽度把名字显示全。 -->
+              <div class="params__prof-ops">
                 <el-button size="small" @click="addProfile">新建</el-button>
                 <el-button size="small" :disabled="!cur" @click="dupProfile">复制</el-button>
                 <el-button size="small" type="danger" plain :disabled="!cur" @click="delProfile">删除</el-button>
@@ -719,7 +786,12 @@ onMounted(() => {
                 <div class="params__api-field">
                   <span class="params__api-label">API Keys（{{ cur.keys.length }}）</span>
                   <div v-if="cur.keys.length" class="params__keys">
-                    <div v-for="(k, i) in cur.keys" :key="k + i" class="params__key">
+                    <div
+                      v-for="(k, i) in cur.keys"
+                      :key="k + i"
+                      class="params__key"
+                      :class="{ 'is-env': keySourceOf(k) === 'env' }"
+                    >
                       <span class="params__key-no">{{ i + 1 }}</span>
                       <code class="params__key-mask" :title="k">{{ k }}</code>
                       <el-tag v-if="!k.includes('*')" size="small" effect="plain" type="info">未保存</el-tag>
@@ -736,7 +808,20 @@ onMounted(() => {
                       <el-tag v-else size="small" effect="light" :type="keyTagType(keyStateOf(k))">
                         {{ keyTagText(keyStateOf(k)) }}
                       </el-tag>
-                      <el-button size="small" text type="danger" @click="removeKey(i)">删除</el-button>
+                      <!-- 🔴 `.env` 那把**不给删除按钮**：它是后端的回落默认值，删了下次刷新还在
+                           —— 留着按钮就是「看着能删、其实删不掉」。改为标出来源 + 说明怎么处理。
+                           🔴 标记只写 `.env` 两个字符：写成「来自 .env」会把这行的脱敏串挤成
+                           `sk-L7w15****WD…`，而**尾部 4 位正是区分两把 key 的唯一信息** ——
+                           标签的详细说明放 tooltip，别跟 key 抢宽度。 -->
+                      <el-tooltip
+                        v-if="keySourceOf(k) === 'env'"
+                        content="这把 Key 来自后端 web/.env 的回落配置：运行时会用它，但不能在这里删除（改 .env 才生效）。想把它固定进本配置，点「保存设置」即可；想换成别的，在下面添加新 Key 并保存。"
+                        placement="top"
+                        :show-after="150"
+                      >
+                        <el-tag size="small" effect="plain" type="warning">.env</el-tag>
+                      </el-tooltip>
+                      <el-button v-else size="small" text type="danger" @click="removeKey(i)">删除</el-button>
                     </div>
                   </div>
                   <div class="params__key-add">
@@ -1132,6 +1217,12 @@ onMounted(() => {
   border-color: var(--rw-border-strong);
 }
 
+/* 「来自 .env」那把：虚线边 + 淡底，跟本配置里存的 key 一眼分得开 */
+.params__key.is-env {
+  border-style: dashed;
+  background: var(--rw-surface-2);
+}
+
 .params__key-no {
   flex-shrink: 0;
   width: 14px;
@@ -1165,10 +1256,11 @@ onMounted(() => {
 }
 
 /* ---------- 端点配置（切换器 + 当前配置的字段） ---------- */
+/* 下拉独占一行：侧栏只有 ~240px，跟三个按钮挤同一行时宽度被抢光，
+   配置名会被截成「T…」（实测）—— 名字都看不全，多套配置就没法选。 */
 .params__prof-bar {
   display: flex;
   align-items: center;
-  gap: 6px;
 }
 
 .params__prof-select {
@@ -1176,7 +1268,14 @@ onMounted(() => {
   min-width: 0;
 }
 
-.params__prof-bar :deep(.el-button) {
+/* 新建 / 复制 / 删除：另起一行，左边缘与下拉对齐 */
+.params__prof-ops {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.params__prof-ops :deep(.el-button) {
   flex: 0 0 auto;
 }
 

@@ -472,6 +472,14 @@ export interface LlmKeyState {
   state: 'active' | 'cooldown' | 'bad' | 'idle';
   /** 失效/冷却原因（错误摘要） */
   reason?: string;
+  /**
+   * 这把 key 从哪来：
+   * - `profile` = 存在这套配置里（可删）；
+   * - `env` = 后端 `.env` 的**回落默认值**（运行时会用，但面板删不掉它 ——
+   *   不标出来就会出现「删了还在」的假按钮）。
+   * 老后端不返回该字段 ⇒ 按 `profile` 处理。
+   */
+  source?: 'profile' | 'env';
 }
 
 /**
