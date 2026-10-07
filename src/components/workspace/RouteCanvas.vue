@@ -28,17 +28,21 @@
  *    拖动平移、滚轮缩放、原生滚动条三者都落在这一套上 —— 谁也不用维护自己的偏移量，
  *    因此不会出现"拖过之后再缩放，图就跳走"（各存一份 translate 的写法必踩）。
  */
-import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch, h } from 'vue';
+import type { FunctionalComponent } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
 import type { MolNode } from '@/types/retro';
-import { openSupplier } from '@/utils/suppliers';
+import { SUPPLIERS, querySupplier, resolveSupplierQuery } from '@/utils/suppliers';
+import { requestCas } from '@/utils/pubchem';
 import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
 
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 
 /* ---------- 布局常量（一处定义，卡片尺寸/连线/分组框全都从这里推） ---------- */
 const CARD_W = 168;
@@ -642,8 +646,30 @@ const ICON_TITLE: Record<ActionKey, string> = {
   copy: '复制 SMILES',
   preview: '放大预览结构',
   remove: '删除这一支',
-  query: '查询价格（Molport，自动复制 SMILES）'
+  query: '查价：选一家供应商（默认按 CAS 号检索）'
 };
+
+/**
+ * 动作图标 = 一个 svg + 若干 path。
+ *
+ * 🔴 抽成组件是因为「询价」的渲染形态和别的动作**不一样**（它要被 `el-dropdown`
+ *    包住才能当触发器），而两种分支都得画同一份图标 —— 直接复制那段 `<svg>`
+ *    就等于把 8 个动作的 path 数据抄两遍，改一处必漏一处。
+ */
+const ActIcon: FunctionalComponent<{ d: string[] }> = (props) =>
+  h(
+    'svg',
+    { viewBox: '0 0 24 24', fill: 'none' },
+    props.d.map((path) =>
+      h('path', {
+        d: path,
+        stroke: 'currentColor',
+        'stroke-width': 1.7,
+        'stroke-linecap': 'round',
+        'stroke-linejoin': 'round'
+      })
+    )
+  );
 
 function actionsFor(card: RCard): ActionKey[] {
   const node = card.node;
@@ -676,10 +702,7 @@ function onAction(key: ActionKey, card: RCard): void {
       store.markPurchased(card.id, false);
       break;
     case 'copy':
-      void navigator.clipboard
-        .writeText(card.smiles)
-        .then(() => ElMessage.success('已复制 SMILES'))
-        .catch(() => ElMessage.warning('浏览器拒绝了剪贴板访问'));
+      void copyText(card.smiles, { okMsg: '已复制 SMILES' });
       break;
     case 'preview':
       emit('preview', card.smiles);
@@ -687,10 +710,41 @@ function onAction(key: ActionKey, card: RCard): void {
     case 'remove':
       store.removeBranch(card.id);
       break;
-    case 'query':
-      openSupplier('molport', card.smiles);
-      break;
+    // 🔴 'query' 不在这里：它是唯一一个**要下拉选人**的动作，模板里由
+    //    `el-dropdown` 包住按钮渲染（见 `onQuerySupplier`）。
   }
+}
+
+/* ---------- 询价：选供应商 + 这次的检索标识（CAS 优先） ---------- */
+
+/**
+ * 查价 —— 用户在下拉里点了某一家。
+ *
+ * 🔴 卡片上的选择**不写回默认值**：那是"这次换一家看看"，不是"以后都换"。
+ *    改默认去右面板的「采购询价」组（或记住这次的选择就等于把临时操作变永久，
+ *    下次想换回来还得再改一遍）。
+ */
+function onQuerySupplier(supplierId: string, card: RCard): void {
+  querySupplier(supplierId, card.smiles, settings.supplierPreferCas);
+}
+
+/** 拉开询价菜单时才去查这个分子的 CAS（懒查；理由同 StepRow 的复制菜单） */
+function onQueryMenu(visible: boolean, smiles: string): void {
+  if (visible && smiles) requestCas(smiles);
+}
+
+/**
+ * 菜单里这家**这次**会用什么标识 —— 与真正点下去走的是**同一条解析**
+ * （`resolveSupplierQuery`），不会出现"菜单写着 CAS、点下去却用 SMILES"。
+ * 读的是 PubChem 的响应式缓存，CAS 到达后这里自动重算。
+ */
+function queryIdentLabel(supplierId: string, smiles: string): string {
+  return resolveSupplierQuery(supplierId, smiles, settings.supplierPreferCas)?.label ?? '';
+}
+
+/** 这家是不是当前的默认供应商（菜单里标出来，省得每次都要问"我设的哪家"） */
+function isDefaultSupplier(supplierId: string): boolean {
+  return settings.supplierId === supplierId;
 }
 
 /** 卡片上那行小字：分子式 + 重原子（Reaxys 把详情放侧栏，我们放一行） */
@@ -877,28 +931,56 @@ const dirHint = computed(() =>
 
               <!-- 卡片底部动作图标行 -->
               <div class="rcanvas__acts">
-                <button
-                  v-for="a in actionsFor(c)"
-                  :key="a"
-                  type="button"
-                  class="rcanvas__act"
-                  :class="{ 'is-danger': a === 'remove' }"
-                  :title="ICON_TITLE[a]"
-                  :aria-label="ICON_TITLE[a]"
-                  @click.stop="onAction(a, c)"
-                >
-                  <svg viewBox="0 0 24 24" fill="none">
-                    <path
-                      v-for="(d, i) in ICONS[a]"
-                      :key="i"
-                      :d="d"
-                      stroke="currentColor"
-                      stroke-width="1.7"
-                      stroke-linecap="round"
-                      stroke-linejoin="round"
-                    />
-                  </svg>
-                </button>
+                <template v-for="a in actionsFor(c)" :key="a">
+                  <!-- 🔴 「询价」是唯一需要**先选人**的动作 ⇒ 单独走下拉。
+                       `el-dropdown` 必须在按钮**外面**：整个图标才是热区
+                       （放里面只有图标中心那点区域管用，用户以为按钮坏了）。
+                       菜单顺带给出「这家这次用 CAS 还是 SMILES」——
+                       否则点完跳过去搜不到，用户只会以为是这家没货。 -->
+                  <el-dropdown
+                    v-if="a === 'query'"
+                    trigger="click"
+                    size="small"
+                    placement="top-start"
+                    @command="(sid: string) => onQuerySupplier(sid, c)"
+                    @visible-change="(v: boolean) => onQueryMenu(v, c.smiles)"
+                  >
+                    <button
+                      type="button"
+                      class="rcanvas__act"
+                      :title="ICON_TITLE.query"
+                      :aria-label="ICON_TITLE.query"
+                    >
+                      <ActIcon :d="ICONS.query" />
+                    </button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-for="s in SUPPLIERS" :key="s.id" :command="s.id">
+                          <span class="rcanvas__sup">
+                            <span class="rcanvas__sup-name">{{ s.name }}</span>
+                            <span v-if="isDefaultSupplier(s.id)" class="rcanvas__sup-def">默认</span>
+                            <span class="rcanvas__sup-ident">{{ queryIdentLabel(s.id, c.smiles) }}</span>
+                          </span>
+                        </el-dropdown-item>
+                        <div class="rcanvas__sup-foot">
+                          点哪家查哪家（{{ SUPPLIERS.length }} 家）；标识已复制到剪贴板，到站粘贴即可
+                        </div>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+
+                  <button
+                    v-else
+                    type="button"
+                    class="rcanvas__act"
+                    :class="{ 'is-danger': a === 'remove' }"
+                    :title="ICON_TITLE[a]"
+                    :aria-label="ICON_TITLE[a]"
+                    @click.stop="onAction(a, c)"
+                  >
+                    <ActIcon :d="ICONS[a]" />
+                  </button>
+                </template>
               </div>
             </article>
           </div>
@@ -1295,6 +1377,54 @@ const dirHint = computed(() =>
 
 .rcanvas__card:hover .rcanvas__acts {
   opacity: 1;
+}
+
+/* 🔴 Element Plus 的 `el-dropdown` 会渲染出一层 `<div class="el-dropdown">` 包住触发器。
+   这一行把它变成 inline-flex —— 否则它是个块级 flex item，按钮在自己那格里
+   顶部对齐，跟旁边几个图标不在同一条水平线上（StepRow 的标签行踩过同一个坑）。
+   顺带让「询价」图标的 svg 尺寸不受这层包装影响。 */
+.rcanvas__acts :deep(.el-dropdown) {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 询价菜单项：左名字（+「默认」）右标识，两列对齐 ⇒ 各家名字长短不一也不跳 */
+.rcanvas__sup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 190px;
+}
+
+.rcanvas__sup-name {
+  color: var(--rw-text);
+}
+
+/* 「默认」角标：小一号、淡底色 —— 是说明不是按钮，不抢主流的前景 */
+.rcanvas__sup-def {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--rw-border-strong);
+  border-radius: 999px;
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-size: 10px;
+  line-height: 15px;
+}
+
+/* 这家这次用的标识：贴右对齐、等宽字体（CAS 号的数字要对齐才扫得快） */
+.rcanvas__sup-ident {
+  margin-left: auto;
+  font-family: var(--rw-font-mono);
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+.rcanvas__sup-foot {
+  padding: 4px 12px 6px;
+  color: var(--rw-text-3);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .rcanvas__act {

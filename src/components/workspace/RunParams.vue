@@ -19,6 +19,8 @@ import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { retroApi, llmApi } from '@/api/retro';
 import { useWorkspaceStore, ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
+import { SUPPLIERS, supplierById, type Supplier } from '@/utils/suppliers';
 import { countHeavyAtoms } from '@/utils/smiles';
 import { isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
 import type { LlmKeyState, LlmProfile, LlmSettings } from '@/types/retro';
@@ -27,6 +29,7 @@ import type { LlmKeyState, LlmProfile, LlmSettings } from '@/types/retro';
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
 
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 const materialInput = ref('');
 const addingMaterial = ref(false);
 const probing = ref(false);
@@ -535,6 +538,17 @@ function removeMaterial(smiles: string): void {
   store.params.startingMaterials = store.params.startingMaterials.filter((s) => s !== smiles);
 }
 
+// ---------- 采购询价（查价用哪家 + 用什么标识） ----------
+// 这里存的是**默认值**：路线图卡片、逆合成树标签行、候选面板三处询价入口都读它，
+// 但每一处都能当场改选别家（那种改选是"这次换一家看看"，不回写默认 —— 见 settings store）。
+
+const supplierName = (list: Supplier[]): string => list.map((s) => s.name).join(' / ');
+/** 按 CAS / 货号建索引的平台：URL 带 CAS 能直接搜到 */
+const casSuppliers = computed(() => supplierName(SUPPLIERS.filter((s) => s.prefers === 'cas')));
+/** 结构式 / 列表检索的平台：认 SMILES，CAS 只是普通关键词 */
+const smilesSuppliers = computed(() => supplierName(SUPPLIERS.filter((s) => s.prefers === 'smiles')));
+const defaultSupplierName = computed(() => supplierById(settings.supplierId)?.name ?? '—');
+
 onMounted(() => {
   if (!store.models.length) void store.loadModels();
   void loadSettings(); // API 设置草稿（后端 llm_settings.json 的脱敏回显）
@@ -999,6 +1013,65 @@ onMounted(() => {
             </button>
           </div>
           <p class="params__modules-note">「总述 + 反应类型」始终保留，不受勾选影响。</p>
+        </div>
+      </details>
+
+      <!-- 分组六：采购询价（查价默认用哪家 + 拿什么标识去查） -->
+      <details class="params__group">
+        <summary class="params__group-head">
+          <span class="params__group-title">
+            <svg class="params__group-ico" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M1.5 2.5h2l1.6 7.3a1.4 1.4 0 0 0 1.4 1.1h5.2a1.4 1.4 0 0 0 1.4-1.1L14.5 4.5H4" />
+              <circle cx="6.6" cy="13.3" r="1" />
+              <circle cx="11.9" cy="13.3" r="1" />
+            </svg>
+            采购询价
+          </span>
+          <span class="params__group-meta">{{ defaultSupplierName }}</span>
+        </summary>
+        <div class="params__group-body">
+          <div class="params__row">
+            <label>
+              默认供应商
+              <el-tooltip
+                content="查价时默认跳到哪一家。路线图卡片 / 逆合成树 / 候选面板的询价入口都按它预选，但每处都能当场改选别家（那不会改掉这个默认）"
+                placement="top"
+              >
+                <span class="params__hint">?</span>
+              </el-tooltip>
+            </label>
+            <el-select v-model="settings.supplierId" size="small" class="params__sup-select">
+              <el-option v-for="s in SUPPLIERS" :key="s.id" :label="s.name" :value="s.id">
+                <span class="params__sup-opt">
+                  <span class="params__sup-opt-name">{{ s.name }}</span>
+                  <span class="params__sup-opt-tag">{{ s.tag }}</span>
+                </span>
+              </el-option>
+            </el-select>
+          </div>
+
+          <div class="params__row">
+            <label>
+              优先用 CAS 号查询
+              <el-tooltip
+                content="试剂商的目录按 CAS 号 / 货号建索引，用 CAS 能直接搜到；SMILES 在它们那儿只是一串没人认识的字符。关掉后改用 SMILES（结构式检索平台本来就不受这个开关影响）"
+                placement="top"
+              >
+                <span class="params__hint">?</span>
+              </el-tooltip>
+            </label>
+            <el-switch v-model="settings.supplierPreferCas" size="small" />
+          </div>
+
+          <p class="params__modules-note">
+            用什么标识去查，取决于平台<b>怎么建索引</b>：
+            <b>{{ casSuppliers }}</b> 按 CAS / 货号检索 —— 把 CAS 拼进查询 URL 能直接出结果，
+            换成 SMILES 必然搜不到；<b>{{ smilesSuppliers }}</b> 走结构式 / SMILES 列表检索，
+            CAS 在它们那儿只是普通关键词，所以这几家始终用 SMILES。<br />
+            无论用哪种，标识都会同时复制到剪贴板 —— 到站粘进搜索框即可（对方站点参数名变了也不怕）。<br />
+            CAS 号来自 PubChem，缓存在本地：只在<b>第一次展开询价菜单</b>时查一次，
+            查不到（没收录 / 内网）就原样回落 SMILES，不会堵住查价。
+          </p>
         </div>
       </details>
     </div>
@@ -1501,5 +1574,34 @@ onMounted(() => {
 .params__note strong {
   color: var(--rw-text-2);
   font-weight: 600;
+}
+
+/* ---------- 采购询价 ---------- */
+/* 下拉宽度固定 150px：供应商名字最长「Sigma-Aldrich」，再窄会被截成「Sigma-Al…」 */
+.params__sup-select {
+  width: 150px;
+  flex: 0 0 auto;
+}
+
+/* 下拉项：左名字、右定位标签（「全球比价」「国产试剂」…）—— 名字长短不一也不跳 */
+.params__sup-opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.params__sup-opt-name {
+  color: var(--rw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.params__sup-opt-tag {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--rw-text-3);
 }
 </style>

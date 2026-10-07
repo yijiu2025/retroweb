@@ -21,13 +21,16 @@
 import { computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
 import type { AnalysisRun } from '@/types/retro';
 import { countHeavyAtoms } from '@/utils/smiles';
-import { SUPPLIERS, openSupplier } from '@/utils/suppliers';
+import { SUPPLIERS, querySupplier, resolveSupplierQuery } from '@/utils/suppliers';
+import { requestCas } from '@/utils/pubchem';
 import MolView from '@/components/mol/MolView.vue';
 
 const props = defineProps<{ nodeId: string }>();
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 
 const node = computed(() => store.nodes[props.nodeId]);
 const adoptedId = computed(() => node.value?.chosenReactionId ?? null);
@@ -90,9 +93,29 @@ function smilesLabel(smi: string): string {
   return smi.length > 16 ? `${smi.slice(0, 16)}…` : smi;
 }
 
-/** 打开某供应商查价（新标签页） */
+/** 打开某供应商查价（新标签页）；用哪家由用户当场点的这一下决定，不改默认值 */
 function onQuery(smiles: string, supplierId: string): void {
-  openSupplier(supplierId, smiles);
+  querySupplier(supplierId, smiles, settings.supplierPreferCas);
+}
+
+/**
+ * 拉开询价菜单时才查这个前体的 CAS。
+ * 🔴 与 StepRow 的理由相同（菜单要显示「这次用 CAS 还是 SMILES」），
+ *    但这里更划算：候选面板一展开就是好几个前体，挂载即全查会把 PubChem 队列塞满，
+ *    而绝大多数候选根本没人去点它的 ¥。
+ */
+function onQueryMenu(visible: boolean, smiles: string): void {
+  if (visible && smiles) requestCas(smiles);
+}
+
+/** 菜单里这家这次会用哪个标识（与点下去走同一条解析） */
+function supplierIdent(supplierId: string, smiles: string): string {
+  return resolveSupplierQuery(supplierId, smiles, settings.supplierPreferCas)?.label ?? '';
+}
+
+/** 这家是不是当前默认供应商 */
+function isDefaultSupplier(supplierId: string): boolean {
+  return settings.supplierId === supplierId;
 }
 </script>
 
@@ -177,13 +200,19 @@ function onQuery(smiles: string, supplierId: string): void {
               <div class="rxn__mol-meta">
                 <code class="rw-mono" :title="smi">{{ smilesLabel(smi) }}</code>
                 <template v-if="precursorBuyable(smi)">
-                  <span class="rxn__buy">可购买</span>
+                  <!-- 🔴 `el-dropdown` 在 pill 外面 ⇒ 「可购买」整块都是查价热区。
+                       原来只有那颗 16px 的 ¥ 能点，点「可购买」三个字没反应
+                       （StepRow 的标签行踩过同一个坑）。¥ 收进 pill 内部，
+                       两者永远是「可购买 [¥]」一体，窄屏换行也不会被拆开。 -->
                   <el-dropdown
                     trigger="click"
                     size="small"
                     @command="(sid: string) => onQuery(smi, sid)"
+                    @visible-change="(v: boolean) => onQueryMenu(v, smi)"
                   >
-                    <span class="rxn__query" title="点击查价">¥</span>
+                    <span class="rxn__buy" title="点击选择供应商查价">
+                      可购买<i class="rxn__query" aria-hidden="true">¥</i>
+                    </span>
                     <template #dropdown>
                       <el-dropdown-menu>
                         <el-dropdown-item
@@ -192,9 +221,13 @@ function onQuery(smiles: string, supplierId: string): void {
                           :command="s.id"
                         >
                           <span class="rxn__supplier-name">{{ s.name }}</span>
+                          <span v-if="isDefaultSupplier(s.id)" class="rxn__supplier-def">默认</span>
                           <span class="rxn__supplier-tag">{{ s.tag }}</span>
+                          <span class="rxn__supplier-ident">{{ supplierIdent(s.id, smi) }}</span>
                         </el-dropdown-item>
-                        <div class="rxn__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+                        <div class="rxn__supplier-footnote">
+                          跳转后粘贴标识即可（已自动复制）；默认供应商在右侧「采购询价」里设
+                        </div>
                       </el-dropdown-menu>
                     </template>
                   </el-dropdown>
@@ -410,43 +443,74 @@ function onQuery(smiles: string, supplierId: string): void {
 
 .rxn__buy {
   flex: 0 0 auto;
-  padding: 0 5px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 4px 0 6px;
   border-radius: 999px;
   background: var(--rw-ok-l);
   color: var(--rw-ok);
   font-size: 10px;
   font-weight: 600;
+  line-height: 16px;
   white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
 }
 
-/* 询价入口：¥ 小圆钮，点击展开供应商列表 */
+.rxn__buy:hover {
+  background: var(--rw-ok);
+  color: #fff;
+}
+
+/* 询价入口：pill 里的 ¥ 小圆钮 —— 整块 pill 都是热区，它只是"能点"的视觉提示 */
 .rxn__query {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: var(--rw-brand);
   color: #fff;
-  font-size: 10px;
+  font-size: 9px;
+  font-style: normal;
   font-weight: 700;
   line-height: 1;
-  cursor: pointer;
-  user-select: none;
 }
 
-.rxn__query:hover {
-  background: var(--rw-brand-d);
+.rxn__buy:hover .rxn__query {
+  background: #fff;
+  color: var(--rw-ok);
 }
 
 .rxn__supplier-name {
   font-weight: 600;
 }
 
+/* 「默认」角标：小一号、淡底色 —— 是说明不是按钮 */
+.rxn__supplier-def {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--rw-border-strong);
+  border-radius: 999px;
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-size: 10px;
+  line-height: 15px;
+}
+
 .rxn__supplier-tag {
   margin-left: 8px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+/* 这家这次用的标识：等宽字体（CAS 号的数字要对齐才扫得快） */
+.rxn__supplier-ident {
+  margin-left: 10px;
+  font-family: var(--rw-font-mono);
   font-size: 11px;
   color: var(--rw-text-3);
 }

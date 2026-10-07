@@ -7,8 +7,9 @@
  */
 import { computed, ref, watch } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
 import type { MolNode } from '@/types/retro';
-import { SUPPLIERS, openSupplier } from '@/utils/suppliers';
+import { SUPPLIERS, querySupplier, resolveSupplierQuery } from '@/utils/suppliers';
 import { casState, requestCas } from '@/utils/pubchem';
 import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
@@ -19,6 +20,7 @@ const props = defineProps<{ nodeId: string }>();
 const emit = defineEmits<{ preview: [smiles: string] }>();
 
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 
 const node = computed<MolNode | undefined>(() => store.nodes[props.nodeId]);
 // 缩进要封顶：树深了以后无上限的 padding-left 会把整行挤出容器（横向滚动/裁切）
@@ -62,9 +64,25 @@ function openAnalysis(): void {
   store.mainTab = 'flow';
 }
 
+/**
+ * 查价（下拉里点了某一家）。
+ * 🔴 用哪家由**用户当场点的那一下**决定，不改默认值 —— 换一家看看是临时动作；
+ *    改默认去右面板「采购询价」组（见 stores/settings.ts 的 `supplierId`）。
+ */
 function onQuery(supplierId: string): void {
   const smi = node.value?.smiles;
-  if (smi) openSupplier(supplierId, smi);
+  if (smi) querySupplier(supplierId, smi, settings.supplierPreferCas);
+}
+
+/** 菜单里这家这次会用哪个标识（与点下去走同一条解析，不会各说各话） */
+function supplierIdent(supplierId: string): string {
+  const smi = node.value?.smiles ?? '';
+  return resolveSupplierQuery(supplierId, smi, settings.supplierPreferCas)?.label ?? '';
+}
+
+/** 这家是不是当前默认供应商 */
+function isDefaultSupplier(supplierId: string): boolean {
+  return settings.supplierId === supplierId;
 }
 
 // ---------- 复制标识（SMILES / CAS / 其他 id） ----------
@@ -95,7 +113,13 @@ watch(
   }
 );
 
-/** 打开/收起复制菜单 —— 打开时才补上 CAS 查询 */
+/**
+ * 打开/收起「需要标识的菜单」（复制标识 / 询价）—— 打开时才补上 CAS 查询。
+ *
+ * 🔴 询价菜单也走这里：菜单要显示「这家这次用 CAS 还是 SMILES」，
+ *    不先把这个分子的 CAS 查下来的话，`prefers:'cas'` 的那几家会一律显示成回落态
+ *    （用户刚打开菜单、CAS 其实马上就到，只是还没到）—— 那是**显示错**，不是"没查到"。
+ */
 function onCopyMenu(visible: boolean): void {
   if (!visible) return;
   casAsked.value = true;
@@ -176,15 +200,25 @@ async function copyId(key: string): Promise<void> {
                   用户以为整块能点，实测只有那 16px 的圆点管用。 -->
           <div class="step-row__tags">
             <span class="step-tag" :class="roleClass[node.role]">{{ roleText[node.role] }}</span>
-            <el-dropdown v-if="node.purchased" trigger="click" size="small" @command="onQuery">
+            <el-dropdown
+              v-if="node.purchased"
+              trigger="click"
+              size="small"
+              @command="onQuery"
+              @visible-change="onCopyMenu"
+            >
               <span class="step-tag is-buy" title="点击选择供应商查价">可购买<i class="step-row__query" aria-hidden="true">¥</i></span>
               <template #dropdown>
                 <el-dropdown-menu>
                   <el-dropdown-item v-for="s in SUPPLIERS" :key="s.id" :command="s.id">
                     <span class="step-row__supplier-name">{{ s.name }}</span>
+                    <span v-if="isDefaultSupplier(s.id)" class="step-row__supplier-def">默认</span>
                     <span class="step-row__supplier-tag">{{ s.tag }}</span>
+                    <span class="step-row__supplier-ident">{{ supplierIdent(s.id) }}</span>
                   </el-dropdown-item>
-                  <div class="step-row__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+                  <div class="step-row__supplier-footnote">
+                    跳转后粘贴标识即可（已自动复制）；默认供应商在右侧「采购询价」里设
+                  </div>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -517,8 +551,28 @@ async function copyId(key: string): Promise<void> {
   font-weight: 600;
 }
 
+/* 「默认」角标：小一号、淡底色 —— 是说明不是按钮 */
+.step-row__supplier-def {
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--rw-border-strong);
+  border-radius: 999px;
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-size: 10px;
+  line-height: 15px;
+}
+
 .step-row__supplier-tag {
   margin-left: 8px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+/* 这家这次用的标识：等宽字体（CAS 号的数字要对齐才扫得快） */
+.step-row__supplier-ident {
+  margin-left: 10px;
+  font-family: var(--rw-font-mono);
   font-size: 11px;
   color: var(--rw-text-3);
 }
