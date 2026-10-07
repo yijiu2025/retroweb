@@ -6,6 +6,21 @@
  *  - 后端响应 → 见 `types/retro.ts`（本仓库后端）与 `types/sso.ts`（oauth21 postMessage）
  */
 
+/**
+ * PubChem PUG REST 的响应（CAS 查询用，见 `utils/pubchem.ts`）。
+ *
+ * 只声明真正读到的字段：`InformationList.Information[0]` 的 `CID` 与
+ * `Synonym[]` —— **CAS 号就混在 synonyms 列表里**（不在单独字段上）。
+ */
+export interface PubChemSynonymsResponse {
+  InformationList?: {
+    Information?: Array<{
+      CID?: number;
+      Synonym?: string[];
+    }>;
+  };
+}
+
 /** smiles-drawer 的绘制器实例（我们只需要 draw 这一个方法） */
 export interface SmiDrawerLike {
   draw(

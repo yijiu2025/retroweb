@@ -6,18 +6,26 @@
  * 而不是一屏还没长开的逆合成树。树 / 路线网络 / 步骤详情都在页签里，随时可进。
  *
  * 三块内容：
- *   ① 目标分子：结构式 + 分子式 / 分子量 / 重原子 + SMILES（可复制、可跳转换目标）
+ *   ① 目标分子：结构式 + 分子式 / 分子量 / 重原子 / CAS + SMILES（可复制、可跳转换目标）
  *   ② 已确认路线：沿当前采纳分支回溯出的每一步（产物 ← 前体 + 概率）与整体指标
  *   ③ 起始物料：已经走到「可购买 / 低于阈值 / 已终止」的叶子
+ *
+ * 分子一律「**结构式 + SMILES + CAS**」三件套（`MolChip` / `CasTag`）：
+ * 只看 SMILES 认不出分子，只看结构式又没法复制、没法核对 CAS。
+ * CAS 来自 PubChem 公开库（按**结构**精确检索，见 `utils/pubchem.ts`），
+ * **查得到才显示** —— 不占位、不猜；没收录的分子在这里就是没有那一行。
  *
  * 数据全部来自 store 的派生量（route / routeProbability / startingMaterials / stats），
  * 不在这里重算 —— 统计口径只允许有一个来源。
  */
-import { computed } from 'vue';
+import { computed, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
 import MolView from '@/components/mol/MolView.vue';
+import MolChip from '@/components/mol/MolChip.vue';
+import CasTag from '@/components/mol/CasTag.vue';
+import { casState, requestCasMany } from '@/utils/pubchem';
 
 const store = useWorkspaceStore();
 const settings = useSettingsStore();
@@ -38,6 +46,26 @@ const totalPct = computed(() =>
 /** 同一目标下的多条路线网络（已确认的在前） */
 const networks = computed(() => store.routeNetworks);
 const startList = computed(() => store.startingMaterials);
+
+/**
+ * CAS 查询排队（PubChem 公开库，见 `utils/pubchem.ts`）。
+ *
+ * 只负责「目标分子 + 起始物料」这两处 —— 表格里的分子由 `MolChip` 自己触发。
+ * 入队是幂等的、且全局按 SMILES 去重 ⇒ 重复触发不会产生第二次请求。
+ *
+ * ⚠️ 目标分子那一格用 `v-if="hasCas(...)"` 控制显隐 ⇒ 它的 `CasTag` 有可能整个
+ *    不挂载，所以**必须**在这里主动排队，别指望子组件替它发起查询。
+ */
+watch(
+  () => [root.value?.smiles ?? '', ...startList.value.map((n) => n.smiles)],
+  (list) => requestCasMany(list.filter((s) => s !== '')),
+  { immediate: true }
+);
+
+/** 目标分子有没有查到 CAS（决定「CAS」那一格出不出） */
+function hasCas(smiles: string | undefined): boolean {
+  return !!smiles && !!casState(smiles);
+}
 
 /**
  * 「路线网络」列表为空时，补一句说明。
@@ -96,6 +124,9 @@ async function copySmiles(): Promise<void> {
           <span><i>分子式</i>{{ root.formula || '—' }}</span>
           <span><i>分子量</i>{{ root.mw ?? '—' }}</span>
           <span><i>重原子</i>{{ root.atoms ?? '—' }}</span>
+          <!-- CAS 来自 PubChem（按结构检索）：**查到才有这一格**，查不到就不占位。
+               点它去 PubChem 详情页核对 —— 这就是「到哪儿查 CAS」的入口。 -->
+          <span v-if="hasCas(root.smiles)"><i>CAS</i><CasTag :smiles="root.smiles" :prefix="false" /></span>
         </div>
         <div class="ov__smiles">
           <code class="rw-mono">{{ root.smiles }}</code>
@@ -163,13 +194,30 @@ async function copySmiles(): Promise<void> {
                   <span class="ov__step-no">{{ s.step }}</span>
                   <span v-if="s.branchNo > 1" class="ov__branch">支 {{ s.branchNo }}</span>
                 </td>
+                <!-- 产物 / 前体：**结构式 + SMILES + CAS** 三件套。
+                     用户报「显示结构式」指的就是这里 —— 原来只有一串 SMILES 文本，
+                     人眼认不出分子；加上缩略结构式后点它还能放大核对。
+                     CAS 由 MolChip 里的 CasTag 按结构去 PubChem 查，查到才显示。 -->
                 <td>
-                  <button type="button" class="ov__mol-link" :title="s.product" @click="emit('preview', s.product)">
-                    <code class="rw-mono">{{ s.product }}</code>
-                  </button>
+                  <MolChip
+                    :smiles="s.product"
+                    :formula="s.productFormula"
+                    :mol-w="74"
+                    :mol-h="52"
+                    :bond-px="17"
+                    @preview="emit('preview', $event)"
+                  />
                 </td>
                 <td class="ov__precursors">
-                  <code v-for="p in s.precursors" :key="p" class="rw-mono" :title="p">{{ p }}</code>
+                  <MolChip
+                    v-for="p in s.precursors"
+                    :key="p"
+                    :smiles="p"
+                    :mol-w="64"
+                    :mol-h="46"
+                    :bond-px="15"
+                    @preview="emit('preview', $event)"
+                  />
                 </td>
                 <td class="ov__p">{{ pctText(s.probability) }}</td>
               </tr>
@@ -198,22 +246,26 @@ async function copySmiles(): Promise<void> {
         </div>
         <div class="rw-card__body">
           <div v-if="startList.length" class="ov__start-list">
-            <button
-              v-for="n in startList"
-              :key="n.id"
-              type="button"
-              class="ov__start-item"
-              :title="n.smiles"
-              @click="emit('preview', n.smiles)"
-            >
-              <span class="ov__start-mol">
+            <!-- 🔴 卡片外壳是 `div` 而不是 `button`：里面要放 CAS 链接（`<a>`），
+                 而 `<a>` 嵌在 `<button>` 里是**无效 HTML**（浏览器会重排 DOM，
+                 点链接还会连带触发外层的「放大预览」）。
+                 改成「div 外壳 + 内部结构式按钮」后，可点热区就是缩略图本身 ——
+                 与表格里的 `MolChip` 手势一致（都是点结构式放大）。 -->
+            <div v-for="n in startList" :key="n.id" class="ov__start-item">
+              <button
+                type="button"
+                class="ov__start-mol"
+                :title="`${n.smiles}\n点击放大查看结构式`"
+                @click="emit('preview', n.smiles)"
+              >
                 <MolView :smiles="n.smiles" fit :bond-px="18" :min-px="40" :max-px="80" />
-              </span>
+              </button>
               <span class="ov__start-info">
-                <code class="rw-mono">{{ n.smiles }}</code>
+                <code class="rw-mono" :title="n.smiles">{{ n.smiles }}</code>
                 <i>{{ n.formula || '—' }}</i>
+                <CasTag :smiles="n.smiles" />
               </span>
-            </button>
+            </div>
           </div>
           <p v-else class="ov__note">
             还没有走到起始物料。继续在逆合成树里往下拆，或把某个中间体标成「已购买」。
@@ -466,35 +518,13 @@ async function copySmiles(): Promise<void> {
   color: var(--rw-text-3);
 }
 
-/* 产物 / 前体的 SMILES 都可点开看结构 */
-.ov__mol-link {
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--rw-text);
-  text-align: left;
-  cursor: zoom-in;
-}
-
-.ov__mol-link code {
-  font-size: 11.5px;
-  word-break: break-all;
-}
-
-.ov__mol-link:hover code {
-  color: var(--rw-brand);
-}
-
+/* 前体可能有多个（多组分反应一步拆出好几支）⇒ 横向排开、放不下就换行。
+   🔴 用 `wrap` 而不是原来的 `column`：每个前体现在是一整张
+      「结构式 + SMILES + CAS」小卡，竖排会把行高撑到没法看。 */
 .ov__precursors {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.ov__precursors code {
-  font-size: 11px;
-  color: var(--rw-text-2);
-  word-break: break-all;
+  flex-wrap: wrap;
+  gap: 8px 14px;
 }
 
 .ov__p {
@@ -528,6 +558,7 @@ async function copySmiles(): Promise<void> {
   gap: 8px;
 }
 
+/* 卡片外壳**不可点**了：可点的只有里面那张缩略图（见模板注释） */
 .ov__start-item {
   display: flex;
   align-items: center;
@@ -536,15 +567,11 @@ async function copySmiles(): Promise<void> {
   border: 1px solid var(--rw-border);
   border-radius: var(--rw-radius-sm);
   background: var(--rw-surface-2);
-  cursor: zoom-in;
   text-align: left;
-  transition: border-color 0.15s;
 }
 
-.ov__start-item:hover {
-  border-color: var(--rw-brand);
-}
-
+/* 缩略图本身是按钮（点击放大）⇒ hover 反馈落在它身上，
+   别让整张卡看起来可点（卡片里还挂着 CAS 外链） */
 .ov__start-mol {
   display: flex;
   align-items: center;
@@ -552,9 +579,17 @@ async function copySmiles(): Promise<void> {
   width: 58px;
   height: 46px;
   flex: 0 0 58px;
+  padding: 0;
+  border: 1px solid transparent;
   border-radius: 6px;
   background: var(--rw-surface);
   overflow: hidden;
+  cursor: zoom-in;
+  transition: border-color 0.15s;
+}
+
+.ov__start-mol:hover {
+  border-color: var(--rw-brand);
 }
 
 .ov__start-info {
