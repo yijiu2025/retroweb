@@ -21,17 +21,39 @@
  *    本来就**整张卡就是一个 button**，只有这一处要精确命中那个小按钮 —— 手感不能两样。
  *    行内的 确认 / 改名 / 删除 必须被挡住（`.schemes__actions` 上挂 `@click.stop`），
  *    否则点「改名」会顺手把路线也切了。
+ *
+ * 🔴 **整条栏可以收起**（点标题栏任意处）：它夹在页签与画布之间，收起来把高度让给画布。
+ *    收起态只剩标题一行，仍能看到「已确认 n / 共 m 条」和「存为新方案」，不是把功能藏掉。
+ *    开合状态落盘（`settings.schemesCollapsed`）。
  */
 import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useWorkspaceStore, type SchemeStat } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
 import { promptSaveScheme } from '@/utils/scheme-save';
 
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 
 const stats = computed(() => store.schemeStats ?? []);
 /** 已确认的条数（标题里直接写出来，省得用户自己数） */
 const confirmedCount = computed(() => store.confirmedNetworkCount);
+
+/**
+ * 收起 / 展开这条栏目（落盘，刷新后保持）。
+ *
+ * 🔴 为什么要有它：这块栏夹在页签与画布之间，它占的每一像素都从画布扣。
+ *    一屏放三四个方案时，画布被挤到只剩一半 —— 而用户此刻要看的往往是画布，
+ *    方案列表只是"备选清单"，随时能再拉开。
+ *
+ * 状态落在 `settings`（与侧栏 / 右面板同一套语义），组件卸载重建也不丢。
+ */
+const collapsed = computed({
+  get: () => settings.schemesCollapsed,
+  set: (v: boolean) => {
+    settings.schemesCollapsed = v;
+  }
+});
 
 function pct(p: number): string {
   if (!Number.isFinite(p)) return '—';
@@ -129,23 +151,51 @@ async function onRemove(id: string, name: string): Promise<void> {
     </div>
   </section>
 
-  <section v-else class="rw-card schemes">
-    <div class="rw-card__head">
+  <section v-else class="rw-card schemes" :class="{ 'is-collapsed': collapsed }">
+    <!-- 标题栏 = 折叠开关，**整块热区**：用户要的是"点路线网络这一块就收起来，
+         把下面的显示面积让给画布"，而不是去够右边某个小箭头
+         （与本仓其它列表「整行 / 整卡可点」的手感一致）。
+
+         🔴 这里用受控 `<div>` 而不是原生 `<details>`（参数分组那边用的是 details）：
+            ① head 里挂着「存为新方案」按钮，而 `<summary>` 的默认行为会让点按钮
+               顺带开合（RunParams 那边专门为此挂过 `@click.stop` —— 同一个坑）；
+            ② 开合状态要**落盘**，本来就得受控，details 拿不到这层。
+            键盘可达性自己补：`role="button"` + `tabindex="0"` + Enter / Space。
+
+         🔴 箭头 `schemes__chev` 两种状态**都渲染**，只改 `transform`：
+            标题文字与右侧按钮的位置在开合之间必须一个像素都不动
+            （守门 verify-schemes-collapse.cjs 量 head 与按钮的中心坐标）。 -->
+    <div
+      class="rw-card__head schemes__head"
+      role="button"
+      tabindex="0"
+      :aria-expanded="collapsed ? 'false' : 'true'"
+      :title="collapsed ? '展开路线网络列表' : '收起路线网络列表（把高度让给下方画布）'"
+      @click="collapsed = !collapsed"
+      @keydown.enter.prevent="collapsed = !collapsed"
+      @keydown.space.prevent="collapsed = !collapsed"
+    >
       <div class="rw-card__title">
+        <svg class="schemes__chev" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M3 6l5 5 5-5" />
+        </svg>
         <svg class="schemes__ico" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2.5 4h11M2.5 8h11M2.5 12h7" />
         </svg>
         路线网络
         <span class="schemes__sub">已确认 {{ confirmedCount }} / 共 {{ stats.length }} 条，可切换对比</span>
       </div>
-      <div class="schemes__ops">
+      <!-- 操作区自己把事件停住，否则点「存为新方案」会顺手把整条栏收起 -->
+      <div class="schemes__ops" @click.stop>
         <el-button size="small" type="primary" plain :disabled="!store.rootId" @click="onSave">
           存为新方案
         </el-button>
       </div>
     </div>
 
-    <div class="rw-card__body schemes__body">
+    <!-- 收起态用 `v-show`（保留 DOM）：方案列表的滚动位置、行内下拉状态都不必重建。
+         收起后本元素 `display: none` ⇒ 不占高度、也点不到（判据见守门脚本）。 -->
+    <div v-show="!collapsed" class="rw-card__body schemes__body">
       <ul class="schemes__list">
         <li
           v-for="s in stats"
@@ -246,6 +296,52 @@ async function onRemove(id: string, name: string): Promise<void> {
   stroke-linecap: round;
   stroke-linejoin: round;
   opacity: 0.9;
+}
+
+/* ---------- 折叠头（整块热区） ---------- */
+.schemes__head {
+  cursor: pointer;
+  /* 拖选标题文字会连带触发 click 开合 ⇒ 干脆不许选（这一行没有需要复制的文本） */
+  user-select: none;
+  /* head 是 `role="button"`，Tab 能聚焦 ⇒ 焦点环要有，但用内缩描边免得被卡片裁掉 */
+  outline-offset: -2px;
+}
+
+.schemes__head:focus-visible {
+  outline: 2px solid var(--rw-brand);
+}
+
+/* 收起态：head 就是卡片最后一行 ⇒ 不能再挂着那条分隔线（下面没有内容可分了，
+   留着就是一条悬空的断线）。但**不能**写成 `border-bottom: 0` —— 那会让 head
+   自身矮 1px（实测 54 → 53），标题/箭头虽然不动，容器却在开合之间跳一下。
+   改把颜色调透明：线还在占位，视觉上消失，几何上零位移。 */
+.schemes.is-collapsed .schemes__head {
+  border-bottom-color: transparent;
+}
+
+/* 折叠指示箭头：默认朝下（点它 = 收起），收起时转成朝右（点它 = 展开）。
+   🔴 两种状态都渲染、只改 `transform` —— 位置零变化，见模板里的注释。
+   （纯旋转还有一层好处：`scale` / `width` 变化会让它在开合动画里漂移。） */
+.schemes__chev {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  fill: none;
+  stroke: var(--rw-text-3);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 0.18s ease, stroke 0.15s ease;
+}
+
+.schemes.is-collapsed .schemes__chev {
+  transform: rotate(-90deg);
+}
+
+/* 悬停整条 head 时箭头变品牌色 —— 唯一能提示"这里能点"的东西（head 本身不加底色，
+   加了会和 `.rw-card` 的浅底、下方列表行的浅底叠成三层灰） */
+.schemes__head:hover .schemes__chev {
+  stroke: var(--rw-brand);
 }
 
 .schemes__sub {
