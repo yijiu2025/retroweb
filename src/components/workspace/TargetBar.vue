@@ -35,6 +35,7 @@ import { computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { promptSaveScheme } from '@/utils/scheme-save';
+import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 
 const store = useWorkspaceStore();
@@ -68,16 +69,15 @@ function switchNet(id: string): void {
   ElMessage.success('已切到这条路线网络');
 }
 
+/** 复制目标分子的 SMILES（走全站唯一入口，见 utils/clipboard.ts） */
 async function copySmiles(): Promise<void> {
   const t = root.value;
   if (!t) return;
-  try {
-    await navigator.clipboard.writeText(t.smiles);
-    ElMessage.success('已复制 SMILES');
-  } catch {
-    // 非 https / 无剪贴板权限时降级提示，别让点了没反应
-    ElMessage.warning('浏览器不允许自动复制，请手动选中 SMILES 复制');
-  }
+  // 非 https / 无剪贴板权限时由 copyText 统一降级提示，别让点了没反应
+  await copyText(t.smiles, {
+    okMsg: '已复制 SMILES',
+    failMsg: '浏览器不允许自动复制，请手动选中 SMILES 复制'
+  });
 }
 </script>
 

@@ -33,6 +33,7 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import type { ParseFailure, ParseSuccess } from '@/types/retro';
 import { depictMolfile, isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
 import { readFileAsText } from '@/utils/smiles';
+import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 import StructureEditor from '@/components/mol/StructureEditor.vue';
 
@@ -117,14 +118,13 @@ async function onFile(event: Event): Promise<void> {
   }
 }
 
+/** 复制解析出来的 SMILES（走全站唯一入口，见 utils/clipboard.ts） */
 async function copySmiles(): Promise<void> {
   if (!parsed.value) return;
-  try {
-    await navigator.clipboard.writeText(parsed.value.smiles);
-    ElMessage.success('已复制 SMILES');
-  } catch {
-    ElMessage.warning('浏览器拒绝了剪贴板访问');
-  }
+  await copyText(parsed.value.smiles, {
+    okMsg: '已复制 SMILES',
+    failMsg: '浏览器拒绝了剪贴板访问'
+  });
 }
 
 /* ---------- 画板 ---------- */

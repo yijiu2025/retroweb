@@ -26,6 +26,7 @@ import MolView from '@/components/mol/MolView.vue';
 import MolChip from '@/components/mol/MolChip.vue';
 import CasTag from '@/components/mol/CasTag.vue';
 import { casState, requestCasMany } from '@/utils/pubchem';
+import { copyText } from '@/utils/clipboard';
 
 const store = useWorkspaceStore();
 const settings = useSettingsStore();
@@ -91,15 +92,14 @@ function pctText(p: number): string {
   return `${(p * 100).toFixed(1)}%`;
 }
 
+/** 复制目标分子的 SMILES（走全站唯一入口，见 utils/clipboard.ts） */
 async function copySmiles(): Promise<void> {
   const t = root.value;
   if (!t) return;
-  try {
-    await navigator.clipboard.writeText(t.smiles);
-    ElMessage.success('已复制 SMILES');
-  } catch {
-    ElMessage.warning('浏览器不允许自动复制，请手动选中 SMILES 复制');
-  }
+  await copyText(t.smiles, {
+    okMsg: '已复制 SMILES',
+    failMsg: '浏览器不允许自动复制，请手动选中 SMILES 复制'
+  });
 }
 </script>
 

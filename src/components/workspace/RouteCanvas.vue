@@ -33,6 +33,7 @@ import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { MolNode } from '@/types/retro';
 import { openSupplier } from '@/utils/suppliers';
+import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
@@ -562,12 +563,11 @@ async function copyRoute(): Promise<void> {
     ElMessage.warning('还没有采纳任何一步，没有路线可复制');
     return;
   }
-  try {
-    await navigator.clipboard.writeText(lines.join('\n'));
-    ElMessage.success(`已复制 ${lines.length} 步反应式 SMILES`);
-  } catch {
-    ElMessage.warning('浏览器拒绝了剪贴板访问');
-  }
+  // 走全站唯一入口（见 utils/clipboard.ts）
+  await copyText(lines.join('\n'), {
+    okMsg: `已复制 ${lines.length} 步反应式 SMILES`,
+    failMsg: '浏览器拒绝了剪贴板访问'
+  });
 }
 
 function download(filename: string, content: string, mime: string): void {

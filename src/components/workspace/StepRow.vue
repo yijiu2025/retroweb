@@ -5,10 +5,12 @@
  * 「展开」只发**一次** /api/predict；采纳候选后前体各新增一行（depth+1，缩进）。
  * 折叠时子树用 v-if 彻底卸载，避免大 SVG 撑爆 DOM。
  */
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { MolNode } from '@/types/retro';
 import { SUPPLIERS, openSupplier } from '@/utils/suppliers';
+import { casState, requestCas } from '@/utils/pubchem';
+import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 import CandidatePanel from './CandidatePanel.vue';
 import JobProgress from './JobProgress.vue';
@@ -64,6 +66,71 @@ function onQuery(supplierId: string): void {
   const smi = node.value?.smiles;
   if (smi) openSupplier(supplierId, smi);
 }
+
+// ---------- 复制标识（SMILES / CAS / 其他 id） ----------
+
+/**
+ * 可供复制的一行标识。
+ * `value` 就是要写进剪贴板的原文（复制时不做任何加工，避免"看着一样、粘出来不一样"）。
+ */
+interface IdItem {
+  key: string;
+  label: string;
+  value: string;
+}
+
+/** PubChem 查到的 CAS / CID / 名称（`undefined`=没查、`null`=查过没有，见 utils/pubchem.ts） */
+const cas = computed(() => casState(node.value?.smiles ?? ''));
+/**
+ * 🔴 CAS 只在**用户真的拉开这个菜单**时才去查（`@visible-change`）。
+ *    一挂载就查的话，一棵几十个节点的树会瞬间把 PubChem 队列塞满 ——
+ *    而其中绝大多数行的 CAS 根本没人看（§19 的"懒枚举"同一个道理）。
+ */
+const casAsked = ref(false);
+
+watch(
+  () => node.value?.smiles ?? '',
+  (s) => {
+    if (casAsked.value && s) requestCas(s);
+  }
+);
+
+/** 打开/收起复制菜单 —— 打开时才补上 CAS 查询 */
+function onCopyMenu(visible: boolean): void {
+  if (!visible) return;
+  casAsked.value = true;
+  const s = node.value?.smiles;
+  if (s) requestCas(s);
+}
+
+/** 菜单项：有值的才列出来（CAS 那类"查过没有"的，下面单独给一条禁用项说明原因） */
+const idItems = computed<IdItem[]>(() => {
+  const n = node.value;
+  if (!n) return [];
+  const out: IdItem[] = [{ key: 'smiles', label: 'SMILES', value: n.smiles }];
+  if (n.formula) out.push({ key: 'formula', label: '分子式', value: n.formula });
+  if (n.mw) out.push({ key: 'mw', label: '分子量', value: String(n.mw) });
+  const c = cas.value;
+  if (c) {
+    out.push({ key: 'cas', label: 'CAS', value: c.cas });
+    if (c.name) out.push({ key: 'name', label: '名称', value: c.name });
+    if (c.cid) out.push({ key: 'cid', label: 'PubChem CID', value: String(c.cid) });
+  }
+  return out;
+});
+
+/** CAS 为什么没出现在列表里 —— 只在用户打开过菜单（真的去查了）之后才有意义 */
+const casNote = computed(() => {
+  if (!casAsked.value) return '';
+  if (cas.value === undefined) return 'CAS 查询中…';
+  if (cas.value === null) return 'CAS：PubChem 未收录';
+  return '';
+});
+
+async function copyId(key: string): Promise<void> {
+  const it = idItems.value.find((x) => x.key === key);
+  if (it) await copyText(it.value, { okMsg: `已复制 ${it.label}` });
+}
 </script>
 
 <template>
@@ -118,6 +185,25 @@ function onQuery(supplierId: string): void {
                     <span class="step-row__supplier-tag">{{ s.tag }}</span>
                   </el-dropdown-item>
                   <div class="step-row__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+            <!-- 「复制标识」：与「可购买」同款交互（整块 pill 是下拉触发器）。
+                 为什么放标签行而不是右侧操作区：操作区放的是「对这一步动手」的动作
+                 （展开 / 工艺分析 / 标记可购买 / 删除），而标识是这个分子**自己的属性**，
+                 和角色 / 状态标签属同一类信息 ⇒ 放一起才不会让人以为点了会改状态。
+                 CAS / CID / 名称来自 PubChem（见 utils/pubchem.ts），**拉开菜单才查**。 -->
+            <el-dropdown trigger="click" size="small" @command="copyId" @visible-change="onCopyMenu">
+              <span class="step-tag is-copy" title="复制标识：SMILES / CAS / 分子式 / 分子量 / PubChem CID">
+                复制<i class="step-row__caret" aria-hidden="true">▾</i>
+              </span>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item v-for="it in idItems" :key="it.key" :command="it.key">
+                    <span class="step-row__id-label">{{ it.label }}</span>
+                    <span class="step-row__id-value rw-mono">{{ it.value }}</span>
+                  </el-dropdown-item>
+                  <el-dropdown-item v-if="casNote" disabled>{{ casNote }}</el-dropdown-item>
                 </el-dropdown-menu>
               </template>
             </el-dropdown>
@@ -360,6 +446,52 @@ function onQuery(supplierId: string): void {
 .step-row__tags :deep(.el-dropdown) {
   display: inline-flex;
   align-items: center;
+}
+
+/* 「复制标识」pill：与「可购买」同款（整块 pill = 下拉触发器），
+   但用中性色 —— 它是工具而不是状态，别跟绿/蓝的状态标签抢眼。 */
+.step-tag.is-copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--rw-text-2);
+  background: var(--rw-surface-3);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.step-tag.is-copy:hover {
+  background: var(--rw-border);
+  color: var(--rw-text);
+}
+
+/* 下拉箭头：比文字小一号、压暗，只作"这里能展开"的提示。
+   🔴 别调到 8px 以下：实测 8px 时 `▾` 在小字号下渲染成一个"点"，
+      看起来像「复制 ·」（像分隔符而不像下拉）⇒ 10px 才认得出方向。
+      `line-height: 1` 保证它不超过 `.step-tag` 的 17px 行高，pill 仍是 21px 高。 */
+.step-row__caret {
+  font-style: normal;
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.75;
+}
+
+/* 菜单项：左边名字、右边值（值可能很长 ⇒ 等宽 + 截断，靠 title 看全） */
+.step-row__id-label {
+  flex: 0 0 auto;
+  margin-right: 10px;
+  color: var(--rw-text-2);
+}
+
+.step-row__id-value {
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 11.5px;
+  color: var(--rw-text-3);
 }
 
 /* 询价图标：¥ 小圆钮（**在「可购买」pill 内**，紧跟文字右侧）。
