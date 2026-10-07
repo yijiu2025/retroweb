@@ -59,6 +59,17 @@ async function onAuto(): Promise<void> {
     return;
   }
   store.closeTargetSetup();
+  // 🔴 与「确定目标，开始分析」**同口径**：显式开跑 ⇒ 页签切到「逆合成树」。
+  //    自动拆分是**长任务**（预算可达几十次单步调用，每次最少 0.8s 轮询间隔，
+  //    再叠模型推理），而它拆出来的东西全长在树页签里 —— 留在默认的「目标分析」
+  //    总览，那页此时连一条已确认路线都没有（`TargetOverview` 只会显示"还没有确定的
+  //    路线"），用户点完按钮看到的是一屏不动的界面，**无法判断到底有没有在跑**。
+  //    （用户报的正是这个：状态条虽在右栏底部报进度，但主区一片死寂。）
+  //    切到树页签后能看着节点一层层长出来；右栏底部同时报「自动拆分层 x/y」并可停止。
+  //
+  //    位置说明：与 `TargetInput.startAnalysis` / `StepRow` / `RouteCanvas` 一致 ——
+  //    「开跑/查看动作 ⇒ 切哪个页签」由**组件**决定，store 只在换任务时复位页签。
+  store.mainTab = 'tree';
   await store.autoRun();
   ElMessage.success(store.autoProgress.label === '已停止' ? '已停止自动拆分' : '多步拆分完成');
 }
