@@ -19,6 +19,7 @@ import type {
   JobCreateResponse,
   JobSnapshot,
   LlmModels,
+  LlmProfileRef,
   LlmSettings,
   LlmSettingsPayload,
   LlmStatus,
@@ -221,17 +222,26 @@ export const llmApi = {
     }
   },
 
-  /** 列出该 key 能看到的模型（注意：列表里的模型不一定在套餐内可用） */
-  async models(): Promise<LlmModels> {
+  /**
+   * 列出这套端点配置下能看到的模型（注意：列表里的模型不一定在套餐内可用）。
+   * 传 `profile` = 拉「那一套」的（已保存的给 id，还没保存的给草稿字段）——
+   * 新建端点时要能先看看有哪些模型可选，否则只能盲填模型名。
+   */
+  async models(profile?: LlmProfileRef): Promise<LlmModels> {
     try {
-      const { data } = await retroLlmClient.get<LlmModels>('/llm/models', { timeout: 60000 });
+      const { data } = profile
+        ? await retroLlmClient.post<LlmModels>('/llm/models', { profile }, { timeout: 60000 })
+        : await retroLlmClient.get<LlmModels>('/llm/models', { timeout: 60000 });
       return data;
     } catch {
       return { ok: false, models: [], error: '无法连接后端的大模型接口' };
     }
   },
 
-  /** 设置面板当前值（key 脱敏）：接口地址 / 模型 / token 上限 / key 池状态 */
+  /**
+   * 端点配置列表（key 脱敏）+ 当前激活那套的展开字段。
+   * `profiles[i].keys` 是**那一套自己**的 key 池状态，切换配置时不会串。
+   */
   async settings(): Promise<LlmSettings> {
     try {
       const { data } = await retroLlmClient.get<LlmSettings>('/llm/settings', { timeout: 15000 });
@@ -239,6 +249,8 @@ export const llmApi = {
     } catch {
       return {
         ok: false,
+        active_profile: '',
+        profiles: [],
         base_url: '',
         model: '',
         max_tokens: 8192,
@@ -253,17 +265,30 @@ export const llmApi = {
   },
 
   /**
-   * 保存设置 → 后端写 llm_settings.json（优先级高于 .env，立即生效）并复位 key 轮换。
-   * 返回值带保存后的设置 + 最新 status，调用方不用再打一次 /llm/status。
+   * 保存端点配置（整包）→ 后端写 llm_settings.json（优先级高于 .env，立即生效）并复位 key 轮换。
+   * 新建 / 修改 / 删除都走这里：提交什么就是什么。返回值带保存后的设置 + 最新 status。
    */
   async saveSettings(p: LlmSettingsPayload): Promise<LlmSettings> {
     const { data } = await retroLlmClient.post<LlmSettings>('/llm/settings', p, { timeout: 15000 });
     return data;
   },
 
-  /** 「重试失效 Key」：清空全部 key 的失效/冷却标记 */
-  async resetKeys(): Promise<LlmSettings> {
-    const { data } = await retroLlmClient.post<LlmSettings>('/llm/keys/reset', {}, { timeout: 15000 });
+  /**
+   * 切换当前使用的端点配置 —— 立即生效，不用先点保存。
+   * 返回 `ok: false` + `error` 表示这个 id 不存在（例如在别处刚被删掉）。
+   */
+  async activateProfile(id: string): Promise<LlmSettings> {
+    const { data } = await retroLlmClient.post<LlmSettings>('/llm/settings/active', { id }, { timeout: 15000 });
+    return data;
+  },
+
+  /** 「重试失效 Key」：清空失效/冷却标记（传 profileId 只清那一套） */
+  async resetKeys(profileId = ''): Promise<LlmSettings> {
+    const { data } = await retroLlmClient.post<LlmSettings>(
+      '/llm/keys/reset',
+      profileId ? { profile_id: profileId } : {},
+      { timeout: 15000 }
+    );
     return data;
   },
 

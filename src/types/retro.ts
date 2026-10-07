@@ -435,6 +435,9 @@ export type AnalysisModuleKey =
 export interface LlmStatus {
   ok: boolean;
   configured: boolean;
+  /** 当前激活的端点配置（多套配置并存时，用来辨认「现在用的是哪一套」） */
+  profile_id?: string;
+  profile_name?: string;
   base_url?: string;
   model?: string;
   has_key?: boolean;
@@ -451,6 +454,9 @@ export interface LlmStatus {
 export interface LlmProbe {
   ok: boolean;
   verified: boolean;
+  /** 验的是哪一套端点配置 */
+  profile_id?: string;
+  profile_name?: string;
   model?: string;
   base_url?: string;
   /** 本次验证实际使用的 key（脱敏）；多 key 池里可能不是第一个 */
@@ -468,9 +474,36 @@ export interface LlmKeyState {
   reason?: string;
 }
 
-/** GET /api/llm/settings —— 设置面板当前值（key 脱敏回传） */
+/**
+ * 一套「端点配置」：接口地址 + 模型 + 一组 Key **绑定**在一起。
+ *
+ * 为什么绑成一套：三者互相依赖 —— MiMo 的 key 配 DeepSeek 的地址、或 DeepSeek 的地址
+ * 配 MiMo 的模型名，都是无效组合。分开存的时候，换供应商要挨个改三处，改漏一处就得到
+ * 一个「看着配好了、一调就 401/404」的状态。现在切换只动一个 id。
+ */
+export interface LlmProfile {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  max_tokens: number;
+  temperature: number;
+  timeout: number;
+  json_mode: boolean;
+  /** 备注（可选，纯展示） */
+  note?: string;
+  /** 这套自己的 key 池状态（脱敏）—— 每套一张表，互不干扰 */
+  keys: LlmKeyState[];
+  /** 是否是当前激活的那套 */
+  active: boolean;
+}
+
+/** GET /api/llm/settings —— 全部端点配置 + 当前激活那套的展开字段 */
 export interface LlmSettings {
   ok: boolean;
+  active_profile: string;
+  profiles: LlmProfile[];
+  /** 以下扁平字段 = 当前激活配置的展开（兼容「只关心当前配置」的旧用法） */
   base_url: string;
   model: string;
   max_tokens: number;
@@ -482,14 +515,43 @@ export interface LlmSettings {
   error?: string;
 }
 
-/** POST /api/llm/settings —— keys 元素含 `*` = 保留原 key，明文 = 新增 */
+/** 提交一套端点配置：api_keys 元素含 `*` = 保留**该套**原 key，明文 = 新增 */
+export interface LlmProfilePayload {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  max_tokens?: number;
+  temperature?: number;
+  timeout?: number;
+  json_mode?: boolean;
+  note?: string;
+  api_keys?: string[];
+}
+
+/** POST /api/llm/settings —— 整包提交（新建 / 修改 / 删除都走它） */
 export interface LlmSettingsPayload {
+  profiles?: LlmProfilePayload[];
+  active_profile?: string;
+  /** 兼容形态：只改当前激活配置的这几个扁平字段 */
   base_url?: string;
   model?: string;
   max_tokens?: number;
   temperature?: number;
   timeout?: number;
   json_mode?: boolean;
+  api_keys?: string[];
+}
+
+/**
+ * 「拉模型列表」时指向哪一套配置：
+ * 给 `id` = 已保存的那套；给 `base_url` + `api_keys` = 还没保存的草稿
+ * （新建端点时要先看看有哪些模型可选，否则只能盲填模型名）。
+ */
+export interface LlmProfileRef {
+  id?: string;
+  base_url?: string;
+  model?: string;
   api_keys?: string[];
 }
 

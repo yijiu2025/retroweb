@@ -16,12 +16,12 @@
  *    判据是显式 prop，**不要靠 CSS 去猜父容器** —— 猜错就是重复标题或彻底没标题。
  */
 import { computed, onMounted, ref } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { retroApi, llmApi } from '@/api/retro';
 import { useWorkspaceStore, ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS } from '@/stores/workspace';
 import { countHeavyAtoms } from '@/utils/smiles';
 import { isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
-import type { LlmKeyState } from '@/types/retro';
+import type { LlmKeyState, LlmProfile, LlmSettings } from '@/types/retro';
 
 /** true = 已被外层容器（右辅助面板）接管标题与外框，本组件只出内容 */
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
@@ -53,11 +53,13 @@ const llmTagText = computed(() => {
 
 const llmTooltip = computed(() => {
   const st = store.llmStatus;
-  if (!st?.configured) return st?.hint || '未配置大模型（在下方「API 设置」里填写并保存）';
+  if (!st?.configured) return st?.hint || '未配置大模型（在下方「端点配置」里新建一套：接口地址 / 模型 / API Key）';
   const p = llmProbe.value;
-  if (!p) return `已读取配置：${st.model}\n点「验证」真发一次最小请求，确认 key 与模型可用`;
-  if (p.verified) return `已验证可用：${p.model}（${p.key || '当前 key'}）\n${p.base_url || ''}`;
-  return `验证失败：${p.error || '未知错误'}`;
+  // 多套端点并存时，光看模型名认不出「正在生效的是哪一套」⇒ 带上配置名
+  const who = st.profile_name ? `配置「${st.profile_name}」 · ` : '';
+  if (!p) return `已读取：${who}${st.model}\n点「验证」真发一次最小请求，确认 key 与模型可用`;
+  if (p.verified) return `已验证可用：${who}${p.model}（${p.key || '当前 key'}）\n${p.base_url || ''}`;
+  return `验证失败（${who.replace(' · ', '') || '当前配置'}）：${p.error || '未知错误'}`;
 });
 
 /** 「验证」按钮：只在用户主动点击时才真打网络（网关有限流，别自动打） */
@@ -66,7 +68,7 @@ async function verifyLlm(): Promise<void> {
   try {
     await store.loadLlmStatus(true);
     const p = store.llmStatus?.probe;
-    if (p?.verified) ElMessage.success(`大模型可用：${p.model}（${p.key || 'key'}）`);
+    if (p?.verified) ElMessage.success(`大模型可用：${p.profile_name ? p.profile_name + ' · ' : ''}${p.model}（${p.key || 'key'}）`);
     else if (store.llmStatus?.configured) ElMessage.error(p?.error || '大模型验证失败');
     else ElMessage.warning(store.llmStatus?.hint || '大模型未配置');
   } finally {
@@ -74,27 +76,85 @@ async function verifyLlm(): Promise<void> {
   }
 }
 
-// ---------- API 设置（接口地址 / 模型 / token / 多 Key 轮换） ----------
+// ---------- 端点配置（接口地址 / 模型 / API Key 绑定成一套，可存多套切换） ----------
+// 🔴 为什么绑成一套：三者互相依赖 —— MiMo 的 key 配 DeepSeek 的地址、或 DeepSeek 的地址
+//    配 MiMo 的模型名，都是无效组合。分开填的时候换供应商要挨个改三处，改漏一处就得到
+//    一个「看着配好了、一调就 401/404」的状态。现在切换只动一个 id，后端把整套换掉。
+//
 // 编辑态草稿：加载后改这里，点「保存设置」才 POST。keys 保存脱敏串（含 * = 保留原 key），
 // 新增的 key 是明文 —— 后端按「含 * 与否」区分保留/新增，往返无损。
-const draft = ref({
-  base_url: '',
-  model: '',
-  max_tokens: 32768,
-  temperature: 0.3,
-  timeout: 300,
-  keys: [] as string[]
-});
-const keyStates = ref<LlmKeyState[]>([]);
+interface ProfileDraft {
+  id: string;
+  name: string;
+  base_url: string;
+  model: string;
+  max_tokens: number;
+  temperature: number;
+  timeout: number;
+  json_mode: boolean;
+  /** 脱敏串（已保存的）或明文（这次新加的） */
+  keys: string[];
+  /** 服务端给的 key 状态；每套配置各一张表，切换配置不会串 */
+  keyStates: LlmKeyState[];
+}
+
+const profiles = ref<ProfileDraft[]>([]);
+const editingId = ref('');
 const savingSettings = ref(false);
+const switching = ref(false);
 const newKey = ref('');
 const modelOptions = ref<string[]>([]);
 const loadingModels = ref(false);
+/** 上次与服务端对齐的内容指纹 —— 「有未保存改动」的判据 */
+const savedSig = ref('');
+
+function toDraft(p: LlmProfile): ProfileDraft {
+  // keys 兜底：后端若比前端旧（字段缺失），宁可显示空列表也不能整块崩掉
+  const keys = Array.isArray(p.keys) ? p.keys : [];
+  return {
+    id: p.id,
+    name: p.name,
+    base_url: p.base_url,
+    model: p.model,
+    max_tokens: p.max_tokens,
+    temperature: p.temperature,
+    timeout: p.timeout,
+    json_mode: p.json_mode,
+    keys: keys.map((k) => k.masked),
+    keyStates: keys
+  };
+}
+
+/**
+ * 内容指纹（**不含 keyStates**）：服务端的 key 状态随请求在变，把它算进去会导致
+ * 「什么都没改也显示有未保存改动」。
+ */
+function signature(list: ProfileDraft[]): string {
+  return JSON.stringify(
+    list.map((p) => ({
+      id: p.id,
+      name: p.name,
+      base_url: p.base_url,
+      model: p.model,
+      max_tokens: p.max_tokens,
+      temperature: p.temperature,
+      timeout: p.timeout,
+      json_mode: p.json_mode,
+      keys: p.keys
+    }))
+  );
+}
+const dirty = computed(() => signature(profiles.value) !== savedSig.value);
+
+/** 当前编辑的那套（下拉选中的 = 正在生效的那套） */
+const cur = computed<ProfileDraft | undefined>(
+  () => profiles.value.find((p) => p.id === editingId.value) ?? profiles.value[0]
+);
 
 function keyStateOf(masked: string): LlmKeyState | undefined {
-  // 🔴 按脱敏串匹配，不按下标：draft.keys 里可能有「还没保存」的明文 key，
-  //     而服务端 keyStates 只覆盖已保存的池 —— 按下标对齐会错位。
-  return keyStates.value.find((s) => s.masked === masked);
+  // 🔴 按脱敏串匹配，不按下标：keys 里可能有「还没保存」的明文 key，
+  //     而服务端状态只覆盖已保存的池 —— 按下标对齐会错位。
+  return cur.value?.keyStates.find((s) => s.masked === masked);
 }
 type TagKind = 'success' | 'warning' | 'danger' | 'info';
 function keyTagType(s?: LlmKeyState): TagKind {
@@ -105,27 +165,169 @@ function keyTagText(s?: LlmKeyState): string {
   if (!s) return '—';
   return s.state === 'active' ? '使用中' : s.state === 'bad' ? '失效' : s.state === 'cooldown' ? '冷却中' : '备用';
 }
-const hasDisabledKey = computed(() => keyStates.value.some((k) => k.state === 'bad' || k.state === 'cooldown'));
+const hasDisabledKey = computed(() => (cur.value?.keyStates ?? []).some((k) => k.state === 'bad' || k.state === 'cooldown'));
+
+/** 把服务端返回整套贴回草稿（含当前激活项） */
+function applySettings(s: LlmSettings): void {
+  // 🔴 **必须容忍「后端还是旧版本」**：升级前端的接口后再刷新页面，后端可能还在跑
+  //    返回扁平字段的老代码（`ok:true` 但没有 profiles）。直接 `.map` 会让异常冒到
+  //    渲染层，整块面板连带页面一起白屏 —— 这是实测踩到的。
+  const list = Array.isArray(s.profiles) ? s.profiles : [];
+  profiles.value = list.map(toDraft);
+  editingId.value = s.active_profile || profiles.value[0]?.id || '';
+  savedSig.value = signature(profiles.value);
+}
+
+/** 只把 key 状态贴回去（「重试失效 Key」用）—— 不碰用户正在编辑的内容 */
+function applyKeyStates(s: LlmSettings): void {
+  const map = new Map((Array.isArray(s.profiles) ? s.profiles : []).map((p) => [p.id, p.keys]));
+  for (const p of profiles.value) {
+    const st = map.get(p.id);
+    if (st) p.keyStates = st;
+  }
+}
 
 async function loadSettings(): Promise<void> {
   const s = await llmApi.settings();
   if (!s.ok) return;
-  draft.value = {
-    base_url: s.base_url,
-    model: s.model,
-    max_tokens: s.max_tokens,
-    temperature: s.temperature,
-    timeout: s.timeout,
-    keys: s.keys.map((k) => k.masked)
-  };
-  keyStates.value = s.keys;
+  if (!Array.isArray(s.profiles)) {
+    // 后端没重启仍在跑旧版本：空面板会让人以为「配置丢了」，必须说清楚
+    ElMessage.warning('后端还在跑旧版本（不支持端点配置），请重启后端服务后再试');
+    return;
+  }
+  applySettings(s);
 }
 
-/** 拉取该 key 可见的模型列表（供「模型」下拉切换；列表 ≠ 套餐内可用，见 tooltip） */
+/**
+ * 保存全部端点配置（整包提交）。
+ * `silent` = 切换配置前的自动落盘：成功不弹提示（避免每次切都弹一条），失败照常报。
+ */
+async function saveSettings(silent = false): Promise<boolean> {
+  const bad = profiles.value.find((p) => !p.base_url.trim() || !p.model.trim() || !p.keys.length);
+  if (bad) {
+    // 🔴 这里**不能**因为 silent 就闭嘴：否则切换配置时会「看着切过去了、其实没保存」
+    ElMessage.warning(`「${bad.name || bad.id}」的接口地址、模型、至少一个 API Key 都必填`);
+    return false;
+  }
+  savingSettings.value = true;
+  try {
+    const out = await llmApi.saveSettings({
+      profiles: profiles.value.map((p) => ({
+        id: p.id,
+        name: p.name,
+        base_url: p.base_url.trim(),
+        model: p.model.trim(),
+        max_tokens: p.max_tokens,
+        temperature: p.temperature,
+        timeout: p.timeout,
+        json_mode: p.json_mode,
+        api_keys: p.keys
+      })),
+      active_profile: editingId.value
+    });
+    applySettings(out);
+    await store.loadLlmStatus(false); // 顶部「AI 工艺分析」状态标签立即刷新
+    if (!silent) ElMessage.success('端点配置已保存（立即生效，无需重启）');
+    return true;
+  } catch (e) {
+    ElMessage.error((e as Error).message || '保存失败');
+    return false;
+  } finally {
+    savingSettings.value = false;
+  }
+}
+
+/**
+ * 切换当前使用的端点配置 —— 后端只改 `active_profile`，立即生效。
+ * 有未保存改动时**先落盘再切**，否则改动会静默丢掉。
+ */
+async function switchProfile(id: string): Promise<void> {
+  if (!id || id === editingId.value) return;
+  switching.value = true;
+  try {
+    if (dirty.value && !(await saveSettings(true))) return; // 保存失败就别切，避免状态错乱
+    const out = await llmApi.activateProfile(id);
+    if (!out.ok) {
+      ElMessage.error(out.error || '切换端点配置失败');
+      return;
+    }
+    applySettings(out);
+    const nm = out.profiles.find((p) => p.id === out.active_profile)?.name || id;
+    ElMessage.success(`已切换到「${nm}」，后续分析走这套接口`);
+  } finally {
+    switching.value = false;
+  }
+}
+
+function uniqueId(base: string): string {
+  const used = new Set(profiles.value.map((p) => p.id));
+  if (!used.has(base)) return base;
+  let i = 2;
+  while (used.has(`${base}-${i}`)) i += 1;
+  return `${base}-${i}`;
+}
+
+/** 新建一套空白配置（本地追加，先不切过去 —— 还没填内容，切过去只会报错） */
+function addProfile(): void {
+  const id = uniqueId('profile');
+  profiles.value.push({
+    id,
+    name: '新配置',
+    base_url: '',
+    model: '',
+    max_tokens: 32768,
+    temperature: 0.3,
+    timeout: 300,
+    json_mode: true,
+    keys: [],
+    keyStates: []
+  });
+  editingId.value = id;
+  modelOptions.value = [];
+}
+
+/** 复制当前配置（keys 跟着走；脱敏串由后端在**原配置的池**里还原成真实 key） */
+function dupProfile(): void {
+  const src = cur.value;
+  if (!src) return;
+  const id = uniqueId(`${src.id}-copy`);
+  profiles.value.push({ ...src, id, name: `${src.name} 副本`, keys: [...src.keys], keyStates: [] });
+  editingId.value = id;
+  modelOptions.value = [];
+}
+
+/** 删除当前配置（里面存着密钥，删前确认） */
+async function delProfile(): Promise<void> {
+  const src = cur.value;
+  if (!src) return;
+  try {
+    await ElMessageBox.confirm(
+      `确定删除端点配置「${src.name}」？该配置里保存的 ${src.keys.length} 个 API Key 会一起从后端删除。`,
+      '删除端点配置',
+      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' }
+    );
+  } catch {
+    return; // 用户取消
+  }
+  const rest = profiles.value.filter((p) => p.id !== src.id);
+  profiles.value = rest;
+  editingId.value = rest[0]?.id ?? '';
+  const ok = await saveSettings(true);
+  if (ok) ElMessage.success(rest.length ? `已删除「${src.name}」` : '已删除全部端点配置（回落到 .env 里的配置）');
+}
+
+/** 拉取**当前编辑这套**可见的模型（草稿也能拉，不必先保存） */
 async function refreshModels(): Promise<void> {
+  const c = cur.value;
+  if (!c) return;
   loadingModels.value = true;
   try {
-    const r = await llmApi.models();
+    const r = await llmApi.models({
+      id: c.id,
+      base_url: c.base_url.trim(),
+      model: c.model.trim(),
+      api_keys: c.keys
+    });
     if (r.ok) modelOptions.value = r.models;
     else ElMessage.warning(r.error || '拉取模型列表失败');
   } finally {
@@ -137,50 +339,31 @@ function onModelDropdown(visible: boolean): void {
 }
 
 function addKey(): void {
+  const c = cur.value;
   const k = newKey.value.trim();
-  if (!k) return;
-  if (draft.value.keys.includes(k)) {
+  if (!c || !k) return;
+  if (c.keys.includes(k)) {
     ElMessage.info('该 Key 已在列表中');
     newKey.value = '';
     return;
   }
-  draft.value.keys.push(k);
+  c.keys.push(k);
   newKey.value = '';
 }
 
-async function saveSettings(): Promise<void> {
-  if (!draft.value.base_url.trim() || !draft.value.model.trim() || !draft.value.keys.length) {
-    ElMessage.warning('接口地址、模型、至少一个 API Key 都必填');
-    return;
-  }
-  savingSettings.value = true;
-  try {
-    const out = await llmApi.saveSettings({
-      base_url: draft.value.base_url.trim(),
-      model: draft.value.model.trim(),
-      max_tokens: draft.value.max_tokens,
-      temperature: draft.value.temperature,
-      timeout: draft.value.timeout,
-      api_keys: draft.value.keys
-    });
-    keyStates.value = out.keys;
-    draft.value.keys = out.keys.map((k) => k.masked);
-    await store.loadLlmStatus(false); // 顶部「AI 工艺分析」状态标签立即刷新
-    ElMessage.success('大模型设置已保存（立即生效，无需重启）');
-  } catch (e) {
-    ElMessage.error((e as Error).message || '保存失败');
-  } finally {
-    savingSettings.value = false;
-  }
+function removeKey(i: number): void {
+  cur.value?.keys.splice(i, 1);
 }
 
 async function resetKeys(): Promise<void> {
+  const c = cur.value;
+  if (!c) return;
   try {
-    const out = await llmApi.resetKeys();
-    // 🔴 只更新状态标签，**不覆盖 draft.keys** —— 草稿里可能有还没保存的新增 key，
+    const out = await llmApi.resetKeys(c.id); // 只清这套配置的标记，不牵动别的端点
+    // 🔴 只更新状态标签，**不覆盖 keys** —— 草稿里可能还有没保存的新增 key，
     //     用服务端列表覆盖会把它弄丢（实测踩过）。
-    keyStates.value = out.keys;
-    ElMessage.success('已清除失效/冷却标记，全部 Key 重新可用');
+    applyKeyStates(out);
+    ElMessage.success(`已清除「${c.name}」的失效/冷却标记，Key 全部重新可用`);
   } catch (e) {
     ElMessage.error((e as Error).message || '重置失败');
   }
@@ -396,7 +579,7 @@ onMounted(() => {
             <label>
               大模型状态
               <el-tooltip
-                content="在「每步流程」里让大模型给出投料顺序、当量、条件、副产物、LCMS/NMR。接口地址 / 模型 / API Key 在下方配置"
+                content="在「每步流程」里让大模型给出投料顺序、当量、条件、副产物、LCMS/NMR。接口地址 / 模型 / API Key 在下面的「端点配置」里成组管理"
                 placement="top"
               >
                 <span class="params__hint">?</span>
@@ -412,13 +595,13 @@ onMounted(() => {
             </div>
           </div>
 
-          <!-- API 设置：保存到后端 llm_settings.json（优先级高于 .env），改完立即生效 -->
+          <!-- 端点配置：接口地址 / 模型 / API Key 绑定成一套，可存多套（DeepSeek / MiMo…）切换 -->
           <div class="params__row params__row--col">
             <div class="params__modules-head">
               <label>
-                API 设置
+                端点配置
                 <el-tooltip
-                  content="保存在后端 web/llm_settings.json，优先级高于 .env，改完立即生效。可配置多个 API Key：请求失败（Key 失效 / 限流 / 额度不足）时自动切换下一个，无需手动干预"
+                  content="接口地址、模型、API Key 是一套绑定的：换供应商就切整套，不用挨个字段改（漏改一处就是「看着配好了、一调就 401/404」）。保存在后端 web/llm_settings.json，改完立即生效。同一套里可放多个 API Key，请求失败时自动切换下一个"
                   placement="top"
                 >
                   <span class="params__hint">?</span>
@@ -426,122 +609,173 @@ onMounted(() => {
               </label>
             </div>
             <div class="params__api">
-              <div class="params__api-field">
-                <span class="params__api-label">接口地址（OpenAI 兼容）</span>
-                <el-input
-                  v-model="draft.base_url"
+              <!-- 🔴 用 :model-value 而不是 v-model：选中要等后端真的切完才算数。
+                   切换失败时下拉必须能显示回原来那套，否则界面会停在一个并没有生效的选项上。 -->
+              <div class="params__prof-bar">
+                <el-select
+                  :model-value="editingId"
+                  class="params__prof-select"
                   size="small"
-                  placeholder="https://api.example.com/v1"
-                  clearable
-                />
+                  :loading="switching"
+                  placeholder="选择端点配置"
+                  @change="(v: unknown) => void switchProfile(String(v))"
+                >
+                  <el-option v-for="p in profiles" :key="p.id" :label="p.name" :value="p.id">
+                    <span class="params__prof-opt">
+                      <span class="params__prof-opt-name">{{ p.name }}</span>
+                      <span class="params__prof-opt-meta">{{ p.model || '未填模型' }} · {{ p.keys.length }} key</span>
+                    </span>
+                  </el-option>
+                </el-select>
+                <el-button size="small" @click="addProfile">新建</el-button>
+                <el-button size="small" :disabled="!cur" @click="dupProfile">复制</el-button>
+                <el-button size="small" type="danger" plain :disabled="!cur" @click="delProfile">删除</el-button>
               </div>
-              <div class="params__api-field">
-                <span class="params__api-label">
-                  模型
-                  <el-tooltip
-                    content="「拉取」列出该 Key 可见的模型（列表 ≠ 套餐内都可用）；也可直接输入自定义模型名"
-                    placement="top"
-                  >
-                    <span class="params__hint">?</span>
-                  </el-tooltip>
-                </span>
-                <div class="params__api-model">
-                  <el-select
-                    v-model="draft.model"
+
+              <template v-if="cur">
+                <div class="params__api-field">
+                  <span class="params__api-label">名称</span>
+                  <el-input
+                    v-model="cur.name"
                     size="small"
-                    filterable
-                    allow-create
-                    default-first-option
-                    placeholder="选择或输入模型名"
-                    @visible-change="onModelDropdown"
-                  >
-                    <el-option v-for="mname in modelOptions" :key="mname" :label="mname" :value="mname" />
-                  </el-select>
-                  <el-button size="small" :loading="loadingModels" @click="refreshModels">拉取</el-button>
+                    placeholder="给你自己看的标签：DeepSeek 官方 / MiMo 备用…"
+                    clearable
+                  />
                 </div>
-              </div>
-              <div class="params__api-grid">
+                <div class="params__api-field">
+                  <span class="params__api-label">接口地址（OpenAI 兼容）</span>
+                  <el-input
+                    v-model="cur.base_url"
+                    size="small"
+                    placeholder="https://api.example.com/v1"
+                    clearable
+                  />
+                </div>
                 <div class="params__api-field">
                   <span class="params__api-label">
-                    输出上限
-                    <el-tooltip content="max_tokens。推理模型的思考 token 也计入输出额度，太小会被截断（正文 0 字符）" placement="top">
+                    模型
+                    <el-tooltip
+                      content="「拉取」列出这套配置的 Key 可见的模型（列表 ≠ 套餐内都可用）；也可直接输入自定义模型名"
+                      placement="top"
+                    >
                       <span class="params__hint">?</span>
                     </el-tooltip>
                   </span>
-                  <el-input-number
-                    v-model="draft.max_tokens"
-                    size="small"
-                    :min="1024"
-                    :max="131072"
-                    :step="1024"
-                    :controls="false"
-                  />
-                </div>
-                <div class="params__api-field">
-                  <span class="params__api-label">温度</span>
-                  <el-input-number
-                    v-model="draft.temperature"
-                    size="small"
-                    :min="0"
-                    :max="2"
-                    :step="0.1"
-                    :controls="false"
-                  />
-                </div>
-                <div class="params__api-field">
-                  <span class="params__api-label">超时(秒)</span>
-                  <el-input-number
-                    v-model="draft.timeout"
-                    size="small"
-                    :min="10"
-                    :max="3600"
-                    :step="10"
-                    :controls="false"
-                  />
-                </div>
-              </div>
-              <div class="params__api-field">
-                <span class="params__api-label">API Keys（{{ draft.keys.length }}）</span>
-                <div v-if="draft.keys.length" class="params__keys">
-                  <div v-for="(k, i) in draft.keys" :key="k + i" class="params__key">
-                    <span class="params__key-no">{{ i + 1 }}</span>
-                    <code class="params__key-mask" :title="k">{{ k }}</code>
-                    <el-tag v-if="!k.includes('*')" size="small" effect="plain" type="info">未保存</el-tag>
-                    <el-tooltip
-                      v-else-if="keyStateOf(k)?.reason && keyStateOf(k)?.state !== 'active'"
-                      :content="keyStateOf(k)?.reason"
-                      placement="top"
-                      :show-after="150"
+                  <div class="params__api-model">
+                    <el-select
+                      v-model="cur.model"
+                      size="small"
+                      filterable
+                      allow-create
+                      default-first-option
+                      placeholder="选择或输入模型名"
+                      @visible-change="onModelDropdown"
                     >
-                      <el-tag size="small" effect="light" :type="keyTagType(keyStateOf(k))">
-                        {{ keyTagText(keyStateOf(k)) }}
-                      </el-tag>
-                    </el-tooltip>
-                    <el-tag v-else size="small" effect="light" :type="keyTagType(keyStateOf(k))">
-                      {{ keyTagText(keyStateOf(k)) }}
-                    </el-tag>
-                    <el-button size="small" text type="danger" @click="draft.keys.splice(i, 1)">删除</el-button>
+                      <el-option v-for="mname in modelOptions" :key="mname" :label="mname" :value="mname" />
+                    </el-select>
+                    <el-button size="small" :loading="loadingModels" @click="refreshModels">拉取</el-button>
                   </div>
                 </div>
-                <div class="params__key-add">
-                  <el-input
-                    v-model="newKey"
-                    size="small"
-                    placeholder="粘贴新的 API Key（sk-…），可添加多个"
-                    clearable
-                    @keyup.enter="addKey"
-                  />
-                  <el-button size="small" :disabled="!newKey.trim()" @click="addKey">添加</el-button>
+                <div class="params__api-grid">
+                  <div class="params__api-field">
+                    <span class="params__api-label">
+                      输出上限
+                      <el-tooltip content="max_tokens。推理模型的思考 token 也计入输出额度，太小会被截断（正文 0 字符）" placement="top">
+                        <span class="params__hint">?</span>
+                      </el-tooltip>
+                    </span>
+                    <el-input-number
+                      v-model="cur.max_tokens"
+                      size="small"
+                      :min="1024"
+                      :max="131072"
+                      :step="1024"
+                      :controls="false"
+                    />
+                  </div>
+                  <div class="params__api-field">
+                    <span class="params__api-label">温度</span>
+                    <el-input-number
+                      v-model="cur.temperature"
+                      size="small"
+                      :min="0"
+                      :max="2"
+                      :step="0.1"
+                      :controls="false"
+                    />
+                  </div>
+                  <div class="params__api-field">
+                    <span class="params__api-label">超时(秒)</span>
+                    <el-input-number
+                      v-model="cur.timeout"
+                      size="small"
+                      :min="10"
+                      :max="3600"
+                      :step="10"
+                      :controls="false"
+                    />
+                  </div>
                 </div>
-                <p class="params__modules-note">
-                  多 Key 自动轮换：请求失败（Key 失效 / 限流 / 额度不足）自动切换下一个；限流的 Key 冷却 60s 后自动恢复。
-                </p>
-              </div>
+                <div class="params__api-field">
+                  <span class="params__api-label">API Keys（{{ cur.keys.length }}）</span>
+                  <div v-if="cur.keys.length" class="params__keys">
+                    <div v-for="(k, i) in cur.keys" :key="k + i" class="params__key">
+                      <span class="params__key-no">{{ i + 1 }}</span>
+                      <code class="params__key-mask" :title="k">{{ k }}</code>
+                      <el-tag v-if="!k.includes('*')" size="small" effect="plain" type="info">未保存</el-tag>
+                      <el-tooltip
+                        v-else-if="keyStateOf(k)?.reason && keyStateOf(k)?.state !== 'active'"
+                        :content="keyStateOf(k)?.reason"
+                        placement="top"
+                        :show-after="150"
+                      >
+                        <el-tag size="small" effect="light" :type="keyTagType(keyStateOf(k))">
+                          {{ keyTagText(keyStateOf(k)) }}
+                        </el-tag>
+                      </el-tooltip>
+                      <el-tag v-else size="small" effect="light" :type="keyTagType(keyStateOf(k))">
+                        {{ keyTagText(keyStateOf(k)) }}
+                      </el-tag>
+                      <el-button size="small" text type="danger" @click="removeKey(i)">删除</el-button>
+                    </div>
+                  </div>
+                  <div class="params__key-add">
+                    <el-input
+                      v-model="newKey"
+                      size="small"
+                      placeholder="粘贴新的 API Key（sk-…），可添加多个"
+                      clearable
+                      @keyup.enter="addKey"
+                    />
+                    <el-button size="small" :disabled="!newKey.trim()" @click="addKey">添加</el-button>
+                  </div>
+                  <p class="params__modules-note">
+                    多 Key 自动轮换：同一套里请求失败（Key 失效 / 限流 / 额度不足）自动切换下一个；限流的 Key 冷却 60s 后自动恢复。
+                    <b>每套配置各有一份独立轮换状态</b>，切换端点不会互相影响。
+                  </p>
+                </div>
+              </template>
+              <el-alert
+                v-else
+                type="info"
+                :closable="false"
+                class="params__prof-empty"
+                title="还没有端点配置 —— 点上面的「新建」加一套（接口地址 / 模型 / API Key）"
+                description="不配置也能用：后端会回落到 web/.env 里的 RETRO_LLM_* 默认值。"
+              />
+
               <div class="params__api-actions">
-                <el-button type="primary" size="small" :loading="savingSettings" @click="saveSettings">
+                <el-button
+                  type="primary"
+                  size="small"
+                  :loading="savingSettings"
+                  :disabled="!profiles.length"
+                  @click="saveSettings(false)"
+                >
                   保存设置
                 </el-button>
                 <el-button size="small" :disabled="!hasDisabledKey" @click="resetKeys">重试失效 Key</el-button>
+                <span v-if="dirty" class="params__dirty">有未保存的改动</span>
               </div>
             </div>
           </div>
@@ -928,6 +1162,56 @@ onMounted(() => {
 .params__api-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ---------- 端点配置（切换器 + 当前配置的字段） ---------- */
+.params__prof-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.params__prof-select {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.params__prof-bar :deep(.el-button) {
+  flex: 0 0 auto;
+}
+
+/* 下拉项：左配置名、右「模型 · N key」，两列对齐（宽度不一也不跳） */
+.params__prof-opt {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  min-width: 0;
+}
+
+.params__prof-opt-name {
+  color: var(--rw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.params__prof-opt-meta {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+.params__prof-empty {
+  margin: 0;
+}
+
+/* 「有未保存的改动」：靠右，与两个按钮同行 */
+.params__dirty {
+  margin-left: auto;
+  align-self: center;
+  font-size: 11.5px;
+  color: var(--rw-brand-d);
 }
 
 /* ---------- 分析模块勾选 ---------- */
