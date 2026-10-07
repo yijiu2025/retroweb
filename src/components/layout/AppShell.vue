@@ -11,6 +11,8 @@
  * 分工与理由：
  *   ① **侧栏**（品牌 + 主导航 + 分组任务）纵向贯穿整屏 —— 品牌留在顶部，
  *      让「我们是谁 / 我在哪 / 我有哪些任务」这一列连续，不被顶栏打断。
+ *      导航之下是**一个**滚动区（`.app__side-scroll`），「最近的任务」与
+ *      「目标分析」同处这条滚动流里，不再各占一根滚动条（见模板注释）。
  *   ② **顶栏**横跨「主区 + 辅助面板」两列 —— 它描述的是*当前页面*的身份
  *      （标题 + 副标题）与全局动作（主题、用户），与左侧导航是两回事。
  *   ③ **内容区**只放页面主体，不再自己管参数栏 ——
@@ -184,16 +186,23 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </button>
       </nav>
 
-      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树；「＋新任务」也在这里。
-           排在「目标分析」上方 —— 任务列表是这一列的主干（可伸缩、超出滚动），
-           目标分析属于"当前这条任务"的详情，压在主干下方才符合「先选任务、再看细节」。 -->
-      <div v-show="!collapsed" class="app__recent rw-scroll">
-        <SessionPanel @open="openSession" @new="newSession" />
-      </div>
+      <!-- 侧栏主干：任务列表 + 当前任务详情 —— **共用一个滚动条**。
 
-      <!-- 目标分析：当前任务在拆什么 + 已确认的路线网络 -->
-      <div v-show="!collapsed" class="app__target rw-scroll">
-        <TargetBar v-if="showTarget" @preview="openPreview" />
+           「最近的任务」（点一条即恢复该任务的路线树，「＋新任务」也在这里）
+           在上，「目标分析」（当前这条任务在拆什么 + 已确认的路线网络）在下：
+           先选任务、再看细节，顺序与阅读顺序一致。
+
+           🔴 两段包在**同一个**滚动容器里，而不是各自 `overflow-y: auto`：
+              它们是一条连续的阅读线，滚到两段交界处换一根滚动条、还得给
+              各自分高度（原来「目标分析」`max-height: 55%`），内容一长两段
+              就都只剩半截。合成一条滚动流后高度由内容决定、滚动只有一处。 -->
+      <div v-show="!collapsed" class="app__side-scroll rw-scroll">
+        <div class="app__recent">
+          <SessionPanel @open="openSession" @new="newSession" />
+        </div>
+        <div class="app__target">
+          <TargetBar v-if="showTarget" @preview="openPreview" />
+        </div>
       </div>
 
       <div class="app__aside-foot">
@@ -358,11 +367,11 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 }
 
 /* 🔴 收起态必须把页脚**钉回底部**。
-   原因：侧栏里唯一 `flex: 1` 的是 `.app__recent`，而收起时它与 `.app__target` 一起被
-   `v-show` 置成 `display: none` ⇒ 剩余高度没人认领 ⇒ 页脚（↑展开按钮）会从底部弹到导航下方
+   原因：侧栏里唯一 `flex: 1` 的是 `.app__side-scroll`，而收起时它被 `v-show` 置成
+   `display: none` ⇒ 剩余高度没人认领 ⇒ 页脚（↑展开按钮）会从底部弹到导航下方
    （实测 Δy = -738px，用户收起后找不到展开按钮）。
-   只在收起态加 `margin-top: auto`，而不是无条件加：展开态本来就由 `.app__recent` 的 flex:1 顶住，
-   此处显式区分两种情形，免得依赖「flex-grow 与 auto margin 谁先分配空间」这种实现细节。 */
+   只在收起态加 `margin-top: auto`，而不是无条件加：展开态本来就由 `.app__side-scroll` 的
+   flex:1 顶住，此处显式区分两种情形，免得依赖「flex-grow 与 auto margin 谁先分配空间」这种实现细节。 */
 .app.is-collapsed .app__aside-foot {
   margin-top: auto;
 }
@@ -378,26 +387,29 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   padding-right: 0;
 }
 
-/* 「最近的任务」：导航之下，占满剩余高度，超出滚动 —— 侧栏的主干 */
-.app__recent {
-  flex: 1;
+/* 侧栏主干滚动区：`最近的任务` + `目标分析` 共用的**唯一**滚动容器。
+   🔴 合并的理由见模板注释。这里的关键是**高度由内容决定**（两段都是自然高度），
+      而不是各分一半 —— 所以 `.app__target` 的 `max-height: 55%` 必须去掉，
+      否则「目标分析」在自己那半截里再次被截断。
+   分隔线与导航之间的那条线挂在**容器**上（不随内容滚走）：
+   容器是 `overflow-y: auto` 的滚动容器，border 在它的 border-box 上，滚动时恒定可见。 */
+.app__side-scroll {
+  flex: 1 1 auto;
   min-height: 0;
-  padding: 10px 0 8px;
   border-top: 1px solid var(--rw-border);
   overflow-y: auto;
 }
 
-/* 「目标分析」：压在「最近的任务」**下方**（先选任务、再看当前任务细节）。
-   🔴 max-height + 自身滚动是必需的：这块里有结构缩略图 + 网络列表 + 步骤明细，
-      不封顶就会把任务列表挤到只剩两三行。
-      55% = 底部这块最多占侧栏一半多一点，两段都还留得住可读高度。 */
+/* 「最近的任务」：导航之下的第一段（自己不再滚动，交给上面的容器） */
+.app__recent {
+  padding: 10px 0 8px;
+}
+
+/* 「目标分析」：紧接其后，同一条滚动流里。只留一条分隔线做视觉分段 ——
+   不再有自己的滚动与高度上限（`max-height` 一去掉，"两段各占一半"的机制就没了）。 */
 .app__target {
-  flex: 0 1 auto;
-  min-height: 0;
-  max-height: 55%;
   padding: 10px 0 8px;
   border-top: 1px solid var(--rw-border);
-  overflow-y: auto;
 }
 
 .app__collapse {

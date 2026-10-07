@@ -272,6 +272,9 @@ async function onRemove(id: string, name: string): Promise<void> {
   margin-left: auto;
 }
 
+/* 列表本身不滚动 —— 侧栏整体只有一个滚动容器（AppShell 的 `.app__side-scroll`）。
+   原来这里带 `overflow-y: auto; min-height: 0`，是"本段自己滚"时代的残留：
+   没有高度约束时它根本不生效，留着只会让人以为这里还有第二根滚动条。 */
 .recent__list {
   list-style: none;
   margin: 0;
@@ -279,8 +282,6 @@ async function onRemove(id: string, name: string): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  overflow-y: auto;
-  min-height: 0;
 }
 
 .recent__item {

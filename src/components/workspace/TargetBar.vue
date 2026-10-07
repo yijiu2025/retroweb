@@ -331,6 +331,10 @@ async function copySmiles(): Promise<void> {
 }
 
 /* ---------- 多个网络的列表 ---------- */
+/* 🔴 不再自己封顶滚动（原来的 `max-height: 132px` + `overflow-y: auto`）。
+   侧栏已改成**整条一个滚动流**（见 AppShell 的 `.app__side-scroll`），
+   这里再套一根滚动条 ⇒ 滚轮停在列表上会被截住、要再滚外层才继续，
+   正是「两段各自滚动」的同一个毛病。长度交给外层容器。 */
 .tan__nets {
   list-style: none;
   margin: 0;
@@ -338,8 +342,6 @@ async function copySmiles(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  max-height: 132px;
-  overflow-y: auto;
 }
 
 .tan__net {
@@ -418,6 +420,7 @@ async function copySmiles(): Promise<void> {
 }
 
 /* ---------- 各步明细 ---------- */
+/* 同 `.tan__nets`：不封顶、不自己滚 —— 整条侧栏共用一个滚动条。 */
 .tan__steps {
   list-style: none;
   margin: 0;
@@ -425,8 +428,6 @@ async function copySmiles(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  max-height: 128px;
-  overflow-y: auto;
 }
 
 .tan__steps li {
