@@ -80,6 +80,40 @@ export interface PredictErr {
 
 export type PredictResult = PredictOk | PredictErr;
 
+/** 后端 search 任务返回的一条合成路线（Retro* 一次搜到底的结果） */
+export interface SearchRouteStep {
+  product: string;
+  reactants: string[];
+  reactants_joined: string;
+  probability: number | null;
+}
+
+export interface SearchRoute {
+  steps: SearchRouteStep[];
+  num_steps: number;
+  total_probability: number | null;
+  material_count: number;
+}
+
+/** kind=search 的 job 成功结果 */
+export interface SearchOk {
+  ok: true;
+  target: string;
+  routes: SearchRoute[];
+  starting_materials: string[];
+  purchasable: string[];
+  required_materials: string[];
+  filtered_out: number;
+  value_fn: string;
+  stats: {
+    or_nodes: number;
+    and_nodes: number;
+    expansions: number;
+    max_heavy_atoms: number;
+  };
+  search_seconds: number;
+}
+
 export interface LoadModelOk {
   ok: boolean;
   seconds?: number;
@@ -126,8 +160,8 @@ export interface JobSnapshot {
   stages: JobStage[];
   logs: JobLog[];
   log_seq: number;
-  /** 仅 succeeded 时存在：与 PredictOk 同结构 */
-  result?: PredictOk;
+  /** 仅 succeeded 时存在：predict 与 search 两种 job 的结构不同 */
+  result?: PredictOk | SearchOk;
   /** 仅 failed/cancelled 时存在 */
   error?: string;
   error_reasons?: string[];

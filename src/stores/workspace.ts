@@ -1,10 +1,12 @@
 /**
  * 逆合成工作台：路线树状态机。
  *
- * 核心原则 ——「多次一步」：
- *   每一次「展开」只发**一次** `/api/predict`（单步逆合成），
- *   候选由用户采纳后前体各新增一行；路线树由前端自己长出来。
- *   刻意不调 `/api/search`（Retro* 一次搜到底）。
+ * 两条并存的推进方式：
+ *   - 「单步」：每次「展开」只发一次 `/api/jobs`（kind=predict，单步逆合成），
+ *     候选由用户采纳后前体各新增一行；路线树由前端自己长出来。
+ *   - 「一次搜到底」：`autoRun`（自动往下拆）提交 kind=search 的任务，
+ *     后端 Retro* 一次搜完整棵 AND/OR 树、吃满调用预算，返回多条完整路线；
+ *     最优路线重建为树，其余存成备选方案（schemes）。
  */
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
@@ -28,11 +30,13 @@ import type {
   LlmStatus,
   MolNode,
   ParseSuccess,
+  PredictOk,
   Reaction,
   RetroModel,
   RouteScheme,
   RouteStep,
   RunParams,
+  SearchOk,
   Session,
   SessionStatus,
   StepAnalysis,
@@ -910,7 +914,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         }
 
         if (snap.state === 'succeeded') {
-          const res = snap.result!;
+          // 🔴 predict 任务的 result 一定是 PredictOk（search 走另一条 runSearch 路径）。
+          //    JobSnapshot.result 是 `PredictOk | SearchOk` 的 union，这里收窄。
+          const res = snap.result as PredictOk;
           const candidates = materializeCandidates(
             id,
             res.results.map<Reaction>((c) => ({
@@ -1094,43 +1100,226 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   /**
-   * 自动往下拆 K 层：内部**串行多次调用同一个单步接口**（不是 /api/search）。
-   * 每层取 Top-1，随时可停止；受 maxDepth 与 budgetCalls 双重约束。
+   * 把后端 search 返回的**多条完整路线**灌进工作台。
+   *
+   * 呈现策略（最小侵入、复用现有「路线方案」机制）：
+   *   - `routes[0]`（按总概率降序后的最优路线）**重建当前树**；
+   *   - 其余路线各存成一条 `RouteScheme`（choices = nodeId → reactionId 映射），
+   *     用户可在「路线网络」栏 / 方案里随时切换查看、横向对比。
+   *
+   * 🔴 route → 树的转换：search 的 route 是 `steps: [{product, reactants, probability}]`
+   *    从目标往起始物料逐层展开。这里按「SMILES → 节点」建树：
+   *    每个 step 的 product 是一个节点，reactants 是它的前体（children），
+   *    该 step 就是这条路线在 product 节点上**已选定的反应**（chosenReactionId）。
+   *    一条 route 内每个分子只出现一次（Retro* 提取的是无环路径）⇒ 用 SMILES 做 key 安全。
+   */
+  function applySearchRoutes(search: SearchOk): void {
+    const routes = search.routes ?? [];
+    if (!routes.length) return;
+
+    // 1) 清空当前树（"一次搜到底"直接替换，不做增量合并）
+    nodes.value = {};
+    schemes.value = [];
+    currentSchemeId.value = null;
+
+    const rootSmiles = search.target;
+    const root = makeNode({ smiles: rootSmiles, depth: 0 });
+    nodes.value[root.id] = root;
+    rootId.value = root.id;
+    root.fetched = true;
+    root.status = 'expanded';
+    root.activeRunId = null;
+
+    /** SMILES → 节点 id（所有路线共享同一份节点池，相同分子只建一次） */
+    const bySmiles = new Map<string, string>([[rootSmiles, root.id]]);
+    /** Retro* 给出的「不再往下拆」的叶子（起始物料）—— 重原子数可能超阈值，须显式标可购买 */
+    const startSet = new Set(search.starting_materials ?? []);
+
+    /**
+     * 取（或建）某个分子的节点。作为某个反应的「前体」被引入时带上 parentReactionId，
+     * 这样 `adopt` / `simulateScheme` 里的 `childrenOfReaction(reactionId)` 才能凭
+     * parentReactionId 把它找回来 —— 多路线共用同一个中间体时不会重复建、统计也不漏。
+     */
+    const ensureNode = (smi: string, parentDepth: number, parentReactionId?: string): string => {
+      const existing = bySmiles.get(smi);
+      if (existing && nodes.value[existing]) return existing;
+      const node = makeNode({
+        smiles: smi,
+        depth: parentDepth + 1,
+        parentReactionId: parentReactionId ?? null,
+        purchased: startSet.has(smi),
+        atoms: countHeavyAtoms(smi)
+      });
+      node.fetched = true;
+      nodes.value[node.id] = node;
+      bySmiles.set(smi, node.id);
+      return node.id;
+    };
+
+    /**
+     * 沿一条 route 把「节点 + 候选反应」铺进节点池（只填 candidates，不采纳），
+     * 返回这条路线对应的 choices（nodeId → reactionId）。
+     *
+     * 🔴 刻意**不改** `chosenReactionId` / `children`：采纳（把候选接到树上）统一在
+     *    下面 `applyToTree` 做。否则多路线共用同一个根/中间节点时，后处理的路线会
+     *    把先处理路线已经建好的子树覆盖掉（两条路线都从同一个 target 出发，实测
+     *    「最优路线」的树被「备选路线」顶掉了）。
+     */
+    const layRoute = (route: SearchOk['routes'][number]): Record<string, string> => {
+      const choices: Record<string, string> = {};
+      for (const step of route.steps) {
+        const productNodeId = bySmiles.get(step.product);
+        if (!productNodeId) continue; // 目标之外的 product 都应在前面步骤（作为前体）建过了
+        const product = nodes.value[productNodeId];
+        if (!product) continue;
+
+        const precursors = step.reactants.join('.');
+        const reaction: Reaction = {
+          id: reactionIdFor(productNodeId, precursors),
+          productNodeId,
+          rank: 0,
+          probability: step.probability ?? 0,
+          level: levelOf(step.probability ?? 0),
+          precursors,
+          precursorList: step.reactants,
+          numMolecules: step.reactants.length,
+          childNodeIds: []
+        };
+        // 🔴 追加而非覆盖：多条路线可能共享同一个 product（例如都从 target 出发），
+        //    每条路线在这个节点上各有一个候选反应，必须都留着，adopt/applyScheme 才能
+        //    按 reactionId 找到自己那条。
+        if (!product.candidates.some((c) => c.id === reaction.id)) {
+          product.candidates = [...product.candidates, reaction];
+        }
+        product.fetched = true;
+        choices[productNodeId] = reaction.id;
+
+        for (const smi of step.reactants) ensureNode(smi, product.depth, reaction.id);
+      }
+      return choices;
+    };
+
+    // 2) 先把**所有**路线的节点/候选铺进池子（备选方案切过去时 applyScheme 要能找到反应）
+    const routeChoices = routes.map((r) => layRoute(r));
+
+    // 3) 最优路线（routes[0]）接上树：按 depth 从浅到深，把 choices 里每一步的候选
+    //    直接设为 chosenReactionId + 建 children（节点都在池子里，无需再走 adopt 建节点，
+    //    也就不会与「铺池子」那步打架）。
+    const applyToTree = (choices: Record<string, string>): void => {
+      const ordered = Object.values(nodes.value).sort((a, b) => a.depth - b.depth);
+      for (const node of ordered) {
+        const rid = choices[node.id];
+        if (!rid) continue;
+        const reaction = node.candidates.find((c) => c.id === rid);
+        if (!reaction) continue;
+        node.chosenReactionId = rid;
+        node.children = reaction.precursorList
+          .map((smi) => bySmiles.get(smi))
+          .filter((id): id is string => !!id);
+        reaction.childNodeIds = node.children;
+        node.status = 'expanded';
+      }
+    };
+    applyToTree(routeChoices[0]);
+    refreshAllRoles();
+
+    // 4) 其余路线存成备选方案（choices 映射；切过去时 applyScheme 会用 adopt 重建）
+    for (let i = 1; i < routeChoices.length; i += 1) {
+      schemes.value = [
+        ...schemes.value,
+        {
+          id: uid('sch'),
+          name: `搜索路线 ${i + 1}`,
+          createdAt: Date.now(),
+          choices: routeChoices[i]
+        }
+      ];
+    }
+    // 当前展示的是最优路线（已在树上），不挂 currentSchemeId（它是一条"活的"树，非快照）
+    currentSchemeId.value = null;
+    activeNodeId.value = null;
+    schedulePersist();
+  }
+
+  /**
+   * 自动往下拆 = 提交 kind=search 的任务，一次 Retro* 搜到底、吃满预算。
+   *
+   * 🔴 取代旧的「单步循环 Top-1」：旧实现每层只 adopt `candidates[0]`、再被
+   *    `depth >= maxDepth` 封顶 ⇒ 调用次数 ≤ 层级数，`budgetCalls`（默认 40）永远
+   *    够不着（实测只发了 4 次）。改成交给后端 Retro*（best-first 广度搜索），
+   *    预算在 worker 里真吃满，一次返回多条完整路线。
    */
   async function autoRun(): Promise<void> {
     const root = rootId.value;
     if (!root || autoRunning.value) return;
+    const target = nodes.value[root];
+    if (!target) return;
+
     autoRunning.value = true;
     autoStopFlag = false;
-    let calls = 0;
-    const queue: string[] = [root];
-    autoProgress.value = { done: 0, budget: params.value.budgetCalls, label: '' };
+    autoProgress.value = { done: 0, budget: params.value.budgetCalls, label: '正在创建搜索任务…' };
 
     try {
-      while (queue.length && !autoStopFlag && calls < params.value.budgetCalls) {
-        const id = queue.shift();
-        if (!id) break;
-        const node = nodes.value[id];
-        if (!node) continue;
-        refreshRole(node);
-        if (node.depth >= params.value.maxDepth || isTerminal(node) || node.duplicateOf) continue;
+      const created = await retroApi.createSearchJob(target.smiles, {
+        model: params.value.model,
+        maxRoutes: 8,
+        maxCalls: params.value.budgetCalls,
+        timeLimit: 300,
+        maxDepth: params.value.maxDepth,
+        maxHeavyAtoms: params.value.heavyAtomThreshold,
+        valueFn: 'complexity',
+        purchasable: params.value.startingMaterials,
+        requiredMaterials: []
+      });
+      if (!created.ok || !created.job_id) {
+        throw new Error(created.error || '创建路线搜索任务失败');
+      }
+      const jobId = created.job_id;
+      autoProgress.value = { done: 0, budget: params.value.budgetCalls, label: '搜索中…' };
 
-        calls += 1;
+      let logSeq = 0;
+      while (!autoStopFlag) {
+        await sleep(1000);
+        const snap = await retroApi.getJob(jobId, logSeq);
+        if (snap.logs?.length) logSeq = snap.log_seq;
+        if (snap.state === 'succeeded') {
+          const result = snap.result as SearchOk | undefined;
+          if (result && result.ok) {
+            applySearchRoutes(result);
+            autoProgress.value = {
+              done: params.value.budgetCalls,
+              budget: params.value.budgetCalls,
+              label: `完成 · ${result.routes?.length ?? 0} 条路线`
+            };
+          } else {
+            throw new Error((result as { error?: string } | undefined)?.error || '搜索无结果');
+          }
+          return;
+        }
+        if (snap.state === 'failed') {
+          throw new Error(snap.error || '搜索失败');
+        }
+        if (snap.state === 'cancelled') {
+          autoProgress.value = { ...autoProgress.value, label: '已取消' };
+          return;
+        }
+        // running / queued：更新进度条文案
+        const cur = snap.current ? ` · ${snap.current}` : '';
         autoProgress.value = {
-          done: calls,
+          done: Math.round(snap.progress * params.value.budgetCalls),
           budget: params.value.budgetCalls,
-          label: `第 ${node.depth + 1} 层 · ${node.smiles.slice(0, 28)}`
+          label: `搜索中${cur}`
         };
-        await predictNode(id, { force: true, silent: true });
-        if (autoStopFlag) break;
-        const chosen = node.candidates[0];
-        if (!chosen) continue;
-        adopt(chosen.id);
-        queue.push(...node.children);
+      }
+    } catch (e) {
+      if (isAbort(e) || autoStopFlag) {
+        autoProgress.value = { ...autoProgress.value, label: '已停止' };
+      } else {
+        autoProgress.value = { ...autoProgress.value, label: '搜索失败' };
+        setGlobalError((e as Error).message, () => void autoRun());
       }
     } finally {
       autoRunning.value = false;
-      autoProgress.value = { ...autoProgress.value, label: autoStopFlag ? '已停止' : '完成' };
     }
   }
 

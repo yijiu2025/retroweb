@@ -1,9 +1,11 @@
 /**
  * 逆合成模型服务 API（Flask 8000）
  *
- * ⚠️ 只调 `/api/predict`（**一次调用 = 一步逆合成**）。
- * 原项目的 `/api/search`（Retro* 一次搜到底）刻意不用 —— 本工作台要的是
- * 「多次一步」：由前端反复调用单步接口，把路线树自己长出来。
+ * 两条路径并存：
+ * - `/api/jobs`（kind=predict）：**一次调用 = 一步逆合成**，前端反复调单步接口，
+ *   把路线树自己长出来（`createJob` + `getJob` 轮询）。
+ * - `/api/jobs`（kind=search）：**一次 Retro* 搜到底**，返回多条完整路线
+ *   （`createSearchJob`），对应界面「自动往下拆」改为一次吃满预算的搜索。
  *
  * Flask 返回的是裸 JSON（没有 node 后端的 {code,message,data} 信封），
  * 所以这里独立建一个实例，不做信封拆包。
@@ -152,6 +154,45 @@ export const retroApi = {
       return data;
     } catch (e) {
       fail(e, '创建分析任务失败');
+    }
+  },
+
+  /**
+   * 创建一个后台**搜索**任务（kind=search，一次 Retro* 搜到底），立即返回 job_id。
+   * 与 createJob 的区别：kind=search，且入参是搜索参数（max_depth / max_calls /
+   * max_heavy_atoms / purchasable …），对应界面「拆分约束」里的设置。
+   */
+  async createSearchJob(
+    smiles: string,
+    params: {
+      model: string;
+      maxRoutes: number;
+      maxCalls: number;
+      timeLimit: number;
+      maxDepth: number;
+      maxHeavyAtoms: number;
+      valueFn: string;
+      purchasable: string[];
+      requiredMaterials: string[];
+    }
+  ): Promise<JobCreateResponse> {
+    try {
+      const { data } = await retroClient.post<JobCreateResponse>('/jobs', {
+        smiles,
+        kind: 'search',
+        model: params.model,
+        max_routes: params.maxRoutes,
+        max_calls: params.maxCalls,
+        time_limit: params.timeLimit,
+        max_depth: params.maxDepth,
+        max_heavy_atoms: params.maxHeavyAtoms,
+        value_fn: params.valueFn,
+        purchasable: params.purchasable,
+        required_materials: params.requiredMaterials
+      });
+      return data;
+    } catch (e) {
+      fail(e, '创建路线搜索任务失败');
     }
   },
 

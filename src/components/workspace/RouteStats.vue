@@ -34,7 +34,10 @@ const pct = computed(() => {
 
 /** 整体状态文案：优先报"正在跑"，其次报"有没有做错事" */
 const stateText = computed(() => {
-  if (store.autoRunning) return `自动拆分层 ${store.autoProgress.done}/${store.autoProgress.budget}`;
+  // 🔴 自动拆分已改成「一次 Retro* 搜到底」：进度文案由 store.autoProgress.label 给出
+  //    （「正在创建搜索任务…」/「搜索中…」/「完成 · N 条路线」），不再是旧的
+  //    「自动拆分层 x/y」单步口径（那条口径已被 autoRun 重写取代）。
+  if (store.autoRunning) return store.autoProgress.label || `搜索中 ${store.autoProgress.done}/${store.autoProgress.budget}`;
   if (running.value > 0) return `${running.value} 个节点分析中`;
   if (store.globalError) return '有错误待处理';
   if (store.stats.total === 0) return '还没有展开任何一步';
@@ -64,7 +67,7 @@ const stateClass = computed(() => {
       <i :style="{ width: `${pct}%` }" />
     </span>
 
-    <!-- 自动拆分是长任务（可能几十次单步调用）⇒ 必须留一个停止出口。
+    <!-- 自动拆分是长任务（一次 Retro* 搜索可达几分钟）⇒ 必须留一个停止出口。
          它原来在右栏「运行参数」里，随「自动往下拆」按钮一起搬到了新建分析界面；
          而运行中界面已经在路线态，所以停在状态条上最顺手。 -->
     <button v-if="store.autoRunning" type="button" class="rstat__stop" @click="store.stopAuto()">
