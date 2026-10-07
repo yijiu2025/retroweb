@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /**
  * AI 工艺分析面板 —— 把「这一步反应」交给大模型，产出可执行的工艺细节：
- * 投料顺序 / 当量 / 条件 / 预期结果与收率 / 可能的副产物 / LCMS / NMR / 安全。
+ * 投料顺序 / 当量 / 条件 / 后处理 / 预期结果与收率 / 可能的副产物 / LCMS / NMR / 安全。
  *
  * 两条数据线刻意分开：
  *   · **LCMS 的数值**由后端 RDKit 算（`computed`）—— 确定性、可核对，不让模型瞎算；
@@ -9,10 +9,15 @@
  *
  * 结果按 reactionId 存在节点上（store.analyzeStep），所以换个分子/换种拆法各有各的一份，
  * 全都保留，不会互相覆盖。
+ *
+ * 追问：分析完成后可以在下方继续提问（store.askFollowup）。请求会带上
+ * **产物 / 前体 / 路线上下文 + 这份结构化分析 + 历史问答**，回答是自由文本（不是 JSON），
+ * 所以问「放大热风险」「换溶剂」这类分析结构里没覆盖的问题也能得到连贯回答。
  */
 import { computed, ref } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { MassRow, StepAnalysis } from '@/types/retro';
+import MolView from '@/components/mol/MolView.vue';
 
 const props = defineProps<{ nodeId: string }>();
 const store = useWorkspaceStore();
@@ -40,7 +45,7 @@ const COND_LABELS: Record<string, string> = {
   time: '反应时间',
   atmosphere: '气氛',
   catalyst: '催化剂 / 碱 / 缩合剂',
-  workup: '后处理与纯化'
+  workup: '后处理概览'
 };
 
 const condEntries = computed(() => {
@@ -50,6 +55,27 @@ const condEntries = computed(() => {
     .filter(([, v]) => String(v || '').trim())
     .map(([k, v]) => ({ key: k, label: COND_LABELS[k] ?? k, value: String(v) }));
 });
+
+/** 后处理分析：从「反应结束」到「拿到纯品」的逐步操作（`notes` 单独渲染成要点） */
+const WORKUP_LABELS: Record<string, string> = {
+  quench: '淬灭',
+  extraction: '萃取 / 分液',
+  wash: '洗涤',
+  dry: '干燥',
+  concentration: '浓缩',
+  purification: '纯化',
+  recovery: '回收率与纯度'
+};
+
+const workupEntries = computed(() => {
+  const w = analysis.value?.data?.workup;
+  if (!w) return [] as { key: string; label: string; value: string }[];
+  return Object.entries(w)
+    .filter(([k, v]) => k !== 'notes' && String(v || '').trim())
+    .map(([k, v]) => ({ key: k, label: WORKUP_LABELS[k] ?? k, value: String(v) }));
+});
+
+const workupNotes = computed(() => analysis.value?.data?.workup?.notes ?? []);
 
 /** 产物 + 各前体的确定性质量（LCMS 数值来源） */
 const massRows = computed<MassRow[]>(() => analysis.value?.computed?.rows ?? []);
@@ -64,6 +90,22 @@ const precursorRows = computed<MassRow[]>(() =>
 
 function run(force = false): void {
   void store.analyzeStep(props.nodeId, { force });
+}
+function resume(): void {
+  void store.analyzeStep(props.nodeId, { continue: true });
+}
+
+/* ---------- 追问（携带上下文，问这一步反应的其他问题） ---------- */
+const followups = computed(() => analysis.value?.followups ?? []);
+const question = ref('');
+const asking = computed(() => followups.value.some((f) => f.status === 'streaming'));
+
+function ask(): void {
+  const q = question.value.trim();
+  if (!q || asking.value) return;
+  // 先清空输入框：提问内容已经交给 store，留着反而让人以为没发出去
+  question.value = '';
+  void store.askFollowup(props.nodeId, q);
 }
 </script>
 
@@ -87,6 +129,14 @@ function run(force = false): void {
         </el-button>
         <template v-else>
           <el-button v-if="status === 'done'" size="small" @click="run(true)">重新分析</el-button>
+          <el-button
+            v-else-if="status === 'failed' && analysis?.raw"
+            size="small"
+            type="primary"
+            @click="resume"
+          >
+            接着分析
+          </el-button>
           <el-button v-else size="small" type="primary" @click="run(false)">
             {{ status === 'failed' ? '重试' : '开始分析' }}
           </el-button>
@@ -122,7 +172,7 @@ function run(force = false): void {
       <div class="ana__streaming-line">
         <span class="ana__dot" />
         <template v-if="thinkingOnly">
-          <span>模型正在思考…（推理模型，正文稍后开始；已思考 {{ thinkChars }} 字）</span>
+          <span>模型正在思考…（推理模型，正文稍后开始；已思考 {{ thinkChars }} 字，思考不计入最终结果）</span>
         </template>
         <template v-else>
           <span>模型正在输出…（{{ (analysis?.raw || '').length }} 字符）</span>
@@ -152,6 +202,58 @@ function run(force = false): void {
       <p v-if="analysis.data.summary" class="ana__summary">{{ analysis.data.summary }}</p>
       <div v-if="analysis.data.reaction_type" class="ana__type">
         反应类型：<b>{{ analysis.data.reaction_type }}</b>
+      </div>
+
+      <!-- 反应机理：逐步电子转移。放在投料顺序之前 —— 先讲清"为什么"，再谈"怎么投料" -->
+      <div v-if="analysis.data.mechanism" class="ana__block">
+        <div class="ana__h">
+          反应机理
+          <span v-if="analysis.data.mechanism.type" class="ana__mech-type">
+            {{ analysis.data.mechanism.type }}
+          </span>
+        </div>
+
+        <ol v-if="analysis.data.mechanism.steps?.length" class="ana__mech-steps">
+          <li v-for="(s, i) in analysis.data.mechanism.steps" :key="i">
+            <b>{{ s.step || `步骤 ${s.seq ?? i + 1}` }}</b>
+            <span v-if="s.detail">{{ s.detail }}</span>
+          </li>
+        </ol>
+
+        <div v-if="analysis.data.mechanism.intermediates?.length" class="ana__mech-inter">
+          <span class="ana__mech-label">中间体</span>
+          <ul>
+            <li v-for="(it, i) in analysis.data.mechanism.intermediates" :key="i">
+              <b>{{ it.name || '—' }}</b>
+              <span v-if="it.note"> · {{ it.note }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <dl
+          v-if="analysis.data.mechanism.rate_determining || analysis.data.mechanism.selectivity"
+          class="ana__cond"
+        >
+          <template v-if="analysis.data.mechanism.rate_determining">
+            <dt>决速步</dt>
+            <dd>{{ analysis.data.mechanism.rate_determining }}</dd>
+          </template>
+          <template v-if="analysis.data.mechanism.selectivity">
+            <dt>选择性来源</dt>
+            <dd>{{ analysis.data.mechanism.selectivity }}</dd>
+          </template>
+        </dl>
+
+        <div v-if="analysis.data.mechanism.evidence?.length" class="ana__mech-ev">
+          <span class="ana__mech-label">可验证判据</span>
+          <ul>
+            <li v-for="(ev, i) in analysis.data.mechanism.evidence" :key="i">{{ ev }}</li>
+          </ul>
+        </div>
+
+        <p class="ana__warn">
+          机理为模型基于反应类型的推断，未经实验验证；方框中如有与投料顺序矛盾之处，以实测为准。
+        </p>
       </div>
 
       <div v-if="analysis.data.order?.length" class="ana__block">
@@ -186,6 +288,26 @@ function run(force = false): void {
             <dd>{{ c.value }}</dd>
           </template>
         </dl>
+      </div>
+
+      <!-- 后处理分析：反应结束 → 拿到纯品的逐步操作（与「条件」里的后处理概览互补） -->
+      <div v-if="workupEntries.length || workupNotes.length" class="ana__block">
+        <div class="ana__h">
+          后处理分析
+          <span class="ana__tag-flow">淬灭 → 萃取 → 洗涤 → 干燥 → 浓缩 → 纯化</span>
+        </div>
+        <dl v-if="workupEntries.length" class="ana__cond">
+          <template v-for="w in workupEntries" :key="w.key">
+            <dt>{{ w.label }}</dt>
+            <dd>{{ w.value }}</dd>
+          </template>
+        </dl>
+        <div v-if="workupNotes.length" class="ana__mech-ev">
+          <span class="ana__mech-label">放大注意</span>
+          <ul>
+            <li v-for="(n, i) in workupNotes" :key="i">{{ n }}</li>
+          </ul>
+        </div>
       </div>
 
       <div v-if="analysis.data.outcome" class="ana__block">
@@ -234,7 +356,7 @@ function run(force = false): void {
           LCMS 预测
           <span class="ana__tag-done">m/z 由 RDKit 精确质量计算</span>
         </div>
-        <table v-if="massRows.length" class="ana__table">
+        <table v-if="massRows.length" class="ana__table ana__table--lcms">
           <thead>
             <tr>
               <th>分子</th>
@@ -248,9 +370,13 @@ function run(force = false): void {
           <tbody>
             <tr v-for="r in massRows" :key="r.smiles">
               <td class="ana__smiles">
-                <span v-if="r.smiles === node?.smiles" class="ana__role">产物</span>
-                <span v-else class="ana__role ana__role--pre">前体</span>
-                <code class="rw-mono">{{ r.smiles.length > 22 ? r.smiles.slice(0, 22) + '…' : r.smiles }}</code>
+                <div class="ana__mol">
+                  <span v-if="r.smiles === node?.smiles" class="ana__role">产物</span>
+                  <span v-else class="ana__role ana__role--pre">前体</span>
+                  <div class="ana__struct">
+                    <MolView :smiles="r.smiles" :bond-px="22" :min-px="52" :max-px="120" fit />
+                  </div>
+                </div>
               </td>
               <td>{{ r.formula || '—' }}</td>
               <td>{{ r.exact_mass ?? '—' }}</td>
@@ -292,6 +418,57 @@ function run(force = false): void {
         <span class="ana__conf-hint">（低把握度时请务必人工复核）</span>
       </div>
     </template>
+
+    <!-- 追问：分析出结果后，可以带着这一步的上下文继续问它别的问题。
+         带过去的是「产物 / 前体 / 路线上下文 + 这份分析 + 上面的历史问答」——
+         所以追问能接着前文答，不会答成对另一个反应的评论。 -->
+    <div v-if="status === 'done' && analysis?.data" class="ana__fu">
+      <div class="ana__h">
+        追问
+        <span class="ana__tag-flow">携带本步上下文与上文分析</span>
+      </div>
+
+      <div v-if="followups.length" class="ana__fu-list">
+        <div v-for="f in followups" :key="f.id" class="ana__fu-item">
+          <div class="ana__fu-q">
+            <span class="ana__fu-qmark">问</span>
+            <span>{{ f.q }}</span>
+          </div>
+          <pre v-if="f.a" class="ana__raw ana__fu-a rw-scroll">{{ f.a }}</pre>
+          <div v-else-if="f.status === 'streaming'" class="ana__fu-wait">
+            <span class="ana__dot" />
+            <span>模型正在回答…（自由文本，不受上面的 JSON 结构约束）</span>
+          </div>
+          <div v-else class="ana__error">回答失败：{{ f.error || '未知错误' }}</div>
+        </div>
+      </div>
+
+      <div class="ana__fu-ask">
+        <el-input
+          v-model="question"
+          type="textarea"
+          :autosize="{ minRows: 1, maxRows: 4 }"
+          resize="none"
+          :disabled="asking"
+          placeholder="问这一步的其他问题，例：放大到 100 g 时放热怎么控？后处理有没有更省溶剂的替代？"
+          @keyup.enter.exact="ask"
+        />
+        <div class="ana__fu-ops">
+          <el-button
+            type="primary"
+            size="small"
+            :disabled="!question.trim() || asking"
+            :loading="asking"
+            @click="ask"
+          >
+            追问
+          </el-button>
+          <el-button v-if="asking" size="small" text type="danger" @click="store.cancelFollowup(nodeId)">
+            停止
+          </el-button>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -349,6 +526,113 @@ function run(force = false): void {
   color: var(--rw-text-2);
 }
 
+/* ---------- 反应机理 ---------- */
+.ana__mech-type {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--rw-brand-d);
+  background: var(--rw-brand-l);
+  border: 1px solid var(--rw-brand-soft);
+}
+
+/* 逐步机理：左侧一条竖线串起步骤序号，读起来像一条反应坐标 */
+.ana__mech-steps {
+  margin: 0;
+  padding: 0 0 0 4px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  counter-reset: mech;
+}
+
+.ana__mech-steps li {
+  position: relative;
+  counter-increment: mech;
+  padding: 0 0 10px 30px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--rw-text-2);
+}
+
+/* 连接线：最后一步不画，避免尾巴悬空 */
+.ana__mech-steps li::before {
+  content: '';
+  position: absolute;
+  left: 11px;
+  top: 18px;
+  bottom: 0;
+  width: 1px;
+  background: var(--rw-border-strong);
+}
+
+.ana__mech-steps li:last-child {
+  padding-bottom: 0;
+}
+
+.ana__mech-steps li:last-child::before {
+  display: none;
+}
+
+/* 序号圆点 */
+.ana__mech-steps li::after {
+  content: counter(mech);
+  position: absolute;
+  left: 0;
+  top: 1px;
+  width: 23px;
+  height: 23px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--rw-brand-l);
+  border: 1px solid var(--rw-brand-soft);
+  color: var(--rw-brand-d);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.ana__mech-steps li b {
+  display: block;
+  color: var(--rw-text);
+  font-size: 12.5px;
+}
+
+.ana__mech-inter,
+.ana__mech-ev {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--rw-text-2);
+}
+
+.ana__mech-label {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.ana__mech-inter ul,
+.ana__mech-ev ul {
+  margin: 0;
+  padding-left: 16px;
+  min-width: 0;
+}
+
+.ana__mech-inter b {
+  color: var(--rw-text);
+}
+
 .ana__block {
   display: flex;
   flex-direction: column;
@@ -371,6 +655,19 @@ function run(force = false): void {
   background: var(--rw-ok-l);
   border-radius: 999px;
   padding: 1px 7px;
+}
+
+/* 后处理流程提示：中性弱化的胶囊，只作阅读顺序引导 */
+.ana__tag-flow {
+  font-size: 10.5px;
+  font-weight: 400;
+  color: var(--rw-text-3);
+  background: var(--rw-surface-3);
+  border-radius: 999px;
+  padding: 1px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ana__table {
@@ -412,7 +709,37 @@ function run(force = false): void {
 }
 
 .ana__smiles {
-  white-space: nowrap;
+  min-width: 150px;
+}
+
+/* 角标在左、结构式在右，垂直居中 —— 行高由结构图撑起，不浪费纵向空间 */
+.ana__mol {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ana__struct {
+  width: 140px;
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--rw-border);
+  border-radius: 8px;
+  background: var(--rw-surface-2);
+  padding: 3px;
+}
+
+/* LCMS 表：行高被结构图撑起来后，数值列改垂直居中更整齐 */
+.ana__table--lcms td,
+.ana__table--lcms th {
+  vertical-align: middle;
+}
+
+.ana__table--lcms tbody td {
+  padding-top: 7px;
+  padding-bottom: 7px;
 }
 
 .ana__role {
@@ -571,5 +898,78 @@ function run(force = false): void {
 
 .ana__think .ana__raw {
   margin-top: 6px;
+}
+
+/* ---------- 追问 ---------- */
+.ana__fu {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--rw-border);
+}
+
+.ana__fu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ana__fu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ana__fu-q {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--rw-text);
+}
+
+.ana__fu-qmark {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  padding: 0 6px;
+  border-radius: 5px;
+  background: var(--rw-brand-l);
+  color: var(--rw-brand-d);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* 回答是自由文本（可能是 markdown 段落），用等宽块但允许换行阅读 */
+.ana__fu-a {
+  max-height: 320px;
+  background: var(--rw-surface);
+}
+
+.ana__fu-wait {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--rw-brand-d);
+}
+
+.ana__fu-ask {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.ana__fu-ask :deep(.el-textarea) {
+  flex: 1;
+  min-width: 0;
+}
+
+.ana__fu-ops {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 0 0 auto;
 }
 </style>

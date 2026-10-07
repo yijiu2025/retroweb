@@ -18,6 +18,7 @@
  *       本组件只负责「居中卡片 + 参数并排」的版式与切换时机。
  */
 import { computed } from 'vue';
+import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import TargetInput from './TargetInput.vue';
 import RunParams from './RunParams.vue';
@@ -36,6 +37,31 @@ const store = useWorkspaceStore();
  *   （见 store.closeTargetSetup 的守卫）。
  */
 const visible = computed(() => store.targetSetupOpen);
+
+/** 多步拆分要先把目标解析出来（根节点在树上） */
+const canAuto = computed(() => !!store.rootId && !store.autoRunning);
+const autoDepth = computed(() => store.params.maxDepth);
+const autoBudget = computed(() => store.params.budgetCalls);
+
+/**
+ * 多步自动拆分 —— 从**新建分析界面**发起。
+ *
+ * 🔴 为什么放在这里（而不是右栏运行参数里）：它是「决定这个任务怎么跑」的开场动作，
+ *    与「确定目标，开始分析」是同一个阶段的两条路（一条自动、一条手动逐步），
+ *    放在标定卡片里才有语境。运行中要停的话，状态条（右栏底部）上有「停止」。
+ *
+ * 🔴 与「确定目标，开始分析」的关系：两个都是**任务起点**，点任意一个都会收起本面板。
+ *    `closeTargetSetup()` 只在 rootId 非空时生效（守卫在 store 里），所以这里先判 rootId。
+ */
+async function onAuto(): Promise<void> {
+  if (!store.rootId) {
+    ElMessage.warning('先解析一个目标分子');
+    return;
+  }
+  store.closeTargetSetup();
+  await store.autoRun();
+  ElMessage.success(store.autoProgress.label === '已停止' ? '已停止自动拆分' : '多步拆分完成');
+}
 </script>
 
 <template>
@@ -55,6 +81,35 @@ const visible = computed(() => store.targetSetupOpen);
         <aside class="setup__params">
           <RunParams />
         </aside>
+      </div>
+
+      <!-- 多步拆分：与左栏「确定目标，开始分析」并列的第二条起跑线。
+           自动那条一次拆到底（每层取 Top-1），手动那条由用户在逆合成树里逐步挑候选。 -->
+      <div class="setup__auto">
+        <div class="setup__auto-info">
+          <span class="setup__auto-title">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M4 2v12M4 8h8M8 4l4 4-4 4" />
+            </svg>
+            多步自动拆分
+          </span>
+          <span class="setup__auto-hint">
+            按右侧「拆分约束」连续往下拆（最大深度 {{ autoDepth }} 层 · 预算 {{ autoBudget }} 次调用 · 命中起始物料即停），
+            每层取 Top-1，运行中可在右栏底部随时停止。想逐步挑候选，就用上面的「确定目标，开始分析」。
+          </span>
+        </div>
+        <div class="setup__auto-ops">
+          <el-button
+            type="primary"
+            plain
+            :disabled="!canAuto"
+            :loading="store.autoRunning"
+            @click="onAuto"
+          >
+            自动往下拆 {{ autoDepth }} 层
+          </el-button>
+          <el-button v-if="store.autoRunning" type="danger" plain @click="store.stopAuto()">停止</el-button>
+        </div>
       </div>
     </section>
   </div>
@@ -144,6 +199,57 @@ const visible = computed(() => store.targetSetupOpen);
   padding-right: 0;
 }
 
+/* ---------- 多步自动拆分（卡片底部的第二条起跑线） ---------- */
+.setup__auto {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px dashed var(--rw-border);
+}
+
+.setup__auto-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.setup__auto-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rw-text);
+}
+
+.setup__auto-title svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: var(--rw-brand);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.setup__auto-hint {
+  font-size: 11.5px;
+  line-height: 1.65;
+  color: var(--rw-text-3);
+}
+
+.setup__auto-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 /* 窄屏/矮屏：两栏堆叠，且不再强制居中（否则内容超出后顶部被裁） */
 @media (max-width: 1080px) {
   .setup {
@@ -163,6 +269,12 @@ const visible = computed(() => store.targetSetupOpen);
   .setup__card {
     padding: 18px 14px 16px;
     border-radius: 12px;
+  }
+
+  .setup__auto {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
   }
 }
 </style>

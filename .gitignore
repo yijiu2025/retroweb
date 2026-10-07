@@ -4,7 +4,7 @@ dist-ssr/
 # 版式验收 / 量首屏用的临时构建目录（约定命名为 dist-verify 等，一律不入库）
 dist-*/
 .vite-dev.log
-.tmp-dev.log
+.tmp-*.log
 *.local
 
 # 版式验收探针脚本（playwright 驱动，跑完即弃，不是产品代码）

@@ -29,6 +29,13 @@
   --rw-bad: #dc2626;
   --rw-bad-l: #fef2f2;
 
+  /* 「贴在图上」的路线标注色（学 Reaxys 的橙）：只用于路线图里的
+     虚线组框（可购买原料）与虚线圈（未知化合物）—— 与品牌色的分工是
+     「品牌色 = 当前/主操作」「标注色 = 图上的一种状态」，别互相串用。 */
+  --rw-anno: #d97706;
+  --rw-anno-d: #b45309;
+  --rw-anno-l: #fffbeb;
+
   --rw-radius-sm: 8px;
   --rw-radius: 12px;
   --rw-radius-lg: 16px;
@@ -72,6 +79,11 @@ html.dark {
   --rw-warn-l: #2b1f05;
   --rw-bad: #f87171;
   --rw-bad-l: #2d1113;
+
+  /* 路线标注色（暗色下提亮，见 :root 处的说明） */
+  --rw-anno: #f0a52a;
+  --rw-anno-d: #fbbf24;
+  --rw-anno-l: #241a06;
 
   --rw-shadow-1: 0 1px 2px rgba(0, 0, 0, 0.3);
   --rw-shadow-2: 0 1px 2px rgba(0, 0, 0, 0.3), 0 10px 26px -14px rgba(0, 0, 0, 0.6);

@@ -7,9 +7,11 @@
  * │  设定目标并分析后，这张卡**整体消失**。                          │
  * └──────────────────────────────────────────────────────────────────┘
  * ┌─ 路线态（已有目标）──────────────────────────────────────────────┐
- * │  顶部：目标分子条（结构缩略 + 性质 + 换目标）                     │
- * │  主区：路线树 / 合成路线 / 每步流程 三页签（**单列，独占整宽**）  │
- * │  底部：状态底栏（见 RouteStats，由 AppShell 挂在内容区末尾）      │
+ * │  顶部：通知条（合规提示可关闭）+ 路线方案（有方案才出现）          │
+ * │  主区：目标分析 / 逆合成树 / 路线网络 / 步骤详情 四页签            │
+ * │        **默认「目标分析」**（目标分子 + 已确认路线），不直接甩树  │
+ * │  左栏：目标分析卡（结构 + 已确认路线摘要），与「最近的任务」并列   │
+ * │  右栏：运行参数 / 方案对比，底部挂状态条（见 RouteStats）          │
  * └──────────────────────────────────────────────────────────────────┘
  *
  * 🔴 路线态为什么不再自带参数栏：
@@ -25,18 +27,23 @@
  */
 import { computed, onMounted, ref } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { useSettingsStore } from '@/stores/settings';
 import TargetSetupPanel from '@/components/workspace/TargetSetupPanel.vue';
-import TargetBar from '@/components/workspace/TargetBar.vue';
+import TargetOverview from '@/components/workspace/TargetOverview.vue';
 import StepTree from '@/components/workspace/StepTree.vue';
-import RouteSummary from '@/components/workspace/RouteSummary.vue';
+import RouteCanvas from '@/components/workspace/RouteCanvas.vue';
 import RouteFlow from '@/components/workspace/RouteFlow.vue';
 import SchemeBar from '@/components/workspace/SchemeBar.vue';
-import MolView from '@/components/mol/MolView.vue';
+import MolPreviewDialog from '@/components/mol/MolPreviewDialog.vue';
 
 const store = useWorkspaceStore();
+const settings = useSettingsStore();
 
-/** 页签放在 store 里：路线树里点「工艺分析」能直接跳到「每步流程」并聚焦该步 */
-const tab = computed<'tree' | 'route' | 'flow'>({
+/**
+ * 页签放在 store 里：路线树里点「工艺分析」能直接跳到「步骤详情」并聚焦该步。
+ * 默认值也是 store 给的（`overview` = 目标分析总览，见 store.mainTab 注释）。
+ */
+const tab = computed<'overview' | 'tree' | 'route' | 'flow'>({
   get: () => store.mainTab,
   set: (v) => {
     store.mainTab = v;
@@ -49,6 +56,25 @@ const previewSmiles = ref('');
 function openPreview(smiles: string): void {
   previewSmiles.value = smiles;
   previewVisible.value = true;
+}
+
+/**
+ * 错误文案人性化：store.globalError 里常落着 axios 的原始 message
+ * （「Request failed with status code 502」），对用户是噪音。
+ * 这里把可识别的模式翻成人话；翻不出的原样透出。
+ */
+function humanizeError(msg: string): string {
+  const m = msg.match(/status code (\d{3})/i);
+  if (m) {
+    const code = m[1];
+    if (code.startsWith('5')) return `后端服务暂不可用（HTTP ${code}）：请确认后端 API 已启动，或稍后重试`;
+    if (code === '401') return '登录已过期（HTTP 401），请重新登录';
+    if (code === '404') return '接口不存在（HTTP 404）：前后端版本可能不一致';
+    return `请求失败（HTTP ${code}）`;
+  }
+  if (/network error/i.test(msg)) return '网络错误：无法连接后端服务';
+  if (/timeout of|timeout/i.test(msg)) return '请求超时：后端响应时间过长，可稍后重试';
+  return msg;
 }
 
 onMounted(() => {
@@ -74,42 +100,79 @@ onMounted(() => {
   <!-- ============ 路线态 ============
        🔴 单列：参数栏已交给 AppShell 的右辅助面板，这里不再有第二列栅格。 -->
   <div v-else class="workspace">
-    <TargetBar @preview="openPreview" />
-    <SchemeBar />
+    <!-- 目标分子已移到左侧栏的「目标分析」卡（与「最近的任务」并列），
+         主区顶部不再占这一行 —— 见 AppShell 的 .app__target。 -->
 
-    <el-alert type="warning" :closable="false" class="workspace__alert">
-      <template #title>
-        模型预测可能存在幻觉：排名越靠后越可能不合理，实验前必须由专业人员验证。
-      </template>
-    </el-alert>
+    <!-- 路线方案栏：**有方案才渲染**。无方案时入口在左栏目标分析卡的「存为新方案」。 -->
+    <SchemeBar v-if="store.schemeStats.length" />
 
-    <el-alert
-      v-if="store.globalError"
-      type="error"
-      :closable="true"
-      :title="store.globalError"
-      class="workspace__alert"
-      @close="store.globalError = null"
-    />
+    <!-- 通知区：合规提示 + 全局错误。统一的轻量细条（替代 el-alert 的大色块，
+         两条摞在一起时不再把工作台顶成「告警大杂烩」） -->
+    <div class="workspace__notices">
+      <!-- 合规提示可以关掉（状态落盘），在「目标分析」总览页可重新打开 -->
+      <div v-if="!settings.hideDisclaimer" class="workspace__notice workspace__notice--warn">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M8 2 15 14H1L8 2Z" />
+          <path d="M8 6.6v3.2M8 12.1v.1" />
+        </svg>
+        <span class="workspace__notice-text">
+          模型预测可能存在幻觉：排名越靠后越可能不合理，实验前必须由专业人员验证。
+        </span>
+        <button
+          type="button"
+          class="workspace__notice-close"
+          title="关闭该提示（可在「目标分析」页重新打开）"
+          aria-label="关闭"
+          @click="settings.hideDisclaimer = true"
+        >
+          ×
+        </button>
+      </div>
+
+      <div v-if="store.globalError" class="workspace__notice workspace__notice--error">
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          <circle cx="8" cy="8" r="6.3" />
+          <path d="M8 5v3.6M8 11.1v.1" />
+        </svg>
+        <span class="workspace__notice-text">{{ humanizeError(store.globalError) }}</span>
+        <!-- 「重试」重做**刚才失败的那件事**（store.errorRetry），比刷新页面安全：
+             刷新会丢掉还没保存的路线树 -->
+        <button
+          v-if="store.errorRetry"
+          type="button"
+          class="workspace__notice-btn"
+          @click="store.retryError()"
+        >
+          重试
+        </button>
+        <button
+          type="button"
+          class="workspace__notice-close"
+          aria-label="关闭"
+          @click="store.clearGlobalError()"
+        >
+          ×
+        </button>
+      </div>
+    </div>
 
     <el-tabs v-model="tab" class="workspace__tabs">
-      <el-tab-pane label="路线树" name="tree">
+      <!-- 默认页签：打开任务先看「在拆什么 + 已确认到哪一步」，而不是一屏未成形的树 -->
+      <el-tab-pane label="目标分析" name="overview">
+        <TargetOverview @preview="openPreview" />
+      </el-tab-pane>
+      <el-tab-pane label="逆合成树" name="tree">
         <StepTree @preview="openPreview" />
       </el-tab-pane>
-      <el-tab-pane label="合成路线" name="route">
-        <RouteSummary />
+      <el-tab-pane label="路线网络" name="route">
+        <RouteCanvas @preview="openPreview" />
       </el-tab-pane>
-      <el-tab-pane label="每步流程" name="flow">
+      <el-tab-pane label="步骤详情" name="flow">
         <RouteFlow />
       </el-tab-pane>
     </el-tabs>
 
-    <el-dialog v-model="previewVisible" :title="'结构预览'" width="560" align-center>
-      <div class="workspace__preview">
-        <MolView :smiles="previewSmiles" :bond-px="52" :min-px="200" :max-px="520" />
-        <code class="rw-mono">{{ previewSmiles }}</code>
-      </div>
-    </el-dialog>
+    <MolPreviewDialog v-model="previewVisible" :smiles="previewSmiles" />
   </div>
 </template>
 
@@ -134,7 +197,8 @@ onMounted(() => {
 .workspace {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 顶部到主区整条竖栈都吃这个间距，10px 比 12px 更紧但仍分得开各块 */
+  gap: 10px;
   min-width: 0;
 }
 
@@ -142,22 +206,135 @@ onMounted(() => {
   font-size: 12.5px;
 }
 
-.workspace__tabs :deep(.el-tabs__content) {
-  overflow: visible;
-}
-
-.workspace__preview {
+/* ---------- 通知区（警告 / 错误统一形态） ----------
+   细边 + 极浅底 + 小图标，比 el-alert 少一半视觉重量；
+   语义色只落在图标与描边上，正文保持可读的中性色。
+   容器只负责堆叠间距 —— 两条同时出现时各自成行，不再互相挤。 */
+.workspace__notices {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 0;
+  gap: 6px;
 }
 
-.workspace__preview code {
+.workspace__notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: var(--rw-radius-sm);
   font-size: 12px;
+  line-height: 1.5;
   color: var(--rw-text-2);
-  word-break: break-all;
-  text-align: center;
+}
+
+.workspace__notice > svg {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* 正文吃掉剩余宽度，把「重试 / 关闭」稳定推到最右 */
+.workspace__notice-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.workspace__notice--warn {
+  border: 1px solid color-mix(in srgb, var(--rw-warn) 38%, transparent);
+  background: var(--rw-warn-l);
+}
+
+.workspace__notice--warn > svg {
+  color: var(--rw-warn);
+}
+
+.workspace__notice--error {
+  border: 1px solid color-mix(in srgb, var(--rw-bad) 38%, transparent);
+  background: var(--rw-bad-l);
+}
+
+.workspace__notice--error > svg {
+  color: var(--rw-bad);
+}
+
+/* 「重试」：语义色描边小按钮 —— 有重试动作时才渲染 */
+.workspace__notice-btn {
+  flex-shrink: 0;
+  padding: 2px 10px;
+  border: 1px solid color-mix(in srgb, var(--rw-bad) 42%, transparent);
+  border-radius: 5px;
+  background: var(--rw-surface);
+  color: var(--rw-bad);
+  font-size: 11.5px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.workspace__notice-btn:hover {
+  background: var(--rw-bad-l);
+}
+
+.workspace__notice-close {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rw-text-3);
+  font-size: 15px;
+  line-height: 1.4;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.workspace__notice-close:hover {
+  color: var(--rw-text);
+  background: var(--rw-surface-3);
+}
+
+/* ---------- 页签 ----------
+   压缩：Element Plus 默认 header 40px，这里收到 34px；
+   选中态换成「品牌色 + 加粗 + 2px 圆角下划线」，比默认的细灰线更明确。 */
+.workspace__tabs :deep(.el-tabs__header) {
+  margin-bottom: 12px;
+}
+
+.workspace__tabs :deep(.el-tabs__item) {
+  height: 34px;
+  line-height: 34px;
+  padding: 0 16px;
+  font-size: 13px;
+  color: var(--rw-text-2);
+  transition: color 0.15s;
+}
+
+.workspace__tabs :deep(.el-tabs__item:hover) {
+  color: var(--rw-text);
+}
+
+.workspace__tabs :deep(.el-tabs__item.is-active) {
+  color: var(--rw-brand);
+  font-weight: 600;
+}
+
+.workspace__tabs :deep(.el-tabs__active-bar) {
+  height: 2px;
+  border-radius: 2px;
+  background: var(--rw-brand);
+}
+
+.workspace__tabs :deep(.el-tabs__nav-wrap::after) {
+  height: 1px;
+  background: var(--rw-border);
+}
+
+.workspace__tabs :deep(.el-tabs__content) {
+  overflow: visible;
 }
 </style>

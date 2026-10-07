@@ -22,7 +22,19 @@ const DRAWER_OPTS: Record<string, unknown> = {
   atomVisualization: 'default',
   terminalCarbons: false,
   explicitHydrogens: false,
-  compactDrawing: true,
+  /**
+   * 🔴 必须 false（原为 true，是「乙酸画不出来」的病根）。
+   *
+   * compactDrawing 走的是「紧凑布局」分支，对 `CC(=O)O` 这类分子会算出**退化坐标**
+   * —— 所有原子落在同一个点上：实测 `CC(=O)O` 生成的 SVG 里 `<defs>` 是空的、一根键都没有，
+   * 4 个原子标签被塞进同一个 `<text>`（渲染出来就是一团「COOHCH₃」）。
+   * 关掉之后：乙酸 0→4 根键、阿司匹林 12→15、水杨酸 8→11 —— 是全面变好，不是取舍。
+   *
+   * 定位过程：用页面里已加载的 SmilesDrawer 逐项隔离选项（.tmp-probe/probe-opts.cjs），
+   * 只有这一项能改变结果；bondLength / padding / shortBondLength / explicitHydrogens
+   * 全都无关。
+   */
+  compactDrawing: false,
   padding: 8,
   fontSizeLarge: 11,
   fontSizeSmall: 8,
@@ -91,6 +103,30 @@ function getViewBox(svg: SVGSVGElement): DOMRect | null {
   return null;
 }
 
+/**
+ * 把 viewBox 收紧到**真实内容**上（只在 fit 模式用）。
+ *
+ * 🔴 为什么必须做：smiles-drawer 给的 viewBox 是「紧贴分子的**正方形**」。
+ *    容器是 152×76 这类**扁**的定尺寸盒子时，`preserveAspectRatio="xMidYMid meet"`
+ *    按较短边对齐 ⇒ 一个 3:1 的分子只画出 76px 宽，看着像缩在卡片角落里
+ *    （路线图第一版就是这个症状：目标卡的结构只占中间一小块）。
+ *    收紧成内容包围盒后宽高比对上了，分子才真正铺满卡片。
+ *
+ * ⚠️ **只改 fit 分支**：非 fit 分支要按「恒定键长」算像素尺寸，
+ *    那个换算就是基于库给的正方形 viewBox（`maxPx / longer`），改了会连带
+ *    改变路线树 / 流程图里所有缩略图的大小。
+ */
+function tightenViewBox(svg: SVGSVGElement): void {
+  try {
+    const box = svg.getBBox();
+    if (box.width > 0 && box.height > 0) {
+      svg.setAttribute('viewBox', `${box.x} ${box.y} ${box.width} ${box.height}`);
+    }
+  } catch {
+    /* 量不到就保持库给的 viewBox，别让整张图挂掉 */
+  }
+}
+
 /** 按恒定键长给 SVG 写入明确像素尺寸 */
 function fitSvg(svg: SVGSVGElement, opts: Required<DrawOptions>): void {
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
@@ -98,6 +134,7 @@ function fitSvg(svg: SVGSVGElement, opts: Required<DrawOptions>): void {
   // 容器是定尺寸盒子 ⇒ 交回给 CSS：宽高 100% + viewBox 等比缩放，永远不会被裁。
   // 先于 viewBox 判断：拿不到 viewBox 时更要靠 CSS 兜住，不然 SVG 会塌成 0。
   if (opts.fit) {
+    tightenViewBox(svg);
     svg.setAttribute('width', '100%');
     svg.setAttribute('height', '100%');
     svg.style.width = '100%';
@@ -126,6 +163,69 @@ function fitSvg(svg: SVGSVGElement, opts: Required<DrawOptions>): void {
   svg.style.flex = 'none';
   svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
 }
+/**
+ * 🔴 修 smiles-drawer 的 mask 裁剪缺陷（「甲醇/碘甲烷画出来没有键」的病根）。
+ *
+ * 库把所有键放进 `<g mask="url(#…-text-mask)">`，用来把键的两端压在原子标签下面。
+ * 但 `<mask>` 没写 x/y/width/height ⇒ 走默认 `maskUnits="objectBoundingBox"`，
+ * 裁剪区域 = **被引用元素的 bbox 外扩 10%**。
+ *
+ * 于是：**只有一根键、而且这根键是水平的时候，bbox 高度恰好是 0**
+ *      ⇒ 裁剪区域高度 0 ⇒ 整组被裁掉 ⇒ 键看不见。
+ * 实测 `CO`（甲醇）、`CI`（碘甲烷）就是这样：DOM 里明明有 `<line>`，
+ * 屏幕上只剩「HO    CH₃」两个孤立标签（链状分子如 `CCO` 因为 bbox 有高度而正常）。
+ *
+ * 修法：把 mask 改成 `userSpaceOnUse`，并显式给它「mask 自身内容 ∪ 键组 bbox」的范围，
+ * 宽高各留 1 单位兜底 —— 裁剪语义不变（圆圈照样盖住标签附近的键端），退化情况不再塌成 0。
+ */
+function fixMaskRegions(svg: SVGSVGElement): void {
+  const doc = svg.ownerDocument;
+  svg.querySelectorAll<SVGGElement>('g[mask]').forEach((group) => {
+    const ref = group.getAttribute('mask') || '';
+    const id = /#([^)'"\s]+)/.exec(ref)?.[1];
+    const mask = id ? (doc.getElementById(id) as SVGMaskElement | null) : null;
+    if (!mask) return;
+
+    const xs: number[] = [];
+    const ys: number[] = [];
+    const xe: number[] = [];
+    const ye: number[] = [];
+
+    try {
+      const gb = group.getBBox();
+      // bbox 完全退化成一点时也收进来：靠下面的最小宽高兜底
+      xs.push(gb.x);
+      ys.push(gb.y);
+      xe.push(gb.x + gb.width);
+      ye.push(gb.y + gb.height);
+    } catch {
+      /* 空组：忽略 */
+    }
+
+    const rect = mask.querySelector('rect');
+    if (rect) {
+      const rx = Number(rect.getAttribute('x')) || 0;
+      const ry = Number(rect.getAttribute('y')) || 0;
+      const rw = Number(rect.getAttribute('width')) || 0;
+      const rh = Number(rect.getAttribute('height')) || 0;
+      xs.push(rx);
+      ys.push(ry);
+      xe.push(rx + rw);
+      ye.push(ry + rh);
+    }
+    if (!xs.length) return;
+
+    const pad = 1;
+    const x = Math.min(...xs) - pad;
+    const y = Math.min(...ys) - pad;
+    mask.setAttribute('maskUnits', 'userSpaceOnUse');
+    mask.setAttribute('x', x.toFixed(2));
+    mask.setAttribute('y', y.toFixed(2));
+    mask.setAttribute('width', Math.max(Math.max(...xe) + pad - x, 1).toFixed(2));
+    mask.setAttribute('height', Math.max(Math.max(...ye) + pad - y, 1).toFixed(2));
+  });
+}
+
 /**
  * 把一个 SMILES 画进容器（自动创建并插入 <svg>）。
  * @returns 是否真的画出了图元
@@ -158,6 +258,12 @@ export async function drawSmiles(
     const finish = (ok: boolean): void => {
       if (settled) return;
       settled = true;
+      // 先修 mask 裁剪区域，再算尺寸（顺序无关，但修完再量尺寸更符合「所见」）
+      try {
+        fixMaskRegions(svg);
+      } catch {
+        /* 修不动也不该让整张图挂掉 */
+      }
       fitSvg(svg, opts);
       resolve(ok);
     };

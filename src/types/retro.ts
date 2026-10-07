@@ -41,14 +41,7 @@ export interface ParseSuggestion {
   canonical: string;
 }
 
-/** /api/depict 响应：画板载入用，RDKit 算好 2D 坐标的 molfile */
-export interface DepictResponse {
-  ok: boolean;
-  molfile?: string;
-  smiles?: string;
-  error?: string;
-}
-
+/** 结构解析结果：成功 / 失败二选一（前端 RDKit 与后端 /api/parse 形状一致） */
 export type ParseResult = ParseSuccess | ParseFailure;
 
 export type ProbLevel = 'high' | 'mid' | 'low';
@@ -198,12 +191,72 @@ export interface SideProduct {
   control?: string;
 }
 
+/** 机理里的一个基元步骤（电子转移 + 成断键） */
+export interface MechanismStep {
+  seq?: number;
+  step?: string;
+  detail?: string;
+}
+
+/** 机理里的中间体 / 过渡态 */
+export interface MechanismIntermediate {
+  name?: string;
+  note?: string;
+}
+
+/**
+ * 反应机理 —— 逐步电子转移。
+ *
+ * 🔴 刻意不做「只给一个机理名」的字段：光写「SN2」三个字没有任何决策价值，
+ *    真正要回答的是「电子怎么走、中间体是什么、哪一步慢、选择性从哪来」。
+ *    后端 prompt 里也写死了这条（硬性要求 7），并要求机理与投料顺序自洽。
+ */
+export interface StepMechanism {
+  /** 机理类型，如 亲核加成-消除（经四面体中间体） */
+  type?: string;
+  steps?: MechanismStep[];
+  intermediates?: MechanismIntermediate[];
+  /** 决速步是哪一步、依据 */
+  rate_determining?: string;
+  /** 区域 / 立体 / 化学选择性的来源 */
+  selectivity?: string;
+  /** 支持该机理的实验判据（KIE、动力学级数、中间体捕获…） */
+  evidence?: string[];
+}
+
+/**
+ * 后处理分析 —— 从反应结束到拿到纯品之间的每一步操作。
+ *
+ * 与 `conditions.workup` 的分工：后者是**一句话概览**，这里要**能照着做**的逐步细节。
+ */
+export interface StepWorkup {
+  /** 淬灭：加入什么、温度、放热与产气风险 */
+  quench?: string;
+  /** 萃取 / 分液：溶剂、次数、水相 pH 如何调节 */
+  extraction?: string;
+  /** 洗涤：水 / 饱和食盐水 / 稀酸 / 稀碱各几次、分别去除什么 */
+  wash?: string;
+  /** 干燥：干燥剂种类与用量 */
+  dry?: string;
+  /** 浓缩：温度与压力、是否需要共沸带水 */
+  concentration?: string;
+  /** 纯化：重结晶 / 柱层析 / 蒸馏 / 打浆 */
+  purification?: string;
+  /** 预计回收率与纯度提升 */
+  recovery?: string;
+  /** 放大注意点（乳化、放热、相分离、过滤堵塞…） */
+  notes?: string[];
+}
+
 /** 大模型返回的结构化工艺分析（字段全部可选 —— 模型可能缺项，缺了就不渲染） */
 export interface StepAnalysisData {
   summary?: string;
   reaction_type?: string;
+  mechanism?: StepMechanism;
   order?: DoseRow[];
   conditions?: Record<string, string>;
+  /** 后处理分析（勾选该模块时才有） */
+  workup?: StepWorkup;
   outcome?: { expected?: string; yield_range?: string; purity?: string; risk?: string };
   byproducts?: SideProduct[];
   lcms?: { mz_theoretical?: string; adduct?: string; note?: string };
@@ -213,6 +266,23 @@ export interface StepAnalysisData {
 }
 
 export type AnalysisStatus = 'idle' | 'streaming' | 'done' | 'failed';
+
+/**
+ * 一次「追问」的问答 —— 挂在那份工艺分析上（随会话一起落盘）。
+ *
+ * 追问是**带上下文**的：后端会把这步反应的产物/前体/路线上下文 + 已生成的分析 +
+ * 下面的历史问答一起发给模型，所以模型能接着前文答，而不是每次从零开始。
+ */
+export interface StepFollowup {
+  id: string;
+  /** 用户问的 */
+  q: string;
+  /** 模型答的（流式期间不断变长） */
+  a: string;
+  status: 'streaming' | 'done' | 'failed';
+  error?: string;
+  at: number;
+}
 
 /**
  * 一步反应的 AI 工艺分析（挂在节点上，按 reactionId 存 ⇒ 天然「结果保留」）。
@@ -228,6 +298,8 @@ export interface StepAnalysis {
   data?: StepAnalysisData | null;
   /** RDKit 确定性质量表（产物 + 前体） */
   computed?: MassInfo | null;
+  /** 这份分析上的追问记录（最新在后） */
+  followups?: StepFollowup[];
   error?: string;
   model?: string;
   at?: number;
@@ -245,7 +317,39 @@ export interface AnalyzeRequest {
     step_no?: number;
     prior_steps?: string[];
   };
+  /** 接着分析：上次被截断时已收到的正文原文，作为 assistant 前缀续写 */
+  continue_from?: string;
+  /** 勾选的分析模块（['mechanism','order','lcms',...]）；缺省/空 = 全量分析 */
+  modules?: string[];
 }
+
+/** 发起一次「追问」的请求体 —— 带着这一步反应的上下文，问它的其他问题 */
+export interface FollowupRequest {
+  product: string;
+  precursors: string[];
+  probability?: number;
+  model?: string;
+  /** 与首轮分析同一份路线上下文 */
+  context?: AnalyzeRequest['context'];
+  /** 已生成的结构化分析：让模型与前文保持一致，不与首轮分析自相矛盾 */
+  analysis?: StepAnalysisData | null;
+  /** 历史问答（user / assistant 交替），后端只取最近若干条 */
+  history?: { role: 'user' | 'assistant'; content: string }[];
+  question: string;
+}
+
+/** 可勾选的分析模块 key（与后端 _MODULE_FIELDS 对齐） */
+export type AnalysisModuleKey =
+  | 'summary'
+  | 'mechanism'
+  | 'order'
+  | 'conditions'
+  | 'workup'
+  | 'outcome'
+  | 'byproducts'
+  | 'lcms'
+  | 'nmr'
+  | 'safety';
 
 export interface LlmStatus {
   ok: boolean;
@@ -254,6 +358,9 @@ export interface LlmStatus {
   model?: string;
   has_key?: boolean;
   json_mode?: boolean;
+  /** key 池状态（脱敏）：多 Key 自动轮换的可视化 */
+  keys?: LlmKeyState[];
+  max_tokens?: number;
   hint?: string;
   /** 仅当请求带 probe=1 时返回：真发一次最小请求的验证结果 */
   probe?: LlmProbe;
@@ -265,7 +372,44 @@ export interface LlmProbe {
   verified: boolean;
   model?: string;
   base_url?: string;
+  /** 本次验证实际使用的 key（脱敏）；多 key 池里可能不是第一个 */
+  key?: string;
   error?: string;
+}
+
+/** key 池里单个 key 的状态（设置面板展示用） */
+export interface LlmKeyState {
+  /** 脱敏串：sk-L7w15****ab3f。回传保存时含 `*` = 保留原 key */
+  masked: string;
+  /** active=使用中 / cooldown=限流冷却（自动恢复）/ bad=失效 / idle=备用 */
+  state: 'active' | 'cooldown' | 'bad' | 'idle';
+  /** 失效/冷却原因（错误摘要） */
+  reason?: string;
+}
+
+/** GET /api/llm/settings —— 设置面板当前值（key 脱敏回传） */
+export interface LlmSettings {
+  ok: boolean;
+  base_url: string;
+  model: string;
+  max_tokens: number;
+  temperature: number;
+  timeout: number;
+  json_mode: boolean;
+  keys: LlmKeyState[];
+  active_index: number;
+  error?: string;
+}
+
+/** POST /api/llm/settings —— keys 元素含 `*` = 保留原 key，明文 = 新增 */
+export interface LlmSettingsPayload {
+  base_url?: string;
+  model?: string;
+  max_tokens?: number;
+  temperature?: number;
+  timeout?: number;
+  json_mode?: boolean;
+  api_keys?: string[];
 }
 
 /** /api/llm/models —— 该 key 在 /v1/models 里能看到的模型（不等于套餐内可用） */
@@ -476,6 +620,21 @@ export interface Session {
   target: string;
   model: string;
   status: SessionStatus;
+  /**
+   * **内容**最后变化的时间 —— 侧栏排序就用它。
+   *
+   * 🔴 不要拿「最近打开过」当排序依据：那会让「点一下某个旧任务看一眼」把它顶到列表
+   *    第一位，用户正要找的邻居全被挤走。所以只有**真的动了内容**（跑分析 / 采纳分支 /
+   *    改参数 / 出结果）才刷新它；单纯打开、恢复、切回来都不算。
+   *    判据见 `sessionSignature()`：签名没变就不刷新。
+   */
   updatedAt: number;
   snapshot: WorkspaceSnapshot;
+  /**
+   * 内容签名（落盘一起带走）。
+   * 打开旧任务后 store 会立即回写一次快照（触发保存的 watcher 挡不住），
+   * 没有这个签名的话每次打开都会刷新 `updatedAt` ⇒ 列表跳位。
+   * 缺省（老数据 / 新建）时**只登记不刷新时间**。
+   */
+  sig?: string;
 }

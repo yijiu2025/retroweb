@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 状态底栏 —— 钉在内容区底部的一行任务实况。
+ * 状态条 —— 一行任务实况。
  *
  * 定位参照：WorkBuddy 主区底部那条「生成回应中 · 已消耗 1.25 · 1 个后台任务运行中」。
  * 它在解决一个具体问题：**当前任务的整体状态不该需要滚回去看**。
@@ -11,10 +11,16 @@
  *   ③ 总进度（自动拆分 done/budget）
  *   ④ 出错时的出口（有全局错误就跳过去看）
  *
- * 只在路线态出现 —— 标定态还没有任务，显示一排 0 只会碍事。
+ * 🔴 位置：**右侧辅助面板的底部**（`embedded`，由 AppShell 挂进 AsidePanel 的 footer 插槽）。
+ *    它和「运行参数」是同一类东西 —— 随时瞄一眼的参考信息；放右栏比钉在内容区末尾
+ *    少占一屏高度（内容长的时候要滚到底才看得到）。
+ *    早先挂在内容区末尾的版本已退役，`embedded=false` 只是保留给别的宿主用。
  */
 import { computed } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
+
+/** true = 由外层容器（辅助面板 footer）接管边框与定位，本组件只出内容 */
+withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
 
 const store = useWorkspaceStore();
 
@@ -43,7 +49,7 @@ const stateClass = computed(() => {
 </script>
 
 <template>
-  <footer class="rstat" :class="stateClass">
+  <footer class="rstat" :class="[stateClass, { 'rstat--embedded': embedded }]">
     <span class="rstat__dot" />
     <span class="rstat__state">{{ stateText }}</span>
 
@@ -57,6 +63,13 @@ const stateClass = computed(() => {
     <span v-if="store.autoRunning" class="rstat__bar">
       <i :style="{ width: `${pct}%` }" />
     </span>
+
+    <!-- 自动拆分是长任务（可能几十次单步调用）⇒ 必须留一个停止出口。
+         它原来在右栏「运行参数」里，随「自动往下拆」按钮一起搬到了新建分析界面；
+         而运行中界面已经在路线态，所以停在状态条上最顺手。 -->
+    <button v-if="store.autoRunning" type="button" class="rstat__stop" @click="store.stopAuto()">
+      停止
+    </button>
   </footer>
 </template>
 
@@ -142,5 +155,40 @@ const stateClass = computed(() => {
   border-radius: 999px;
   background: var(--el-color-primary);
   transition: width 0.3s ease;
+}
+
+/* ---------- 嵌在辅助面板底部（AsidePanel 的 footer 插槽） ----------
+   面板只有 320px，所以：去掉外边距与四边框（分隔线由面板自己的 footer 提供）、
+   字号再降一档、允许换行（一行放不下「节点 / 已采纳 / 最深 / 总概率」）。 */
+.rstat--embedded {
+  margin: 0;
+  padding: 8px 14px 10px;
+  border: 0;
+  border-radius: 0;
+  background: var(--rw-surface-2);
+  gap: 4px 10px;
+  font-size: 11.5px;
+}
+
+.rstat--embedded .rstat__bar {
+  max-width: none;
+}
+
+/* 「停止自动拆分」：语义色描边小按钮，只在跑的时候出现 */
+.rstat__stop {
+  flex: 0 0 auto;
+  padding: 1px 9px;
+  border: 1px solid color-mix(in srgb, var(--rw-bad) 42%, transparent);
+  border-radius: 5px;
+  background: var(--rw-surface);
+  color: var(--rw-bad);
+  font-size: 11px;
+  line-height: 1.5;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.rstat__stop:hover {
+  background: var(--rw-bad-l);
 }
 </style>

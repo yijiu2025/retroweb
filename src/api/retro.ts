@@ -13,10 +13,12 @@ import { RETRO_BASE_URL } from '@/config/services';
 import type {
   AnalyzeRequest,
   AnalyzeStreamEvent,
-  DepictResponse,
+  FollowupRequest,
   JobCreateResponse,
   JobSnapshot,
   LlmModels,
+  LlmSettings,
+  LlmSettingsPayload,
   LlmStatus,
   LoadModelOk,
   ModelsResponse,
@@ -85,6 +87,10 @@ export const retroApi = {
   /**
    * 解析结构输入：CDXML / MOL / SDF / 反应式 SMILES / 纯 SMILES → canonical SMILES
    * 失败时返回 ok:false + reasons + suggestions（人话诊断 + 一键修复候选）
+   *
+   * ⚠️ 现在**只有 CDXML 会走到这里**（2026-10-06 起）。SMILES / MOL / SDF / 画板产物
+   * 全由前端 RDKit.js（`utils/rdkit.ts`）本地解析 —— 浏览器版 `get_mol()` 读不了 CDXML，
+   * 那一种才必须回落后端的 `Chem.MolsFromCDXML()`。分流入口 `needsBackendParse()`。
    */
   async parse(text: string): Promise<ParseResult> {
     try {
@@ -92,19 +98,6 @@ export const retroApi = {
       return data;
     } catch (e) {
       fail(e, '结构解析失败');
-    }
-  },
-
-  /**
-   * SMILES → 带 2D 坐标的 molfile（画板载入已有结构用）。
-   * 坐标与芳香性都由 RDKit 定，前端不自己算布局。
-   */
-  async depict(smiles: string): Promise<DepictResponse> {
-    try {
-      const { data } = await retroClient.post<DepictResponse>('/depict', { smiles });
-      return data;
-    } catch (e) {
-      fail(e, '生成 2D 结构失败');
     }
   },
 
@@ -236,6 +229,42 @@ export const llmApi = {
     }
   },
 
+  /** 设置面板当前值（key 脱敏）：接口地址 / 模型 / token 上限 / key 池状态 */
+  async settings(): Promise<LlmSettings> {
+    try {
+      const { data } = await retroLlmClient.get<LlmSettings>('/llm/settings', { timeout: 15000 });
+      return data;
+    } catch {
+      return {
+        ok: false,
+        base_url: '',
+        model: '',
+        max_tokens: 8192,
+        temperature: 0.3,
+        timeout: 180,
+        json_mode: true,
+        keys: [],
+        active_index: 0,
+        error: '无法连接后端的大模型接口'
+      };
+    }
+  },
+
+  /**
+   * 保存设置 → 后端写 llm_settings.json（优先级高于 .env，立即生效）并复位 key 轮换。
+   * 返回值带保存后的设置 + 最新 status，调用方不用再打一次 /llm/status。
+   */
+  async saveSettings(p: LlmSettingsPayload): Promise<LlmSettings> {
+    const { data } = await retroLlmClient.post<LlmSettings>('/llm/settings', p, { timeout: 15000 });
+    return data;
+  },
+
+  /** 「重试失效 Key」：清空全部 key 的失效/冷却标记 */
+  async resetKeys(): Promise<LlmSettings> {
+    const { data } = await retroLlmClient.post<LlmSettings>('/llm/keys/reset', {}, { timeout: 15000 });
+    return data;
+  },
+
   /** 非流式兜底：一次拿到完整结构化结果 */
   async analyze(req: AnalyzeRequest): Promise<{ ok: boolean } & Partial<StepAnalysis>> {
     try {
@@ -266,8 +295,27 @@ export interface AnalyzeStreamHandlers {
   onError: (message: string) => void;
 }
 
+/** 追问（自由文本回答）的流式事件 */
+export type FollowupStreamEvent =
+  | { type: 'meta'; model: string }
+  | { type: 'thinking'; text: string }
+  | { type: 'thinking_end'; chars: number }
+  | { type: 'delta'; text: string }
+  | { type: 'done'; text: string; model: string; reasoning?: string; finish_reason?: string }
+  | { type: 'error'; error: string };
+
+/** 追问的回调（比分析少一个 done 的结构化字段） */
+export interface FollowupStreamHandlers {
+  onMeta?: (model: string) => void;
+  onThinking?: (text: string) => void;
+  onThinkingEnd?: (chars: number) => void;
+  onDelta?: (text: string) => void;
+  onDone: (payload: Extract<FollowupStreamEvent, { type: 'done' }>) => void;
+  onError: (message: string) => void;
+}
+
 /**
- * 流式工艺分析（SSE over fetch）。
+ * 读一条 SSE 流并逐事件回调 —— 分析与追问共用同一套分帧逻辑。
  *
  * 🔴 为什么不用 EventSource：EventSource 只能发 GET、不能带 body，
  *    而这里必须把「产物 + 前体 + 路线上下文」作为 JSON body 传过去 ⇒ 用 fetch 读流。
@@ -276,38 +324,39 @@ export interface AnalyzeStreamHandlers {
  * SSE 分帧规则：事件之间以空行分隔，行前缀 `data: `。这里按行缓冲，遇空行才 dispatch，
  * 避免把一个 JSON 从中间切断（后端每条事件都是一整行 JSON，安全）。
  */
-export async function streamAnalyze(
-  req: AnalyzeRequest,
-  handlers: AnalyzeStreamHandlers,
-  signal?: AbortSignal
+async function postSse<T extends { type: string }>(
+  path: string,
+  body: unknown,
+  signal: AbortSignal | undefined,
+  onEvent: (evt: T) => void,
+  onError: (message: string) => void
 ): Promise<void> {
-  const url = `${RETRO_BASE_URL}/llm/analyze/stream`;
   let resp: Response;
   try {
-    resp = await fetch(url, {
+    resp = await fetch(`${RETRO_BASE_URL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      body: JSON.stringify(req),
+      body: JSON.stringify(body),
       signal
     });
   } catch (e) {
-    handlers.onError((e as Error)?.message || '请求大模型失败');
+    onError((e as Error)?.message || '请求大模型失败');
     return;
   }
 
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`;
     try {
-      const body = (await resp.json()) as { error?: string };
-      if (body?.error) detail = body.error;
+      const payload = (await resp.json()) as { error?: string };
+      if (payload?.error) detail = payload.error;
     } catch {
       /* 非 JSON 响应，保持 HTTP 状态码 */
     }
-    handlers.onError(detail);
+    onError(detail);
     return;
   }
   if (!resp.body) {
-    handlers.onError('后端没有返回流式响应体');
+    onError('后端没有返回流式响应体');
     return;
   }
 
@@ -322,18 +371,13 @@ export async function streamAnalyze(
       .filter((l) => l.startsWith('data:'))
       .map((l) => l.slice(5).trim());
     if (!dataLines.length) return;
-    let evt: AnalyzeStreamEvent;
+    let evt: T;
     try {
-      evt = JSON.parse(dataLines.join('\n')) as AnalyzeStreamEvent;
+      evt = JSON.parse(dataLines.join('\n')) as T;
     } catch {
       return; // 半截 JSON 或心跳，忽略
     }
-    if (evt.type === 'meta') handlers.onMeta?.(evt.model);
-    else if (evt.type === 'thinking') handlers.onThinking?.(evt.text);
-    else if (evt.type === 'thinking_end') handlers.onThinkingEnd?.(evt.chars);
-    else if (evt.type === 'delta') handlers.onDelta?.(evt.text);
-    else if (evt.type === 'done') handlers.onDone(evt);
-    else if (evt.type === 'error') handlers.onError(evt.error);
+    onEvent(evt);
   };
 
   try {
@@ -352,7 +396,54 @@ export async function streamAnalyze(
     if (buffer.trim()) dispatch(buffer);
   } catch (e) {
     if ((e as Error)?.name !== 'AbortError') {
-      handlers.onError((e as Error)?.message || '读取流式响应失败');
+      onError((e as Error)?.message || '读取流式响应失败');
     }
   }
+}
+
+/** 流式工艺分析（SSE over fetch） */
+export async function streamAnalyze(
+  req: AnalyzeRequest,
+  handlers: AnalyzeStreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  await postSse<AnalyzeStreamEvent>(
+    '/llm/analyze/stream',
+    req,
+    signal,
+    (evt) => {
+      if (evt.type === 'meta') handlers.onMeta?.(evt.model);
+      else if (evt.type === 'thinking') handlers.onThinking?.(evt.text);
+      else if (evt.type === 'thinking_end') handlers.onThinkingEnd?.(evt.chars);
+      else if (evt.type === 'delta') handlers.onDelta?.(evt.text);
+      else if (evt.type === 'done') handlers.onDone(evt);
+      else if (evt.type === 'error') handlers.onError(evt.error);
+    },
+    handlers.onError
+  );
+}
+
+/**
+ * 流式「追问」：带着这一步反应的上下文，问它的其他问题。
+ * 与 streamAnalyze 走同一套 SSE 分帧，区别只在事件负载（自由文本而非结构化 JSON）。
+ */
+export async function streamFollowup(
+  req: FollowupRequest,
+  handlers: FollowupStreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  await postSse<FollowupStreamEvent>(
+    '/llm/followup/stream',
+    req,
+    signal,
+    (evt) => {
+      if (evt.type === 'meta') handlers.onMeta?.(evt.model);
+      else if (evt.type === 'thinking') handlers.onThinking?.(evt.text);
+      else if (evt.type === 'thinking_end') handlers.onThinkingEnd?.(evt.chars);
+      else if (evt.type === 'delta') handlers.onDelta?.(evt.text);
+      else if (evt.type === 'done') handlers.onDone(evt);
+      else if (evt.type === 'error') handlers.onError(evt.error);
+    },
+    handlers.onError
+  );
 }

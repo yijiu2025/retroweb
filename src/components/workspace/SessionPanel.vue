@@ -3,7 +3,8 @@
  * 侧栏「最近的任务」列表 —— 常驻在导航栏下方。
  *
  * 一个目标分析 = 一个任务。这个列表就是任务的入口：
- * 点一条即把该任务的路线树恢复回来（还在跑的节点会自动接上后端 job 轮询）。
+ * 点一条即把该任务的路线树恢复回来（还在跑的节点会自动接上后端 job 轮询）；
+ * 点右上角「＋ 新任务」则开一个空白标定面板（旧任务**留在列表里**，不会被顶掉或删掉）。
  *
  * 版式取舍：这是**侧栏里的紧凑列表**（宽度约 240px，收起时 64px），
  * 所以不展示大标签，改用「状态圆点 + 名称 + 时间」三行内搞定；
@@ -14,6 +15,10 @@
  *    之所以不按状态分组（进行中 / 已完成）：同一个任务的状态会来回变，
  *    按状态分组会让一条任务在两个组之间跳来跳去，用户反而找不着了。
  *    按时间分组是稳定的 —— 位置只随"你多久没碰它"单调变化。
+ *
+ * 🔴 而 `updatedAt` 的语义被 store 收紧了：**打开一个任务不会刷新它**
+ *    （只有真的动了内容才会，见 stores/workspace.ts 的 sessionSignature）。
+ *    否则「点一条旧任务看一眼」就会把它顶到第一位 —— 这正是之前的问题。
  */
 import { computed, ref } from 'vue';
 import { ElMessageBox } from 'element-plus';
@@ -24,6 +29,7 @@ const store = useWorkspaceStore();
 
 const emit = defineEmits<{
   (e: 'open', id: string): void;
+  (e: 'new'): void;
 }>();
 
 /** 第一组最多显示几条，其余进「更早的任务」 */
@@ -79,15 +85,23 @@ async function onRemove(id: string, name: string): Promise<void> {
 
 <template>
   <div class="recent">
-    <p v-if="!all.length" class="recent__empty">还没有任务。在工作台设定目标分子即可开始。</p>
+    <!-- 顶部常驻：标题 + 总数 + 新建入口。
+         「新任务」放在这里（而不是只有工作台里能建）—— 左侧这一列才是任务的总入口。 -->
+    <div class="recent__head">
+      <span class="recent__title">最近的任务</span>
+      <span class="recent__count">{{ all.length }}</span>
+      <button type="button" class="recent__new" title="新建任务（当前任务会保留在列表里）" @click="emit('new')">
+        <span aria-hidden="true">＋</span>新任务
+      </button>
+    </div>
+
+    <p v-if="!all.length" class="recent__empty">
+      还没有任务。点上方「＋ 新任务」设定目标分子即可开始。
+    </p>
 
     <template v-else>
       <!-- 分组一：最近碰过的（还在手上的活） -->
       <section class="recent__group">
-        <div class="recent__head">
-          <span class="recent__title">最近的任务</span>
-          <span class="recent__count">{{ recent.length }}</span>
-        </div>
         <ul class="recent__list">
           <li v-for="s in recent" :key="s.id">
             <div
@@ -183,13 +197,38 @@ async function onRemove(id: string, name: string): Promise<void> {
 .recent__head {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
   padding: 0 12px;
   font-size: 11px;
   font-weight: 600;
   color: var(--rw-text-3);
   letter-spacing: 0.03em;
+}
+
+/* 「＋ 新任务」：常驻在标题右侧 —— 左侧这一列是任务的总入口，
+   新建不该只有工作台里那一条路。做成低调的文字按钮，别跟导航抢视觉。 */
+.recent__new {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border: 1px solid var(--rw-border);
+  border-radius: 999px;
+  background: var(--rw-surface);
+  color: var(--rw-text-2);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.recent__new:hover {
+  color: var(--rw-brand-d);
+  border-color: var(--rw-brand);
+  background: var(--rw-brand-l);
 }
 
 /* 「更早的任务」是可折叠分组：summary 复用 head 的排版，去掉默认三角 */
@@ -226,6 +265,11 @@ async function onRemove(id: string, name: string): Promise<void> {
 
 .recent__count {
   font-variant-numeric: tabular-nums;
+}
+
+/* 折叠分组的 head 只是 summary（没有「＋新任务」），计数靠右对齐 */
+.recent__head--btn .recent__count {
+  margin-left: auto;
 }
 
 .recent__list {

@@ -63,6 +63,11 @@ const collapsed = computed({
       <div class="aside__body rw-scroll">
         <slot />
       </div>
+
+      <!-- 底部固定区：任务状态条之类的「随时瞄一眼」内容（不随主体滚动） -->
+      <footer v-if="$slots.footer" class="aside__foot">
+        <slot name="footer" />
+      </footer>
     </template>
   </aside>
 </template>
@@ -173,6 +178,13 @@ const collapsed = computed({
   flex: 1;
   min-height: 0;
   padding: 14px 14px 18px;
+}
+
+/* 底部固定区：内容自己也带一边框时会出现双线，所以这里只做分隔（不给 padding-top） */
+.aside__foot {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--rw-border);
+  background: var(--rw-surface);
 }
 
 /* 窄屏：右面板不再贴右，改为堆到主区下方并取消固定宽度 */

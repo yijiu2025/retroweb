@@ -1,9 +1,17 @@
 <script setup lang="ts">
 /**
- * 单步候选反应面板（点行内「展开」后出现）。
+ * 单步候选反应面板（点行内「展开」后出现）—— **反应方程式**排布（2026-10-06 重做）。
  *
- * 一次面板 = 一次 `/api/predict` 的结果：N 个候选，按概率排序，
- * 展示前体结构图与概率分级；采纳后前体各新增一行。
+ * 旧版是「一格一候选」的卡片网格：概率条、结构、按钮竖着堆，看不出这条候选
+ * 到底是「什么 → 什么」。新版一行 = 一条完整方程式，与路线图同一套视觉语言：
+ *
+ *   [前体₁] + [前体₂] ──(82.0%)──▶ [产物]
+ *
+ *   · 原料在左、产物在右 —— 和路线图「合成方向」同向，看懂一个就看懂两个；
+ *   · 概率挂在箭头上方的小圆片里 —— 呼应路线图边上的 Step chip；
+ *   · 前体满足终止条件（重原子 ≤ 阈值 / 自定义起始物料）直接标「可购买」，
+ *     用户扫一眼就知道哪条候选的原料更省事（Reaxys 的商业化语义）；
+ *   · 采纳按钮在行尾，已采纳整行绿色高亮。
  *
  * 🔴 每次分析都**追加保留**（node.runs）：跑第二次不会把第一次的候选冲掉，
  *    顶部下拉可来回切看/切采纳；已采纳的选择也会随「那次分析」记住。
@@ -14,6 +22,8 @@ import { computed } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { AnalysisRun } from '@/types/retro';
+import { countHeavyAtoms } from '@/utils/smiles';
+import { SUPPLIERS, openSupplier } from '@/utils/suppliers';
 import MolView from '@/components/mol/MolView.vue';
 
 const props = defineProps<{ nodeId: string }>();
@@ -35,6 +45,16 @@ const levelTag: Record<string, 'success' | 'warning' | 'info'> = {
   mid: 'warning',
   low: 'info'
 };
+
+/**
+ * 前体是否直接满足终止条件 —— 采纳后它就是叶子，不再往下拆。
+ * 🔴 判据与 store.isTerminal 同口径（重原子 ≤ 阈值 / 用户自定义起始物料），
+ *    但前体还不是树上的节点，只能拿 SMILES 现算。
+ */
+function precursorBuyable(smi: string): boolean {
+  if (store.params.startingMaterials.includes(smi)) return true;
+  return countHeavyAtoms(smi) <= store.params.heavyAtomThreshold;
+}
 
 function onAdopt(reactionId: string): void {
   store.adopt(reactionId);
@@ -64,6 +84,15 @@ function runLabel(run: AnalysisRun, idx: number): string {
   const stamp = `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   const infer = run.inferSeconds ? ` · ${run.inferSeconds}s` : '';
   return `#${idx + 1} ${stamp} · ${run.candidates.length} 候选${infer}`;
+}
+
+function smilesLabel(smi: string): string {
+  return smi.length > 16 ? `${smi.slice(0, 16)}…` : smi;
+}
+
+/** 打开某供应商查价（新标签页） */
+function onQuery(smiles: string, supplierId: string): void {
+  openSupplier(supplierId, smiles);
 }
 </script>
 
@@ -108,7 +137,7 @@ function runLabel(run: AnalysisRun, idx: number): string {
     </div>
 
     <div class="cand__hint-line">
-      模型 {{ store.params.model }}；采纳后前体会各新增一行 · 每次「重新分析」的结果都会保留，可用上方下拉切换
+      一行一条候选：前体 → 产物，箭头上是该步概率；标「可购买」的前体采纳后即到路线尽头
     </div>
 
     <el-skeleton v-if="node?.status === 'loading'" :rows="2" animated />
@@ -119,34 +148,78 @@ function runLabel(run: AnalysisRun, idx: number): string {
       :description="node?.error || '该分子没有给出候选反应（可能已是起始物料）'"
     />
 
-    <div v-else class="cand__grid">
+    <div v-else class="cand__list">
       <div
         v-for="rxn in node.candidates"
         :key="rxn.id"
-        class="cand-card"
+        class="rxn"
         :class="{ 'is-adopted': adoptedId === rxn.id }"
       >
-        <div class="cand-card__top">
-          <span class="cand-card__rank">#{{ rxn.rank }}</span>
-          <el-tag :type="levelTag[rxn.level]" size="small" effect="light">{{ levelText[rxn.level] }}</el-tag>
-          <span class="cand-card__prob">{{ (rxn.probability * 100).toFixed(1) }}%</span>
-          <div class="rw-prob" :class="`is-${rxn.level}`">
-            <i :style="{ width: Math.max(4, rxn.probability * 100) + '%' }"></i>
+        <!-- 名次 + 置信分级 -->
+        <div class="rxn__rank">
+          <b>#{{ rxn.rank }}</b>
+          <el-tag :type="levelTag[rxn.level]" size="small" effect="light">
+            {{ levelText[rxn.level] }}
+          </el-tag>
+        </div>
+
+        <!-- 方程式：前体（左）→ 箭头（带概率）→ 产物（右） -->
+        <div class="rxn__eq">
+          <template v-for="(smi, i) in rxn.precursorList" :key="smi + i">
+            <span v-if="i > 0" class="rxn__plus">+</span>
+            <div class="rxn__mol">
+              <div class="rxn__mol-struct">
+                <!-- 🔴 fit：容器 112×62 定尺寸 + overflow:hidden。非 fit 走「恒定键长」算尺寸，
+                     maxPx=110 只压最长边、不保证横向不超宽 ⇒ 长链/多环分子右边被裁掉。
+                     fit 让 SVG 宽高 100% + viewBox 等比缩放，分子永远完整铺满、不被裁。 -->
+                <MolView :smiles="smi" fit />
+              </div>
+              <div class="rxn__mol-meta">
+                <code class="rw-mono" :title="smi">{{ smilesLabel(smi) }}</code>
+                <template v-if="precursorBuyable(smi)">
+                  <span class="rxn__buy">可购买</span>
+                  <el-dropdown
+                    trigger="click"
+                    size="small"
+                    @command="(sid: string) => onQuery(smi, sid)"
+                  >
+                    <span class="rxn__query" title="点击查价">¥</span>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item
+                          v-for="s in SUPPLIERS"
+                          :key="s.id"
+                          :command="s.id"
+                        >
+                          <span class="rxn__supplier-name">{{ s.name }}</span>
+                          <span class="rxn__supplier-tag">{{ s.tag }}</span>
+                        </el-dropdown-item>
+                        <div class="rxn__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+                </template>
+              </div>
+            </div>
+          </template>
+
+          <div class="rxn__arrow" :title="`该步概率 ${(rxn.probability * 100).toFixed(1)}%`">
+            <span class="rxn__arrow-prob">{{ (rxn.probability * 100).toFixed(1) }}%</span>
+            <span class="rxn__arrow-line" aria-hidden="true"></span>
+          </div>
+
+          <div class="rxn__mol is-product">
+            <div class="rxn__mol-struct">
+              <MolView :smiles="node?.smiles ?? ''" fit />
+            </div>
+            <div class="rxn__mol-meta">
+              <code class="rw-mono" :title="node?.smiles">{{ smilesLabel(node?.smiles ?? '') }}</code>
+            </div>
           </div>
         </div>
 
-        <div class="cand-card__mols">
-          <template v-for="(smi, i) in rxn.precursorList" :key="smi + i">
-            <span v-if="i > 0" class="cand-card__op">+</span>
-            <div class="cand-card__mol">
-              <MolView :smiles="smi" :bond-px="22" :min-px="64" :max-px="130" />
-              <code class="rw-mono">{{ smi.length > 16 ? smi.slice(0, 16) + '…' : smi }}</code>
-            </div>
-          </template>
-        </div>
-
-        <div class="cand-card__foot">
-          <span class="cand-card__count">{{ rxn.numMolecules }} 个前体</span>
+        <!-- 行尾动作 -->
+        <div class="rxn__ops">
           <el-button
             v-if="adoptedId !== rxn.id"
             type="primary"
@@ -156,6 +229,7 @@ function runLabel(run: AnalysisRun, idx: number): string {
             采纳
           </el-button>
           <el-tag v-else type="success" size="small" effect="dark">已采纳</el-tag>
+          <span class="rxn__count">{{ rxn.numMolecules }} 个前体</span>
         </div>
       </div>
     </div>
@@ -232,99 +306,231 @@ function runLabel(run: AnalysisRun, idx: number): string {
   line-height: 1.5;
 }
 
-.cand__grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
-  gap: 10px;
-}
-
-.cand-card {
+/* ---------- 候选行：一条方程式一行 ---------- */
+.cand__list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+}
+
+.rxn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 12px;
   border: 1px solid var(--rw-border);
   border-radius: var(--rw-radius-sm);
   background: var(--rw-surface);
-  transition: border-color 0.15s, box-shadow 0.15s;
+  transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
 }
 
-.cand-card:hover {
+.rxn:hover {
   border-color: var(--rw-brand);
   box-shadow: var(--rw-shadow-1);
 }
 
-.cand-card.is-adopted {
+/* 已采纳：绿色高亮（与旧版一致的成功语义） */
+.rxn.is-adopted {
   border-color: var(--rw-ok);
   background: var(--rw-ok-l);
 }
 
-.cand-card__top {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.cand-card__rank {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--rw-text-3);
-}
-
-.cand-card__prob {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--rw-text);
-}
-
-.cand-card__prob + .rw-prob {
-  flex: 1;
-  min-width: 30px;
-}
-
-.cand-card__mols {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.cand-card__op {
-  color: var(--rw-text-3);
-  font-size: 14px;
-}
-
-.cand-card__mol {
+/* 名次 + 置信分级（竖排小列） */
+.rxn__rank {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 2px;
-  padding: 6px;
+  gap: 4px;
+  flex: 0 0 auto;
+  min-width: 52px;
+}
+
+.rxn__rank b {
+  font-size: 13px;
+  color: var(--rw-text-3);
+}
+
+/* 方程式主体：允许换行兜底（前体多时） */
+.rxn__eq {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.rxn__plus {
+  color: var(--rw-text-3);
+  font-size: 15px;
+}
+
+/* 分子：结构图 + SMILES/可购买 */
+.rxn__mol {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  min-width: 92px;
+}
+
+.rxn__mol-struct {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 112px;
+  height: 62px;
+  padding: 3px;
   border: 1px solid var(--rw-border);
   border-radius: 6px;
   background: var(--rw-surface-2);
-  max-width: 140px;
+  overflow: hidden;
 }
 
-.cand-card__mol code {
-  font-size: 10px;
-  color: var(--rw-text-3);
+/* 产物：品牌色边框 —— 呼应路线图的目标卡高亮 */
+.rxn__mol.is-product .rxn__mol-struct {
+  border: 1.5px solid var(--rw-brand);
+  background: var(--rw-brand-l);
 }
 
-.cand-card__foot {
+.rxn__mol-meta {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+  gap: 5px;
+  max-width: 116px;
 }
 
-.cand-card__count {
+.rxn__mol-meta code {
+  font-size: 10px;
+  color: var(--rw-text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rxn__buy {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--rw-ok-l);
+  color: var(--rw-ok);
+  font-size: 10px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* 询价入口：¥ 小圆钮，点击展开供应商列表 */
+.rxn__query {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--rw-brand);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.rxn__query:hover {
+  background: var(--rw-brand-d);
+}
+
+.rxn__supplier-name {
+  font-weight: 600;
+}
+
+.rxn__supplier-tag {
+  margin-left: 8px;
   font-size: 11px;
   color: var(--rw-text-3);
+}
+
+.rxn__supplier-footnote {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+  white-space: normal;
+  line-height: 1.5;
+}
+
+/* ---------- 反应箭头：概率挂在线上方 ---------- */
+.rxn__arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 0 0 auto;
+  min-width: 86px;
+  padding: 0 4px;
+}
+
+.rxn__arrow-prob {
+  margin-bottom: 3px;
+  padding: 1px 8px;
+  border: 1px solid var(--rw-border-strong);
+  border-radius: 999px;
+  background: var(--rw-surface);
+  box-shadow: var(--rw-shadow-1);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--rw-text-2);
+  white-space: nowrap;
+}
+
+.rxn__arrow-line {
+  position: relative;
+  width: 100%;
+  height: 0;
+  border-top: 1.6px solid var(--rw-border-strong);
+}
+
+/* 箭头头部：一个小的实心三角 */
+.rxn__arrow-line::after {
+  content: '';
+  position: absolute;
+  right: -1px;
+  top: -4.3px;
+  border-left: 7px solid var(--rw-border-strong);
+  border-top: 3.5px solid transparent;
+  border-bottom: 3.5px solid transparent;
+}
+
+/* ---------- 行尾动作 ---------- */
+.rxn__ops {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.rxn__count {
+  font-size: 10.5px;
+  color: var(--rw-text-3);
+  white-space: nowrap;
 }
 
 .cand__undo {
   margin-top: 10px;
   text-align: right;
+}
+
+/* 窄屏：动作落到方程式下方 */
+@media (max-width: 900px) {
+  .rxn {
+    flex-wrap: wrap;
+  }
+
+  .rxn__ops {
+    flex-direction: row;
+    width: 100%;
+    justify-content: flex-end;
+  }
 }
 </style>

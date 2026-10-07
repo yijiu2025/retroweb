@@ -44,8 +44,15 @@ async function onReset(): Promise<void> {
 
 <template>
   <section class="rw-card tree">
+    <!-- 头部 = 左统计 chips + 右工具按钮。
+         不再放「路线树」大标题：外层页签已经说明语境，重复标题只会浪费一行 -->
     <div class="rw-card__head">
-      <div class="rw-card__title">③ 路线树</div>
+      <div class="tree__stats">
+        <span class="tree__stat">节点 <b>{{ stats.total }}</b></span>
+        <span class="tree__stat">已终止 <b>{{ stats.terminal }}</b></span>
+        <span class="tree__stat">已采纳步骤 <b>{{ stats.reactions }}</b></span>
+        <span class="tree__stat">最深 <b>第 {{ stats.maxDepth + 1 }} 层</b></span>
+      </div>
       <div class="tree__ops">
         <el-button link size="small" @click="store.collapseAll()">折叠全部</el-button>
         <el-button link size="small" @click="store.expandAll()">展开全部</el-button>
@@ -54,16 +61,9 @@ async function onReset(): Promise<void> {
       </div>
     </div>
 
-    <div class="tree__stats">
-      <span>节点 <b>{{ stats.total }}</b></span>
-      <span>已终止 <b>{{ stats.terminal }}</b></span>
-      <span>已采纳步骤 <b>{{ stats.reactions }}</b></span>
-      <span>最深 <b>第 {{ stats.maxDepth + 1 }} 层</b></span>
-    </div>
-
     <div class="rw-card__body tree__body rw-scroll">
       <StepRow v-if="store.rootId" :node-id="store.rootId" @preview="(s) => emit('preview', s)" />
-      <el-empty v-else description="先在左侧解析一个目标分子，然后点「展开」一步步往下拆" :image-size="80" />
+      <el-empty v-else description="先设定目标分子并拆解，路线会在这里逐层长出来" :image-size="80" />
     </div>
   </section>
 </template>
@@ -81,20 +81,29 @@ async function onReset(): Promise<void> {
   gap: 2px;
 }
 
+/* 统计 chips：并入头部后由「一条灰行」变成「一组轻量徽标」，信息不变、层级更清爽 */
 .tree__stats {
   display: flex;
   flex-wrap: wrap;
-  gap: 16px;
-  padding: 8px 18px;
-  border-bottom: 1px solid var(--rw-border);
-  background: var(--rw-surface-2);
-  font-size: 12px;
-  color: var(--rw-text-3);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
 }
 
-.tree__stats b {
+.tree__stat {
+  padding: 2px 9px;
+  border: 1px solid var(--rw-border);
+  border-radius: 999px;
+  background: var(--rw-surface-2);
+  font-size: 11.5px;
+  color: var(--rw-text-3);
+  white-space: nowrap;
+}
+
+.tree__stat b {
   color: var(--rw-text);
   font-weight: 600;
+  margin-left: 2px;
 }
 
 .tree__body {

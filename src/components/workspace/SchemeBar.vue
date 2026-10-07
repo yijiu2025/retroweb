@@ -13,6 +13,7 @@
 import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { promptSaveScheme } from '@/utils/scheme-save';
 
 const store = useWorkspaceStore();
 
@@ -23,26 +24,12 @@ function pct(p: number): string {
   return `${(p * 100).toFixed(2)}%`;
 }
 
-async function onSave(): Promise<void> {
-  if (!store.rootId) {
-    ElMessage.warning('还没有路线可保存，请先设定目标分子并拆几步');
-    return;
-  }
-  try {
-    const { value } = await ElMessageBox.prompt(
-      '给这条路线起个名字（例如「路线 A：走酰氯」「路线 B：走酸酐」）',
-      '存为一条路线方案',
-      {
-        inputValue: `路线 ${stats.value.length + 1}`,
-        confirmButtonText: '保存',
-        cancelButtonText: '取消'
-      }
-    );
-    store.saveScheme(value);
-    ElMessage.success('已存为一条路线方案，可继续改选择再存下一条');
-  } catch {
-    /* 用户取消 */
-  }
+/**
+ * 「存为新方案」—— Slim Header（TargetBar）上也有同一个入口，
+ * 两处共用 `promptSaveScheme`，免得起名文案 / 默认名 / 前置校验分叉。
+ */
+function onSave(): Promise<void> {
+  return promptSaveScheme(store);
 }
 
 async function onRename(id: string, old: string): Promise<void> {
@@ -82,7 +69,12 @@ async function onRemove(id: string, name: string): Promise<void> {
        一旦存了第一条方案，才展开成完整卡片 -->
   <section v-if="!stats.length" class="rw-card schemes schemes--empty">
     <div class="schemes__empty">
-      <span class="schemes__empty-title">④ 路线方案</span>
+      <span class="schemes__empty-title">
+        <svg class="schemes__ico" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.5 4h11M2.5 8h11M2.5 12h7" />
+        </svg>
+        路线方案
+      </span>
       <span class="schemes__empty-hint">
         拆出一条路线后点「存为新方案」，就能切换对比同一目标的多条路线
       </span>
@@ -94,7 +86,13 @@ async function onRemove(id: string, name: string): Promise<void> {
 
   <section v-else class="rw-card schemes">
     <div class="rw-card__head">
-      <div class="rw-card__title">④ 路线方案（多路线对比）</div>
+      <div class="rw-card__title">
+        <svg class="schemes__ico" viewBox="0 0 16 16" aria-hidden="true">
+          <path d="M2.5 4h11M2.5 8h11M2.5 12h7" />
+        </svg>
+        路线方案
+        <span class="schemes__sub">多条路线对比</span>
+      </div>
       <div class="schemes__ops">
         <el-button size="small" type="primary" plain :disabled="!store.rootId" @click="onSave">
           存为新方案
@@ -186,10 +184,32 @@ async function onRemove(id: string, name: string): Promise<void> {
 }
 
 .schemes__empty-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 13px;
   font-weight: 600;
   color: var(--rw-text-2);
   white-space: nowrap;
+}
+
+/* 标题图标：与运行参数分组图标同一套风格（品牌色细线 SVG） */
+.schemes__ico {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: var(--rw-brand);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0.9;
+}
+
+.schemes__sub {
+  font-size: 11.5px;
+  font-weight: 400;
+  color: var(--rw-text-3);
 }
 
 .schemes__empty-hint {

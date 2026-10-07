@@ -8,6 +8,7 @@
 import { computed } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { MolNode } from '@/types/retro';
+import { SUPPLIERS, openSupplier } from '@/utils/suppliers';
 import MolView from '@/components/mol/MolView.vue';
 import CandidatePanel from './CandidatePanel.vue';
 import JobProgress from './JobProgress.vue';
@@ -58,6 +59,11 @@ function openAnalysis(): void {
   store.analysisFocus = props.nodeId;
   store.mainTab = 'flow';
 }
+
+function onQuery(supplierId: string): void {
+  const smi = node.value?.smiles;
+  if (smi) openSupplier(supplierId, smi);
+}
 </script>
 
 <template>
@@ -98,6 +104,23 @@ function openAnalysis(): void {
         <div class="step-row__tags">
           <span class="step-tag" :class="roleClass[node.role]">{{ roleText[node.role] }}</span>
           <span v-if="node.purchased" class="step-tag is-buy">可购买</span>
+          <el-dropdown
+            v-if="node.purchased"
+            trigger="click"
+            size="small"
+            @command="onQuery"
+          >
+            <span class="step-row__query" title="点击查价">¥</span>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item v-for="s in SUPPLIERS" :key="s.id" :command="s.id">
+                  <span class="step-row__supplier-name">{{ s.name }}</span>
+                  <span class="step-row__supplier-tag">{{ s.tag }}</span>
+                </el-dropdown-item>
+                <div class="step-row__supplier-footnote">跳转后粘贴 SMILES 即可（已自动复制）</div>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <span v-if="node.reusedFrom" class="step-tag is-reuse">复用分析</span>
           <span v-if="node.duplicateOf" class="step-tag is-dup">同分支重复</span>
           <span v-if="analysisStatus === 'done'" class="step-tag is-analyzed">已分析</span>
@@ -289,6 +312,46 @@ function openAnalysis(): void {
 .step-tag.is-buy {
   color: #0369a1;
   background: #e0f2fe;
+}
+
+/* 询价入口：¥ 小圆钮（紧贴「可购买」标签下方） */
+.step-row__query {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  margin-left: 3px;
+  border-radius: 50%;
+  background: var(--rw-brand);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.step-row__query:hover {
+  background: var(--rw-brand-d);
+}
+
+.step-row__supplier-name {
+  font-weight: 600;
+}
+
+.step-row__supplier-tag {
+  margin-left: 8px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+.step-row__supplier-footnote {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+  white-space: normal;
+  line-height: 1.5;
 }
 
 .step-tag.is-dup {

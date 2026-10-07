@@ -8,10 +8,12 @@
  */
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
-import { llmApi, retroApi, RetroApiError, streamAnalyze } from '@/api/retro';
+import { llmApi, retroApi, RetroApiError, streamAnalyze, streamFollowup } from '@/api/retro';
 import type {
+  AnalysisModuleKey,
   AnalysisRun,
   AnalyzeRequest,
+  FollowupRequest,
   HistoryTask,
   JobProgress,
   LlmStatus,
@@ -25,6 +27,7 @@ import type {
   Session,
   SessionStatus,
   StepAnalysis,
+  StepFollowup,
   WorkspaceSnapshot
 } from '@/types/retro';
 import { countHeavyAtoms, levelOf, uid } from '@/utils/smiles';
@@ -37,6 +40,8 @@ const SESSIONS_LIMIT = 10;
 const MAX_RUNS = 6;
 /** 每个节点最多保留几份 AI 工艺分析 */
 const MAX_ANALYSES = 6;
+/** 每份工艺分析最多保留几条追问（追问会累积，不设上限 localStorage 迟早爆） */
+const MAX_FOLLOWUPS = 10;
 
 /**
  * 候选反应的**确定性 id**：由「节点 + 前体组合」推出。
@@ -91,6 +96,37 @@ const DEFAULT_PARAMS: RunParams = {
   heavyAtomThreshold: 6,
   startingMaterials: [],
   budgetCalls: 40
+};
+
+/**
+ * AI 工艺分析可勾选的模块（默认全选）。
+ * 🔴 顺序即面板展示顺序；`summary`（总述+反应类型）是每次分析的兜底，不在这里展示，
+ *    但永远随请求带上。与后端 `_MODULE_FIELDS` 的 key 对齐。
+ */
+export const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
+  'mechanism',
+  'order',
+  'conditions',
+  'workup',
+  'outcome',
+  'byproducts',
+  'lcms',
+  'nmr',
+  'safety'
+];
+
+/** 模块 key → 中文名（RunParams 勾选面板用） */
+export const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
+  summary: '总述与反应类型',
+  mechanism: '反应机理',
+  order: '投料顺序',
+  conditions: '反应条件',
+  workup: '后处理分析',
+  outcome: '预期结果与收率',
+  byproducts: '可能的副产物',
+  lcms: 'LCMS 解读',
+  nmr: 'NMR 谱图归属',
+  safety: '安全与放大提示'
 };
 
 function readHistory(): HistoryTask[] {
@@ -171,6 +207,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const rootId = ref<string | null>(null);
   const nodes = ref<Record<string, MolNode>>({});
   const params = ref<RunParams>({ ...DEFAULT_PARAMS });
+  /** AI 工艺分析勾选的模块（默认全选）。空数组 = 全量分析（与后端语义一致） */
+  const analysisModules = ref<AnalysisModuleKey[]>([...ALL_ANALYSIS_MODULES]);
   const models = ref<RetroModel[]>([]);
   const modelsLoading = ref(false);
   const modelLoadingKey = ref<string | null>(null);
@@ -180,6 +218,32 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const autoRunning = ref(false);
   const autoProgress = ref({ done: 0, budget: 0, label: '' });
   const globalError = ref<string | null>(null);
+  /**
+   * 最近一次失败动作的「重试」入口 —— 顶部错误条上的重试按钮用。
+   *
+   * 🔴 每个 setGlobalError 调用点**自己给闭包**（重试模型加载 / 重试预热 / 重开任务），
+   *    这样「重试」永远重做**刚才失败的那件事**，而不是笼统地刷新页面
+   *    （刷新页面会丢掉正在编辑的路线树）。
+   */
+  const errorRetry = ref<(() => void) | null>(null);
+
+  /** 报错：文案 + 可选的「重试」动作（不传则该错误只能关闭） */
+  function setGlobalError(msg: string, retry: (() => void) | null = null): void {
+    globalError.value = msg;
+    errorRetry.value = retry;
+  }
+
+  function clearGlobalError(): void {
+    globalError.value = null;
+    errorRetry.value = null;
+  }
+
+  /** 错误条上「重试」被点击：清错误 → 重做上次失败的动作用 */
+  function retryError(): void {
+    const fn = errorRetry.value;
+    clearGlobalError();
+    fn?.();
+  }
   const history = ref<HistoryTask[]>(readHistory());
 
   /**
@@ -188,6 +252,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    */
   const sessions = ref<Session[]>(readSessions());
   const currentSessionId = ref<string | null>(null);
+  /**
+   * 标定面板当前「正在编辑」的会话 id（null = 全新任务，还没有归属）。
+   *
+   * 🔴 为什么需要它（真实 bug）：`setTarget()` 之前**无条件** `currentSessionId = uid('sess')`
+   *   新建会话，于是「打开一个标定态任务 → 清空 → 点示例 / 重新粘贴」会在列表里
+   *   **多冒出一条新任务**（并把原任务顶下去）；用户明明是想改手头这个任务。
+   *   有了这个字段，就能区分两种语境：
+   *     · 从侧栏「打开」某任务 → editingSessionId = 该任务 id ⇒ 后续 setTarget **编辑它**；
+   *     · 「＋新任务」/「换目标」→ editingSessionId = null ⇒ 后续 setTarget **新建**。
+   */
+  const editingSessionId = ref<string | null>(null);
 
   /**
    * nodeId → 后端 job_id 的镜像（与 jobProgress 同步）。
@@ -209,8 +284,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   /** 工艺分析面板要聚焦的节点（从路线树点「工艺分析」跳转过来） */
   const analysisFocus = ref<string | null>(null);
-  /** 右栏当前页签（放 store 里，方便路线树里点「工艺分析」直接跳到流程页） */
-  const mainTab = ref<'tree' | 'route' | 'flow'>('tree');
+  /**
+   * 主区当前页签。
+   *
+   * 🔴 默认是 `overview`（目标分析总览）：打开一个任务先看到「在拆什么 + 已确认到哪一步」，
+   *    而不是一屏还没长开的逆合成树 —— 树/网络/详情都在页签里，随时可进。
+   *    `loadSession` / `resumeSessions` 会把它复位成 `overview`（换任务 = 换上下文）。
+   */
+  const mainTab = ref<'overview' | 'tree' | 'route' | 'flow'>('overview');
   /** 正在流式输出的工艺分析的中止句柄（key = nodeId） */
   const analysisAborts = new Map<string, AbortController>();
 
@@ -551,7 +632,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         params.value.model = models.value[0].key;
       }
     } catch (e) {
-      globalError.value = (e as Error).message;
+      setGlobalError((e as Error).message, () => void loadModels());
       models.value = [];
     } finally {
       modelsLoading.value = false;
@@ -564,15 +645,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       const res = await retroApi.loadModel(params.value.model);
       await loadModels();
-      if (res && res.ok === false) globalError.value = res.error || '模型加载失败';
+      if (res && res.ok === false) setGlobalError(res.error || '模型加载失败', () => void warmModel());
     } catch (e) {
-      globalError.value = (e as Error).message;
+      setGlobalError((e as Error).message, () => void warmModel());
     } finally {
       modelLoadingKey.value = null;
     }
   }
 
-  /** 设置目标分子：重置整棵树，并开一个新会话 */
+  /** 设置目标分子：重置整棵树，并（按上下文）编辑现有会话或开一个新会话 */
   function setTarget(parsed: ParseSuccess): void {
     reset({ keepParams: true });
     const root = makeNode({
@@ -585,8 +666,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     nodes.value[root.id] = root;
     rootId.value = root.id;
     activeNodeId.value = null;
-    // 新目标 = 新会话（旧会话若还挂着会被保留在列表里，可稍后继续）
-    currentSessionId.value = uid('sess');
+    // 🔴 归属判断：优先复用「标定面板正在编辑的会话」（打开任务 / 换目标后重新填结构），
+    //    否则才开新会话。原来这里**无条件** `uid('sess')`，于是「打开一个任务 → 清空 →
+    //    点示例 / 重粘」会在列表里冒出一条新任务、把旧任务顶走 —— 用户要的是**编辑原任务**。
+    //    （新建只发生在「＋新任务」「换目标」—— 那两处会把 editingSessionId 置 null。）
+    const reuse = editingSessionId.value;
+    if (reuse && sessions.value.some((s) => s.id === reuse)) {
+      currentSessionId.value = reuse;
+    } else {
+      currentSessionId.value = uid('sess');
+      editingSessionId.value = null;
+    }
     // 🔴 这里**有意不关面板**：解析成功只代表「目标填好了」，用户可能还要改模型参数。
     //    关面板的职责归 `closeTargetSetup()`，由标定卡片底部的「确定目标，开始分析」触发。
     persistSession();
@@ -603,8 +693,14 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    */
   function openTargetSetup(): void {
     reset({ keepParams: true });
+    // 🔴 「＋新任务」与「换目标」都表示**开始一个全新任务**：把「正在编辑的会话」清掉，
+    //    这样接下来 `setTarget()` 才会新建会话，而不是改写上一个任务。
+    editingSessionId.value = null;
+    currentSessionId.value = null;
     targetSetupOpen.value = true;
     targetSetupDirty.value = true;
+    // 换任务 = 换上下文：页签回到「目标分析」总览
+    mainTab.value = 'overview';
   }
 
   /** 关掉标定面板（只有已经有目标时才允许，否则工作台会空无一物） */
@@ -959,7 +1055,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     nodes.value = {};
     rootId.value = null;
     activeNodeId.value = null;
-    globalError.value = null;
+    clearGlobalError();
     aborts.forEach((c) => c.abort());
     aborts.clear();
     analysisAborts.forEach((c) => c.abort());
@@ -1033,17 +1129,76 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     return clone;
   }
 
-  /** 把当前工作台落盘成一个会话快照（覆盖 currentSessionId 对应的那条） */
-  function persistSession(): void {
-    if (!rootId.value) {
-      // 没有活动工作台：清掉「当前会话」记录（若有）
-      if (currentSessionId.value) {
-        sessions.value = sessions.value.filter((s) => s.id !== currentSessionId.value);
-        currentSessionId.value = null;
-        writeSessions(sessions.value);
-      }
-      return;
-    }
+/**
+ * 会话「内容签名」—— 用来判断这次落盘到底是**真的改了内容**，还是只是打开看一眼。
+ *
+ * 🔴 为什么需要它（真实 bug）：`persistSession()` 被一个 deep watcher 驱动，
+ *    而「打开某个任务」就会触发它（restoreSnapshot 换掉了 nodes / params / jobIds）。
+ *    原实现在这里无条件写 `session.updatedAt = Date.now()` ⇒ **点一下旧任务，它就跳到
+ *    「最近的任务」第一位**，用户正要找的邻居全被挤走；而侧栏又是按 updatedAt 排的。
+ *
+ * 🔴 为什么不能直接 `JSON.stringify(snapshot)` 当签名：节点对象在运行期是
+ *    `{...默认值, ...partial}` 拼出来的，从 localStorage 恢复时走的是 `normalizeNode()`
+ *    的固定字段顺序 ⇒ **同一个节点两次序列化的键顺序不同**，字符串必然不等，
+ *    签名恒变 = 白做。所以这里只取「与字段顺序无关、且能被 normalizeNode 完整保留」的字段，
+ *    并**排序**后再拼。
+ */
+function sessionSignature(snap: WorkspaceSnapshot): string {
+  const p = snap.params;
+  const nodes = Object.entries(snap.nodes)
+    .map(([id, n]) => {
+      const analyses = Object.entries(n.analyses ?? {})
+        .map(([rid, rec]) => `${rid}:${rec.status}`)
+        .sort()
+        .join(',');
+      return [
+        id,
+        n.status,
+        n.role,
+        n.chosenReactionId ?? '',
+        n.duplicateOf ?? '',
+        n.reusedFrom ?? '',
+        n.children.join(','),
+        n.fetched ? 1 : 0,
+        n.purchased ? 1 : 0,
+        n.collapsed ? 1 : 0,
+        n.candidates.length,
+        analyses
+      ].join('|');
+    })
+    .sort();
+
+  const schemes = (snap.schemes ?? [])
+    .map((s) => `${s.id}:${Object.keys(s.choices ?? {}).length}`)
+    .join(',');
+
+  return [
+    snap.rootId ?? '',
+    snap.currentSchemeId ?? '',
+    // 参数逐字段取，别 JSON.stringify 整个对象（键顺序同样不稳）
+    p.model,
+    p.numResults,
+    p.maxDepth,
+    p.heavyAtomThreshold,
+    p.budgetCalls,
+    p.startingMaterials.join(','),
+    Object.keys(snap.jobIds ?? {}).sort().join(','),
+    schemes,
+    nodes.join(';')
+  ].join('#');
+}
+
+/** 把当前工作台落盘成一个会话快照（覆盖 currentSessionId 对应的那条） */
+function persistSession(): void {
+  if (!rootId.value) {
+    // 没有活动工作台。
+    // 🔴 这里**只解除「当前会话」标记，绝不删除会话** —— 原实现顺手把
+    //    currentSessionId 那条从列表里 filter 掉，于是「换目标 / 新建任务」
+    //    （都会先 reset() 把 rootId 清空）会把**上一个任务整个删掉**，
+    //    用户看到的就是「点了个新任务，旧任务没了」。任务只能由用户显式删除。
+    currentSessionId.value = null;
+    return;
+  }
     const snap: WorkspaceSnapshot = {
       rootId: rootId.value,
       nodes: snapshotNodes(),
@@ -1055,6 +1210,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     };
     const target = nodes.value[rootId.value]?.smiles ?? '';
     const status = computeSessionStatus();
+    const sig = sessionSignature(snap);
     let session = sessions.value.find((s) => s.id === currentSessionId.value);
     if (!session) {
       session = {
@@ -1064,16 +1220,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         model: params.value.model,
         status,
         updatedAt: Date.now(),
-        snapshot: snap
+        snapshot: snap,
+        sig
       };
       if (!currentSessionId.value) currentSessionId.value = session.id;
       sessions.value = [session, ...sessions.value].slice(0, SESSIONS_LIMIT);
     } else {
       session.snapshot = snap;
       session.status = status;
-      session.updatedAt = Date.now();
       session.target = target;
       session.model = params.value.model;
+      // 🔴 排序用的 updatedAt 只在**内容真的变了**时才刷新。
+      //    内容没变（典型场景：点开一个旧任务，store 回写一次同样的快照）⇒ 时间不动，
+      //    列表里的位置也就不动。
+      if (session.sig === undefined) {
+        session.sig = sig; // 旧数据第一次载入：只登记签名，不算「刚动过」
+      } else if (session.sig !== sig) {
+        session.sig = sig;
+        session.updatedAt = Date.now();
+      }
     }
     writeSessions(sessions.value);
   }
@@ -1182,14 +1347,34 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         restoreSnapshot(s);
         if (!rootId.value) continue;
         currentSessionId.value = s.id;
+        editingSessionId.value = s.id;
         // 恢复出来的会话有根节点 ⇒ 直接进路线态（与 loadSession 同理）
         targetSetupOpen.value = false;
+        mainTab.value = 'overview'; // 打开任务先看目标 + 已确认路线，不直接甩一屏树
         resumeLoading();
         return;
       } catch (e) {
         console.warn('[retroweb] 跳过一条无法恢复的会话：', s.id, e);
       }
     }
+  }
+
+  /**
+   * 这个会话是不是还停留在「标定态」—— 即只设了目标分子、还没点过「开始分析」。
+   *
+   * 判据：根节点还是 `idle`。一旦 `startAnalysis()` 开跑，`predictNode` 会把根节点从
+   * `idle` 置成 `loading`（最终 `expanded` / `failed` / `terminated`）—— 所以
+   * **根节点 status === 'idle' ⇔ 还没开始分析**，与有没有子节点无关：
+   *   目标分子本身就是「可购买原料」时，`predictNode` 会直接把它置 `terminated`
+   *   （一步都不用拆、也没有子节点），但那已经是「分析过」的完成态，不是草稿。
+   * 草稿任务被打开时应**回到标定面板**让用户继续编辑，而不是显示一屏路线态。
+   */
+  function isDraftSession(s: Session): boolean {
+    const snap = s.snapshot;
+    if (!snap?.rootId) return true; // 连目标都没设 = 一定是草稿
+    const root = snap.nodes?.[snap.rootId];
+    if (!root) return false;
+    return root.status === 'idle';
   }
 
   /** 从列表里手动打开一个会话（点击「继续」） */
@@ -1199,12 +1384,25 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     try {
       restoreSnapshot(s);
     } catch (e) {
-      globalError.value = `这条任务的数据已损坏，无法打开：${(e as Error).message}`;
+      setGlobalError(
+        `这条任务的数据已损坏，无法打开：${(e as Error).message}`,
+        () => loadSession(s.id)
+      );
       return;
     }
     currentSessionId.value = s.id;
-    // 打开的会话已经在跑/有路线了 ⇒ 直接进路线态，别让标定卡片盖在上面
-    if (rootId.value) targetSetupOpen.value = false;
+    // 🔴 打开的任务就是接下来「继续 / 编辑」的对象：记下来，后续在标定面板里
+    //    setTarget（清空→点示例 / 重粘 / 画图）都改写**它**，而不是另起新任务。
+    editingSessionId.value = s.id;
+    // 🔴 已开始分析（有路线 / 正在跑）的任务 ⇒ 直接进路线态，别让标定卡片盖在上面；
+    //    但**标定态**任务（只设了目标、还没点「开始分析」）⇒ 打开标定面板让用户继续填。
+    if (rootId.value && !isDraftSession(s)) {
+      targetSetupOpen.value = false;
+    } else {
+      targetSetupOpen.value = true;
+    }
+    // 换任务 = 换上下文：页签回到「目标分析」总览（不直接展示逆合成树）
+    mainTab.value = 'overview';
     resumeLoading();
   }
 
@@ -1480,8 +1678,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    *
    * 结果按 reactionId 存在节点上 ⇒ 天然保留：同一个分子换过几种拆法就有几份分析。
    * 已有 done 的结果默认不重复跑（要看就展开），想重跑传 `force`。
+   *
+   * 🔴 `continue`（接着分析）：LLM 是无状态的，普通重跑会从头再来。上次失败（截断/中断）
+   *    若已收到部分正文，把那段正文作为 assistant 前缀续写，让模型从断点接着补完，
+   *    而不是重头再写一遍。传 `continue: true` 时内部自动带上 `continue_from`。
    */
-  async function analyzeStep(nodeId: string, opts: { force?: boolean } = {}): Promise<void> {
+  async function analyzeStep(
+    nodeId: string,
+    opts: { force?: boolean; continue?: boolean } = {}
+  ): Promise<void> {
     const node = nodes.value[nodeId];
     if (!node) return;
     const rid = node.chosenReactionId;
@@ -1497,6 +1702,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     analysisAborts.get(nodeId)?.abort();
     const controller = new AbortController();
     analysisAborts.set(nodeId, controller);
+
+    // 接着分析：把上次已收到的正文接上续写（保留思考过程不被丢弃）
+    const continueFrom = opts.continue && prev?.raw ? prev.raw : undefined;
 
     node.analyses[rid] = {
       reactionId: rid,
@@ -1529,7 +1737,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       precursors: rxn.precursorList,
       probability: rxn.probability,
       model: params.value.model,
-      context: routeContext(nodeId)
+      context: routeContext(nodeId),
+      // 勾选的模块；空数组 = 全量（后端据此裁剪 prompt，只输出勾选字段）
+      modules: [...analysisModules.value],
+      ...(continueFrom ? { continue_from: continueFrom } : {})
     };
 
     try {
@@ -1583,9 +1794,108 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   }
 
+  /**
+   * 对「该节点这一步反应」追问一个问题 —— **携带上下文**。
+   *
+   * 带过去的东西：产物 / 前体 / 路线上下文 / 已生成的结构化分析 / 本份分析上的历史问答。
+   * 结果追加到 `analysis.followups`（随会话落盘）⇒ 刷新后问答还在。
+   *
+   * 🔴 与首轮分析的区别：追问要的是**自由文本**回答（后端已显式关掉 json 模式），
+   *    所以这里不抽 JSON，直接累积文本。
+   * 🔴 写回必须走**响应式代理**：用 `find()` 从响应式数组里取当前那条再改；
+   *    抓着 push 时的裸对象引用改，Vue 收不到更新（界面会一直空着）。
+   */
+  async function askFollowup(nodeId: string, question: string): Promise<void> {
+    const node = nodes.value[nodeId];
+    const rid = node?.chosenReactionId;
+    if (!node || !rid) return;
+    const rxn = node.candidates.find((r) => r.id === rid);
+    const rec = node.analyses?.[rid];
+    const q = question.trim();
+    if (!rxn || !rec || !q) return;
+    if (rec.followups?.some((f) => f.status === 'streaming')) return; // 一次只跑一条
+
+    if (!rec.followups) rec.followups = [];
+    const items = rec.followups;
+    // 只留最近 MAX_FOLLOWUPS 条：追问会累积，不设上限 localStorage 迟早爆
+    if (items.length >= MAX_FOLLOWUPS) items.splice(0, items.length - MAX_FOLLOWUPS + 1);
+    const myId = uid('fu');
+    items.push({ id: myId, q, a: '', status: 'streaming', at: Date.now() });
+
+    /** 每次都重新从响应式数组里取 —— 数组可能刚被 trim 过，别缓存下标 */
+    const cur = (): StepFollowup | undefined =>
+      node.analyses?.[rid]?.followups?.find((f) => f.id === myId);
+
+    const ak = `fu:${nodeId}`;
+    analysisAborts.get(ak)?.abort();
+    const controller = new AbortController();
+    analysisAborts.set(ak, controller);
+
+    const history: { role: 'user' | 'assistant'; content: string }[] = [];
+    for (const f of items) {
+      if (f.id === myId) continue;
+      if (f.status !== 'done' || !f.a) continue;
+      history.push({ role: 'user', content: f.q });
+      history.push({ role: 'assistant', content: f.a });
+    }
+
+    const req: FollowupRequest = {
+      product: node.smiles,
+      precursors: rxn.precursorList,
+      probability: rxn.probability,
+      model: params.value.model,
+      context: routeContext(nodeId),
+      analysis: rec.data ?? null,
+      history,
+      question: q
+    };
+
+    try {
+      await streamFollowup(
+        req,
+        {
+          onDelta: (t) => {
+            const c = cur();
+            if (c) c.a += t;
+          },
+          onDone: (p) => {
+            const c = cur();
+            if (c) {
+              c.a = p.text || c.a;
+              c.status = 'done';
+            }
+          },
+          onError: (m) => {
+            const c = cur();
+            if (c) {
+              c.status = 'failed';
+              c.error = m;
+            }
+          }
+        },
+        controller.signal
+      );
+    } finally {
+      // abort 时既走不到 done 也走不到 error ⇒ 这里收尾，别永远停在「回答中」
+      const c = cur();
+      if (c && c.status === 'streaming') {
+        c.status = 'failed';
+        c.error = c.error || '追问已中断';
+      }
+      analysisAborts.delete(ak);
+      schedulePersist();
+    }
+  }
+
+  /** 停止正在流式的那条追问 */
+  function cancelFollowup(nodeId: string): void {
+    const ak = `fu:${nodeId}`;
+    analysisAborts.get(ak)?.abort();
+    analysisAborts.delete(ak);
+  }
+
   /** 把所有节点的 AI 分析一次性生成（沿当前路线的每一步） */
-  async function analyzeRoute(): Promise<void> {
-    const steps = route.value;
+  async function analyzeRoute(): Promise<void> {    const steps = route.value;
     for (const step of steps) {
       const node = nodes.value[step.nodeId];
       if (!node?.chosenReactionId) continue;
@@ -1667,6 +1977,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     nodeList,
     allNodes,
     params,
+    analysisModules,
     models,
     modelsLoading,
     modelLoadingKey,
@@ -1675,9 +1986,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     autoRunning,
     autoProgress,
     globalError,
+    errorRetry,
+    retryError,
+    clearGlobalError,
     history,
     sessions,
     currentSessionId,
+    editingSessionId,
     stats,
     route,
     routeProbability,
@@ -1704,6 +2019,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     analyzeStep,
     analyzeRoute,
     cancelAnalysis,
+    askFollowup,
+    cancelFollowup,
     loadModels,
     warmModel,
     setTarget,

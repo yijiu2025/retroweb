@@ -33,9 +33,11 @@ import UserMenu from './UserMenu.vue';
 import DevBypassBadge from './DevBypassBadge.vue';
 import AsidePanel from './AsidePanel.vue';
 import SessionPanel from '@/components/workspace/SessionPanel.vue';
+import TargetBar from '@/components/workspace/TargetBar.vue';
 import RunParams from '@/components/workspace/RunParams.vue';
 import SchemeCompare from '@/components/workspace/SchemeCompare.vue';
 import RouteStats from '@/components/workspace/RouteStats.vue';
+import MolPreviewDialog from '@/components/mol/MolPreviewDialog.vue';
 
 const settings = useSettingsStore();
 const store = useWorkspaceStore();
@@ -59,11 +61,40 @@ function openSession(id: string): void {
   if (route.path !== '/') void router.push('/');
 }
 
+/**
+ * 从侧栏「＋ 新任务」开始一个新任务。
+ *
+ * 🔴 只做两件事：把工作台切回**标定态**（空白面板）+ 必要时跳回工作台路由。
+ *    **不碰**已有会话 —— 旧任务原样留在侧栏里，随时能点回去（store.openTargetSetup
+ *    只 reset 当前工作台，不会再像以前那样顺手把上一条会话删掉）。
+ */
+function newSession(): void {
+  store.openTargetSetup();
+  if (route.path !== '/') void router.push('/');
+}
+
 const navItems = [
   { path: '/', label: '工作台', icon: '⌗' },
   { path: '/history', label: '历史记录', icon: '⟲' },
   { path: '/profile', label: '个人中心', icon: '☺' }
 ];
+
+/**
+ * 左侧栏是否显示「目标分析」卡。
+ *
+ * 判据：**有目标 且 不在标定态**。标定态下目标还没定（或刚清空），
+ * 挂一张空卡只会把「最近的任务」往下挤。
+ */
+const showTarget = computed(() => !store.targetSetupOpen && !!store.rootId);
+
+/** 目标结构放大预览（左栏目标分析卡里的缩略图点开） */
+const previewOpen = ref(false);
+const previewSmiles = ref('');
+
+function openPreview(smiles: string): void {
+  previewSmiles.value = smiles;
+  previewOpen.value = true;
+}
 
 const pageTitle = computed(() => (route.meta.title as string) || '逆合成工作台');
 const pageDesc = computed(() => (route.meta.desc as string) || '');
@@ -86,6 +117,12 @@ const asideKind = computed<'params' | 'schemes' | 'none'>(() => {
   if (store.targetSetupOpen) return 'none';
   return store.mainTab === 'route' ? 'schemes' : 'params';
 });
+
+/**
+ * 任务状态条（空闲 / 节点 / 已采纳 / 最深 / 总概率）挂在辅助面板底部 ——
+ * 它是「随时瞄一眼」的参考信息，跟「运行参数」同一类，放右栏比钉在内容区末尾更省一屏。
+ */
+const showStats = computed(() => route.name === 'workspace' && !store.targetSetupOpen);
 
 const asideTitle = computed(() => (asideKind.value === 'schemes' ? '路线方案对比' : '运行参数'));
 
@@ -119,7 +156,13 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   <div class="app" :class="{ 'is-collapsed': collapsed, 'is-narrow': narrow }">
     <aside class="app__aside">
       <div class="app__brand">
-        <span class="app__logo">R</span>
+        <span class="app__logo" aria-label="RetroWeb">
+          <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
+            <circle cx="9" cy="9" r="4" fill="#2563eb" />
+            <circle cx="23" cy="13" r="4" fill="#059669" />
+            <circle cx="13" cy="23" r="4" fill="#dc2626" />
+          </svg>
+        </span>
         <span v-show="!collapsed" class="app__brand-text">
           <b>RetroWeb</b>
           <i>逆合成工作台</i>
@@ -141,9 +184,15 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </button>
       </nav>
 
-      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树 -->
+      <!-- 目标分析：当前任务在拆什么 + 已确认到哪一步。
+           与「最近的任务」并列（排在它上方），主区顶部因此不再占这一行。 -->
+      <div v-show="!collapsed" class="app__target">
+        <TargetBar v-if="showTarget" @preview="openPreview" />
+      </div>
+
+      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树；「＋新任务」也在这里 -->
       <div v-show="!collapsed" class="app__recent rw-scroll">
-        <SessionPanel @open="openSession" />
+        <SessionPanel @open="openSession" @new="newSession" />
       </div>
 
       <div class="app__aside-foot">
@@ -178,17 +227,20 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
           <router-view v-slot="{ Component }">
             <component :is="Component" />
           </router-view>
-          <!-- 底栏：把「这次分析的整体状态」钉在视野里，不用滚回去看 -->
-          <RouteStats v-if="route.name === 'workspace' && !store.targetSetupOpen" />
         </main>
 
-        <!-- 辅助面板槽位：内容由 asideKind 决定 -->
+        <!-- 辅助面板槽位：内容由 asideKind 决定；底部常驻任务状态条 -->
         <AsidePanel v-if="asideContent" class="app__aside-panel">
           <template #title>{{ asideTitle }}</template>
           <component :is="asideContent.comp" v-bind="asideContent.props" />
+          <template #footer>
+            <RouteStats v-if="showStats" embedded />
+          </template>
         </AsidePanel>
       </div>
     </div>
+
+    <MolPreviewDialog v-model="previewOpen" :smiles="previewSmiles" />
   </div>
 </template>
 
@@ -232,11 +284,6 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   width: 32px;
   height: 32px;
   flex: 0 0 32px;
-  border-radius: 9px;
-  background: linear-gradient(135deg, #16265c 0%, #1e40af 48%, #2f6df0 100%);
-  color: #fff;
-  font-weight: 800;
-  font-size: 16px;
 }
 
 .app__brand-text {
@@ -307,6 +354,12 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   flex-direction: column;
   gap: 4px;
   flex: 0 0 auto;
+}
+
+/* 「目标分析」：与「最近的任务」并列，固定在列表上方（任务列表再长也不会把它顶走） */
+.app__target {
+  flex: 0 0 auto;
+  padding: 10px 10px 0;
 }
 
 /* 「最近的任务」：夹在导航与底部之间，占满剩余高度，超出滚动 */

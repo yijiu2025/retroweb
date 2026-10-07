@@ -5,9 +5,35 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RetroWeb · 逆合成工作台</title>
     <meta name="description" content="逆合成路线规划工作台：一行一化合物，多次一步交互式拆分" />
+    <!-- 内联 SVG 图标：省掉一次 /favicon.ico 404，也不用多一个文件 -->
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='9' cy='9' r='4' fill='%232563eb'/%3E%3Ccircle cx='23' cy='13' r='4' fill='%23059669'/%3E%3Ccircle cx='13' cy='23' r='4' fill='%23dc2626'/%3E%3C/svg%3E"
+    />
   </head>
   <body>
     <div id="app"></div>
+    <!--
+      Ketcher（ketcher-react）的依赖链里混着三个 browserify 时代的 Node 垫片：
+      `setimmediate` / `util` / `inherits`。它们**假定全局存在 `global` 和 `process`**
+      （`setimmediate` 里直接写 `global.postMessage`、`process.nextTick`）。
+      浏览器没有这两个全局量 ⇒ 一 import Ketcher 就是 "global is not defined"。
+      Vite 只会把 `process.env.NODE_ENV` 这**一个**表达式替换掉，不会替你造全局对象，
+      所以必须在这里垫。
+      ⚠️ 顺序：必须在任何 module 脚本之前执行（普通 <script> 天然早于 type="module"）。
+    -->
+    <script>
+      window.global = window.global || window;
+      window.process = window.process || {
+        env: {},
+        nextTick: function (fn) {
+          const args = Array.prototype.slice.call(arguments, 1);
+          setTimeout(function () {
+            fn.apply(null, args);
+          }, 0);
+        }
+      };
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
