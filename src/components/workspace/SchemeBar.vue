@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 路线方案栏 —— 同一个目标分子下的**多条路线**的保存 / 切换 / 对比。
+ * 路线网络栏 —— 同一个目标分子下的**多条路线**的保存 / 切换 / 确认 / 对比。
  *
  * 用法（工作流）：
  *   ① 在路线树里拆出一条路线 → 点「存为新方案」；
@@ -8,7 +8,13 @@
  *   ③ 点方案名随时切回去 —— 切换**不删任何节点**（旧子树只是藏起来），
  *      所以来回切不丢工作、也不用重跑模型。
  *
- * 表格给出每条方案的总步数 / 总概率 / 起始物料数 / 是否完整，便于横向选优。
+ * 🔴 一条网络**只画一遍**：卡片行里给全 步数 / 分支 / 总概率 / 起始物料 / 最深，
+ *    横向选优靠行与行逐项对照。曾经在这排卡片下面又挂了一张同数据的对比表，
+ *    同一份 `schemeStats` 被渲染两遍 —— 白占高度，而且看上去像两批不同的数据。
+ *
+ * 🔴 总概率是选优的**主指标**，必须独立出来加重显示：
+ *    混在灰色小字里时，五个 `·` 串成一行，概率等于看不见（原表格反倒是靠"排成一列"
+ *    才让它显眼）。所以把原表格唯一多出来的价值 —— 一眼能比的总概率 —— 并进卡片。
  */
 import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
@@ -142,13 +148,18 @@ async function onRemove(id: string, name: string): Promise<void> {
               <span class="schemes__sep">·</span>
               <span>{{ s.branches }} 分支</span>
               <span class="schemes__sep">·</span>
-              <span>总概率 {{ pct(s.probability) }}</span>
-              <span class="schemes__sep">·</span>
               <span>起始物料 {{ s.terminals }}/{{ s.leaves }}</span>
               <span class="schemes__sep">·</span>
               <span>最深第 {{ s.depth }} 层</span>
             </div>
           </div>
+
+          <!-- 主指标：原对比表那一列，独立出来加重 —— 横向选优一眼就能比 -->
+          <div class="schemes__prob">
+            <span class="schemes__prob-k">总概率</span>
+            <span class="schemes__prob-v">{{ pct(s.probability) }}</span>
+          </div>
+
           <div class="schemes__actions">
             <el-button
               v-if="s.schemeId !== store.currentSchemeId"
@@ -167,32 +178,6 @@ async function onRemove(id: string, name: string): Promise<void> {
           </div>
         </li>
       </ul>
-
-      <table v-if="stats.length > 1" class="schemes__table">
-        <thead>
-          <tr>
-            <th>路线</th>
-            <th>步数</th>
-            <th>总概率</th>
-            <th>起始物料</th>
-            <th>完整</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr
-            v-for="s in stats"
-            :key="s.schemeId"
-            :class="{ 'is-current': s.schemeId === store.currentSchemeId }"
-            @click="onApply(s.schemeId)"
-          >
-            <td class="schemes__td-name">{{ s.name }}</td>
-            <td>{{ s.steps }}</td>
-            <td>{{ pct(s.probability) }}</td>
-            <td>{{ s.terminals }}/{{ s.leaves }}</td>
-            <td>{{ s.complete ? '✔' : '—' }}</td>
-          </tr>
-        </tbody>
-      </table>
     </div>
   </section>
 </template>
@@ -268,7 +253,6 @@ async function onRemove(id: string, name: string): Promise<void> {
 .schemes__item {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
   padding: 8px 10px;
   border: 1px solid var(--rw-border);
@@ -286,7 +270,9 @@ async function onRemove(id: string, name: string): Promise<void> {
   border-left: 2px solid var(--rw-ok);
 }
 
+/* 撑满剩余宽度 ⇒ 概率与操作区被顶到右侧，且各行纵向对齐（代替原来的对比表） */
 .schemes__main {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -318,44 +304,41 @@ async function onRemove(id: string, name: string): Promise<void> {
   opacity: 0.5;
 }
 
+/* 主指标：允许在窄容器里被压缩，但数字本身不换行（`15.00%` 拆行会读不成数） */
+.schemes__prob {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.schemes__prob-k {
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+.schemes__prob-v {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--rw-text);
+  /* 等宽数字 ⇒ 各行小数点对齐，这才是原表格真正给到的东西；
+     再定宽右对齐 ⇒ "72.00%" 与 "100.00%" 占同样宽度，右侧操作按钮起点也跟着对齐 */
+  font-variant-numeric: tabular-nums;
+  min-width: 56px;
+  text-align: right;
+}
+
 .schemes__actions {
   display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
-  flex-shrink: 0;
-}
-
-.schemes__table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 12px;
-}
-
-.schemes__table th,
-.schemes__table td {
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--rw-border);
-  text-align: left;
-}
-
-.schemes__table th {
-  color: var(--rw-text-3);
-  font-weight: 500;
-}
-
-.schemes__table tbody tr {
-  cursor: pointer;
-}
-
-.schemes__table tbody tr.is-current {
-  background: var(--rw-brand-l);
-  font-weight: 600;
-}
-
-.schemes__td-name {
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 0 0 auto;
+  /* 🔴 定宽（实测自然宽：有「切换」的行 228px，没有的 190px）。
+     不定宽 → 操作区宽度随"这行有没有切换按钮"变化 → 各行的总概率数值落不到同一条
+     竖线上，"横向比概率"就得上下找。宁可右边让出一点空，也要把这条竖线立起来。
+     守门：verify-scheme-merge.cjs 量各行 `.schemes__actions` 左边界必须完全一致。 */
+  min-width: 232px;
 }
 </style>
