@@ -208,16 +208,22 @@ async function copySmiles(): Promise<void> {
                     @preview="emit('preview', $event)"
                   />
                 </td>
-                <td class="ov__precursors">
-                  <MolChip
-                    v-for="p in s.precursors"
-                    :key="p"
-                    :smiles="p"
-                    :mol-w="64"
-                    :mol-h="46"
-                    :bond-px="15"
-                    @preview="emit('preview', $event)"
-                  />
+                <!-- 🔴 flex 必须挂在这个**内层 div** 上，不能挂在 `<td>` 上。
+                     一旦给 `<td>` 设 `display:flex`，它就不再是真正的表格单元格
+                     ⇒ 不再拉伸到行高，自己那条 `border-bottom` 画在自己的内容高度上
+                     ⇒ 同一行的分隔线裂成两段、错开 6px（用户报的"中间线没在同一条直线上"）。 -->
+                <td>
+                  <div class="ov__precursors">
+                    <MolChip
+                      v-for="p in s.precursors"
+                      :key="p"
+                      :smiles="p"
+                      :mol-w="64"
+                      :mol-h="46"
+                      :bond-px="15"
+                      @preview="emit('preview', $event)"
+                    />
+                  </div>
                 </td>
                 <td class="ov__p">{{ pctText(s.probability) }}</td>
               </tr>
@@ -520,7 +526,11 @@ async function copySmiles(): Promise<void> {
 
 /* 前体可能有多个（多组分反应一步拆出好几支）⇒ 横向排开、放不下就换行。
    🔴 用 `wrap` 而不是原来的 `column`：每个前体现在是一整张
-      「结构式 + SMILES + CAS」小卡，竖排会把行高撑到没法看。 */
+      「结构式 + SMILES + CAS」小卡，竖排会把行高撑到没法看。
+   🔴 这一条**必须挂在 `<td>` 里面的 div 上**，不能挂在 `<td>` 本身：
+      `display:flex` 会把 td 变成非表格单元格 ⇒ 不再拉伸到行高 ⇒
+      它的 `border-bottom` 与同排其它格错开 6px，行分隔线当场断成两截
+      （`diag-tbl-line.cjs` 量的就是这 6px；守门 `verify-tbl-lines.cjs`）。 */
 .ov__precursors {
   display: flex;
   flex-wrap: wrap;
