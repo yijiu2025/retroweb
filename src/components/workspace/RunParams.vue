@@ -106,6 +106,14 @@ const switching = ref(false);
 const refreshing = ref(false);
 const newKey = ref('');
 const modelOptions = ref<string[]>([]);
+/**
+ * `modelOptions` 的**来源指纹**（拉取时用的 base_url + key）。
+ *
+ * 🔴 列表是**带配置的**结果，不是全局常量：换一套配置（或改了接口地址/Key）之后
+ * 它就不再代表当前这套 —— 直接复用会让 B 配置的下拉里躺着 A 的模型名，
+ * 而且因为「列表非空」，`onModelDropdown` 再也不会重拉（一次错、永久错）。
+ */
+const modelSource = ref('');
 const loadingModels = ref(false);
 /** 上次与服务端对齐的内容指纹 —— 「有未保存改动」的判据 */
 const savedSig = ref('');
@@ -343,7 +351,7 @@ function addProfile(): void {
     keyStates: []
   });
   editingId.value = id;
-  modelOptions.value = [];
+  resetModelOptions();
 }
 
 /** 复制当前配置（keys 跟着走；脱敏串由后端在**原配置的池**里还原成真实 key） */
@@ -353,7 +361,7 @@ function dupProfile(): void {
   const id = uniqueId(`${src.id}-copy`);
   profiles.value.push({ ...src, id, name: `${src.name} 副本`, keys: [...src.keys], keyStates: [] });
   editingId.value = id;
-  modelOptions.value = [];
+  resetModelOptions();
 }
 
 /** 删除当前配置（里面存着密钥，删前确认） */
@@ -376,26 +384,64 @@ async function delProfile(): Promise<void> {
   if (ok) ElMessage.success(rest.length ? `已删除「${src.name}」` : '已删除全部端点配置（回落到 .env 里的配置）');
 }
 
-/** 拉取**当前编辑这套**可见的模型（草稿也能拉，不必先保存） */
+/** 这套配置的来源指纹：换了端点或换了 key，上一次的模型列表就作废 */
+function sourceSig(c: ProfileDraft): string {
+  return JSON.stringify([c.id, c.base_url.trim(), c.keys[0] ?? '', c.keys.length]);
+}
+
+/** 列表与它的来源指纹必须**一起**清（只清一边 ⇒ 指纹仍命中或列表残留，两种都会串配置） */
+function resetModelOptions(): void {
+  modelOptions.value = [];
+  modelSource.value = '';
+}
+
+/**
+ * 拉取**当前编辑这套**可见的模型（草稿也能拉，不必先保存）。
+ *
+ * 三条守卫：
+ * ① 缺 base_url / 没 key 时**先拦**：这种请求必然失败，与其等一个网络往返再弹
+ *    「拉取失败」，不如当场说清缺哪一项 —— 后端也会校验，这里只是省一次白跑。
+ * ② 拉取期间配置被改过/切走了 ⇒ 结果不属于当前这套，**直接丢弃**。判据用**指纹**
+ *    而不是只比 id：同一个配置把接口地址改掉之后，上一次那份列表同样已经作废。
+ * ③ 成功/失败都留痕：列表为空也要说，否则「点了没反应」和「真没有模型」分不清。
+ */
 async function refreshModels(): Promise<void> {
   const c = cur.value;
   if (!c) return;
+  const baseUrl = c.base_url.trim();
+  if (!baseUrl) {
+    ElMessage.warning('先填接口地址（base_url）再拉取模型');
+    return;
+  }
+  if (!c.keys.length) {
+    ElMessage.warning('这套配置还没有 API Key，拉不到模型列表');
+    return;
+  }
+  const sig = sourceSig(c);
   loadingModels.value = true;
   try {
-    const r = await llmApi.models({
-      id: c.id,
-      base_url: c.base_url.trim(),
-      model: c.model.trim(),
-      api_keys: c.keys
-    });
-    if (r.ok) modelOptions.value = r.models;
-    else ElMessage.warning(r.error || '拉取模型列表失败');
+    const r = await llmApi.models({ id: c.id, base_url: baseUrl, model: c.model.trim(), api_keys: c.keys });
+    if (!cur.value || sourceSig(cur.value) !== sig) return; // ② 期间变过，这份列表作废
+    if (!r.ok) {
+      ElMessage.warning(r.error || '拉取模型列表失败');
+      return;
+    }
+    modelOptions.value = r.models;
+    modelSource.value = sig;
+    if (!r.models.length) {
+      ElMessage.warning('该端点没返回任何模型，检查接口地址是不是指到了 OpenAI 兼容的 /v1');
+    } else {
+      ElMessage.success(`已拉取 ${r.models.length} 个模型${r.key ? `（用 ${r.key}）` : ''}`);
+    }
   } finally {
     loadingModels.value = false;
   }
 }
 function onModelDropdown(visible: boolean): void {
-  if (visible && !modelOptions.value.length) void refreshModels();
+  const c = cur.value;
+  if (!visible || !c) return;
+  // 列表为空、或它来自**另一套**配置/另一个地址 ⇒ 重拉（见 `modelSource` 的说明）
+  if (!modelOptions.value.length || modelSource.value !== sourceSig(c)) void refreshModels();
 }
 
 function addKey(): void {

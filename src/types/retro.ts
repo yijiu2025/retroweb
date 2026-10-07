@@ -569,6 +569,8 @@ export interface LlmModels {
   models: string[];
   current?: string;
   error?: string;
+  /** 拉到列表用的是哪把 key（脱敏串）。这套配了多把 key 时才有意义 */
+  key?: string;
 }
 
 /** SSE 事件（/api/llm/analyze/stream） */
