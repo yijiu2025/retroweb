@@ -124,7 +124,7 @@ const asideKind = computed<'params' | 'schemes' | 'none'>(() => {
  */
 const showStats = computed(() => route.name === 'workspace' && !store.targetSetupOpen);
 
-const asideTitle = computed(() => (asideKind.value === 'schemes' ? '路线方案对比' : '运行参数'));
+const asideTitle = computed(() => (asideKind.value === 'schemes' ? '路线网络对比' : '运行参数'));
 
 /**
  * 辅助面板里的内容用 `component :is` 动态渲染。
@@ -184,15 +184,16 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         </button>
       </nav>
 
-      <!-- 目标分析：当前任务在拆什么 + 已确认到哪一步。
-           与「最近的任务」并列（排在它上方），主区顶部因此不再占这一行。 -->
-      <div v-show="!collapsed" class="app__target">
-        <TargetBar v-if="showTarget" @preview="openPreview" />
-      </div>
-
-      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树；「＋新任务」也在这里 -->
+      <!-- 最近的任务：常驻列表，点一条即恢复该任务的路线树；「＋新任务」也在这里。
+           排在「目标分析」上方 —— 任务列表是这一列的主干（可伸缩、超出滚动），
+           目标分析属于"当前这条任务"的详情，压在主干下方才符合「先选任务、再看细节」。 -->
       <div v-show="!collapsed" class="app__recent rw-scroll">
         <SessionPanel @open="openSession" @new="newSession" />
+      </div>
+
+      <!-- 目标分析：当前任务在拆什么 + 已确认的路线网络 -->
+      <div v-show="!collapsed" class="app__target rw-scroll">
+        <TargetBar v-if="showTarget" @preview="openPreview" />
       </div>
 
       <div class="app__aside-foot">
@@ -356,17 +357,24 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   flex: 0 0 auto;
 }
 
-/* 「目标分析」：与「最近的任务」并列，固定在列表上方（任务列表再长也不会把它顶走） */
-.app__target {
-  flex: 0 0 auto;
-  padding: 10px 10px 0;
-}
-
-/* 「最近的任务」：夹在导航与底部之间，占满剩余高度，超出滚动 */
+/* 「最近的任务」：导航之下，占满剩余高度，超出滚动 —— 侧栏的主干 */
 .app__recent {
   flex: 1;
   min-height: 0;
-  padding: 10px 0 4px;
+  padding: 10px 0 8px;
+  border-top: 1px solid var(--rw-border);
+  overflow-y: auto;
+}
+
+/* 「目标分析」：压在「最近的任务」**下方**（先选任务、再看当前任务细节）。
+   🔴 max-height + 自身滚动是必需的：这块里有结构缩略图 + 网络列表 + 步骤明细，
+      不封顶就会把任务列表挤到只剩两三行。
+      55% = 底部这块最多占侧栏一半多一点，两段都还留得住可读高度。 */
+.app__target {
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 55%;
+  padding: 10px 0 8px;
   border-top: 1px solid var(--rw-border);
   overflow-y: auto;
 }

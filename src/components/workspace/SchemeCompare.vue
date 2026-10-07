@@ -77,6 +77,17 @@ async function onRemove(id: string, name: string): Promise<void> {
     /* 用户取消 */
   }
 }
+
+/** 确认为采用中的路线网络（用户点的是这一条 ⇒ 用按 id 的接口，不动当前树） */
+function onConfirm(id: string): void {
+  store.confirmScheme(id);
+  ElMessage.success('已确认这条路线网络（可继续确认别的，多条并存）');
+}
+
+function onUnconfirm(id: string): void {
+  store.unconfirmRouteNetwork(id);
+  ElMessage.success('已取消确认：记录保留，退回备选');
+}
 </script>
 
 <template>
@@ -88,12 +99,12 @@ async function onRemove(id: string, name: string): Promise<void> {
     </div>
 
     <p v-if="!stats.length" class="schemes__empty">
-      还没有保存的方案。拆出一条满意的路线后点「存为新方案」，之后换掉某一步再存一条，
-      就能在这里横向比步数与总概率。
+      还没有路线网络。在「逆合成树」里拆出一条满意的多步路线后点「确认路线网络」，
+      换掉某一步再确认一条，就能在这里横向比步数、分支与总概率。
     </p>
 
     <ul v-else class="schemes__list">
-      <li v-for="s in stats" :key="s.schemeId" class="sch">
+      <li v-for="s in stats" :key="s.schemeId" class="sch" :class="{ 'is-confirmed': s.confirmed }">
         <div class="sch__head">
           <button
             type="button"
@@ -104,18 +115,24 @@ async function onRemove(id: string, name: string): Promise<void> {
           >
             {{ s.name }}
           </button>
+          <el-tag v-if="s.confirmed" size="small" type="success" effect="dark">已确认</el-tag>
           <el-tag v-if="s.complete" size="small" type="success" effect="light">完整</el-tag>
           <el-tag v-else size="small" type="info" effect="light">未完成</el-tag>
         </div>
 
         <dl class="sch__metrics">
           <div><dt>步数</dt><dd>{{ s.steps }}</dd></div>
+          <div><dt>分支</dt><dd>{{ s.branches }}</dd></div>
           <div><dt>总概率</dt><dd>{{ pct(s.probability) }}</dd></div>
-          <div><dt>起始物料</dt><dd>{{ s.terminals }}</dd></div>
+          <div><dt>起始物料</dt><dd>{{ s.terminals }}/{{ s.leaves }}</dd></div>
           <div><dt>最深</dt><dd>第 {{ s.depth }} 层</dd></div>
         </dl>
 
         <div class="sch__ops">
+          <button v-if="!s.confirmed" type="button" class="sch__op sch__op--ok" @click="onConfirm(s.schemeId)">
+            确认为路线网络
+          </button>
+          <button v-else type="button" class="sch__op" @click="onUnconfirm(s.schemeId)">取消确认</button>
           <button type="button" class="sch__op" @click="onRename(s.schemeId, s.name)">改名</button>
           <button
             type="button"
@@ -245,5 +262,20 @@ async function onRemove(id: string, name: string): Promise<void> {
 
 .sch__op--danger:hover {
   color: var(--rw-bad);
+}
+
+/* 「确认为路线网络」是本面板的主推操作，用语义色而非默认灰 */
+.sch__op--ok {
+  color: var(--rw-ok);
+}
+
+.sch__op--ok:hover {
+  color: var(--rw-ok);
+  text-decoration: underline;
+}
+
+/* 已确认 = 采用中的路线网络：左侧一条绿色实线（与侧栏 / 方案栏同一套语言） */
+.sch.is-confirmed {
+  border-left: 2px solid var(--rw-ok);
 }
 </style>

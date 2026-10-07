@@ -261,6 +261,69 @@ scope.run(() => {
     JSON.stringify(store.schemes[0].choices)
   );
 
+  console.log('\n=== 12) 路线网络：确认 / 多条并存 / 分支计数 ===');
+  // 此刻当前是方案 A（T ← A + B，A 再往下拆一步）
+  check('当前网络步数 = 2', store.networkStats.steps === 2, String(store.networkStats.steps));
+  check(
+    '🔴 当前网络分支数 = 1（根那一步是 A + B 双前体 ⇒ 路线是一张网，不是一条链）',
+    store.networkStats.branches === 1,
+    String(store.networkStats.branches)
+  );
+  check('一条网络都还没确认', store.confirmedNetworkCount === 0, String(store.confirmedNetworkCount));
+
+  // 🔴 记录确认前的条数：确认"当前这条"不该让列表变长
+  const schemesBeforeConfirm = store.schemes.length;
+  const netA = store.confirmRouteNetwork();
+  check('确认成功并返回网络 id', !!netA && netA === store.currentSchemeId);
+  check(
+    '🔴 确认的是**已有的那条**（就地确认，不新建重复记录）',
+    netA === schA && store.schemes.length === schemesBeforeConfirm,
+    `netA=${netA} schA=${schA} schemes=${store.schemes.length}`
+  );
+  check('已确认计数 = 1', store.confirmedNetworkCount === 1, String(store.confirmedNetworkCount));
+  const statNetA = store.schemeStats.find((s) => s.schemeId === netA) as (typeof store.schemeStats)[number];
+  check('这条网络的指标与模拟口径一致', statNetA.steps === 2 && statNetA.branches === 1);
+  check('网络列表把已确认的排最前', store.routeNetworks[0].schemeId === netA);
+
+  console.log('\n=== 13) 多条网络并存 + 取消确认只改标记 ===');
+  store.applyScheme(schB);
+  const netB = store.confirmRouteNetwork();
+  check('第二条网络确认成功，与前一条并存', !!netB && netB !== netA && store.confirmedNetworkCount === 2);
+  // 🔴 只断言「已确认的都排在未确认的前面」，**不**断言两条已确认之间的先后：
+  //    它们可能在同一毫秒内确认（Date.now() 分辨率就是 1ms），此时排序按稳定序回落，
+  //    谁在前都对。写死顺序会让这条断言随机变红（实测 5 次里抖 4 次）。
+  const order = store.routeNetworks.map((s) => `${s.schemeId}:${s.confirmed ? 'Y' : 'N'}`);
+  check(
+    '🔴 已确认的排在未确认的之前（两条已确认占前两位）',
+    store.routeNetworks.slice(0, 2).every((s) => s.confirmed) &&
+      store.routeNetworks.slice(2).every((s) => !s.confirmed) &&
+      new Set([store.routeNetworks[0].schemeId, store.routeNetworks[1].schemeId]).size === 2,
+    JSON.stringify(order)
+  );
+  check(
+    '两条已确认的就是刚确认的那两条',
+    [store.routeNetworks[0].schemeId, store.routeNetworks[1].schemeId].sort().join(',') ===
+      [netA, netB].sort().join(','),
+    JSON.stringify(order)
+  );
+  store.unconfirmRouteNetwork(netB as string);
+  check('取消确认后计数回落', store.confirmedNetworkCount === 1, String(store.confirmedNetworkCount));
+  check('🔴 记录本身仍在（只是退回备选，节点一个没删）', store.schemes.some((s) => s.id === netB));
+
+  console.log('\n=== 14) 改掉已定的一步后确认 ⇒ 必须分叉，不得就地改写已确认的那条 ===');
+  store.applyScheme(netA as string);
+  const beforeNetA = JSON.stringify(store.schemes.find((s) => s.id === netA)?.choices);
+  const schemesBeforeFork = store.schemes.length;
+  store.adopt(r2.id); // 把根那一步换成单前体的 C（R1 的子树被 detach）
+  check('换候选后自动分叉出一条新记录', store.schemes.length === schemesBeforeFork + 1, String(store.schemes.length));
+  const netFork = store.confirmRouteNetwork();
+  check('新记录可以单独确认', !!netFork && netFork !== netA && store.confirmedNetworkCount === 2);
+  check(
+    '🔴 原来那条已确认网络的选择**没有被改写**',
+    JSON.stringify(store.schemes.find((s) => s.id === netA)?.choices) === beforeNetA
+  );
+  check('分叉后的当前网络不分支（单前体路线）', store.networkStats.branches === 0, String(store.networkStats.branches));
+
   console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
 });
 

@@ -25,8 +25,26 @@ const emit = defineEmits<{ preview: [smiles: string] }>();
 
 const root = computed(() => (store.rootId ? store.nodes[store.rootId] : undefined));
 const steps = computed(() => store.route);
-const totalPct = computed(() => `${(store.routeProbability * 100).toFixed(2)}%`);
+/**
+ * 路线网络的体检数据。
+ * 🔴 走 `store.networkStats`（与侧栏「目标分析」同一口径），不在这里自己数步数 ——
+ *    否则同一张网在两处会出现两个数字。
+ */
+const cur = computed(() => store.networkStats);
+/** 一步都还没有时别显示 100.00%（各步连乘的空积就是 1，看起来像"整条路线成立"） */
+const totalPct = computed(() =>
+  cur.value.steps ? `${(cur.value.probability * 100).toFixed(2)}%` : '—'
+);
+/** 同一目标下的多条路线网络（已确认的在前） */
+const networks = computed(() => store.routeNetworks);
 const startList = computed(() => store.startingMaterials);
+
+/** 切换当前查看的网络（不删节点，旧子树只是藏起来） */
+function switchNet(id: string): void {
+  if (id === store.currentSchemeId) return;
+  store.applyScheme(id);
+  ElMessage.success('已切到这条路线网络');
+}
 
 function pctText(p: number): string {
   if (!Number.isFinite(p)) return '—';
@@ -75,18 +93,39 @@ async function copySmiles(): Promise<void> {
     </section>
 
     <div class="ov__right">
-      <!-- ② 已确认路线 -->
+      <!-- ② 路线网络：当前这条网络的多步路线（含分支）+ 同一目标下的多条网络。
+           「已确认路线」这个叫法已经不准确了 —— 一条路线可以有分支（多组分反应
+           一步拆出多个前体），那就是一张网；而且同一目标可以确认**多条**。 -->
       <section class="rw-card ov__route">
         <div class="rw-card__head">
-          <div class="rw-card__title">已确认路线</div>
+          <div class="rw-card__title">路线网络</div>
           <div class="ov__chips">
-            <span class="ov__chip"><b>{{ steps.length }}</b> 步</span>
+            <span class="ov__chip"><b>{{ cur.steps }}</b> 步</span>
+            <span class="ov__chip"><b>{{ cur.branches }}</b> 分支</span>
             <span class="ov__chip ov__chip--brand"><b>{{ totalPct }}</b> 总概率</span>
-            <span class="ov__chip"><b>{{ startList.length }}</b> 起始物料</span>
-            <span class="ov__chip"><b>第 {{ store.stats.maxDepth + 1 }} 层</b> 最深</span>
+            <span class="ov__chip"><b>{{ cur.terminals }}/{{ cur.leaves }}</b> 起始物料</span>
+            <span class="ov__chip"><b>第 {{ cur.depth }}</b> 层 最深</span>
           </div>
         </div>
         <div class="rw-card__body ov__route-body">
+          <!-- 多条网络：点一条即切过去（不删任何节点，旧子树只是藏起来） -->
+          <div v-if="networks.length" class="ov__nets">
+            <button
+              v-for="n in networks"
+              :key="n.schemeId"
+              type="button"
+              class="ov__net"
+              :class="{ 'is-current': n.schemeId === store.currentSchemeId, 'is-confirmed': n.confirmed }"
+              :title="`切到「${n.name}」：${n.steps} 步 · ${n.branches} 分支 · 总概率 ${pctText(n.probability)}`"
+              @click="switchNet(n.schemeId)"
+            >
+              <span class="ov__net-name">{{ n.name }}</span>
+              <span v-if="n.confirmed" class="ov__net-tag">已确认</span>
+              <span v-else class="ov__net-tag ov__net-tag--draft">备选</span>
+              <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支</span>
+            </button>
+          </div>
+
           <table v-if="steps.length" class="ov__table">
             <thead>
               <tr>
@@ -117,12 +156,13 @@ async function copySmiles(): Promise<void> {
 
           <div v-else class="ov__empty">
             <p>
-              还没有确认任何一步。到「<b>逆合成树</b>」页签展开目标分子的候选反应，
-              采纳其中一条后，这条路线就会在这里逐层记录下来。
+              还没有确定的路线。到「<b>逆合成树</b>」页签展开目标分子的候选反应，采纳其中一条并继续往下拆，
+              拆到满意后点「<b>确认路线网络</b>」—— 这条多步路线（含分支）就会记在这里；
+              换掉某一步再确认一条，两条网络都留着，随时切换对比。
             </p>
             <div class="ov__empty-ops">
               <el-button size="small" type="primary" @click="store.mainTab = 'tree'">去逆合成树</el-button>
-              <el-button size="small" @click="store.mainTab = 'route'">看路线网络</el-button>
+              <el-button size="small" @click="store.mainTab = 'route'">查看网络图</el-button>
             </div>
           </div>
         </div>
@@ -239,7 +279,72 @@ async function copySmiles(): Promise<void> {
   word-break: break-all;
 }
 
-/* ---------- 已确认路线 ---------- */
+/* ---------- 路线网络 ---------- */
+/* 多条网络的切换条：一行 chip，已确认的带绿色徽标与绿色描边 */
+.ov__nets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.ov__net {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border: 1px solid var(--rw-border);
+  border-radius: 999px;
+  background: var(--rw-surface-2);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ov__net:hover {
+  border-color: var(--rw-brand);
+}
+
+.ov__net.is-current {
+  border-color: var(--rw-brand);
+  background: var(--rw-brand-l);
+}
+
+/* 圆角 chip 上没法用「左侧实线」（会被圆角裁掉）⇒ 改用绿色描边 + 徽标 */
+.ov__net.is-confirmed {
+  border-color: color-mix(in srgb, var(--rw-ok) 45%, var(--rw-border));
+}
+
+.ov__net-name {
+  max-width: 200px;
+  font-size: 12px;
+  color: var(--rw-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov__net-tag {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--rw-ok-l);
+  color: var(--rw-ok);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.ov__net-tag--draft {
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-weight: 500;
+}
+
+.ov__net-meta {
+  font-size: 11px;
+  color: var(--rw-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
 .ov__chips {
   display: flex;
   flex-wrap: wrap;

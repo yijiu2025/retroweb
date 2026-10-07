@@ -18,6 +18,8 @@ import { promptSaveScheme } from '@/utils/scheme-save';
 const store = useWorkspaceStore();
 
 const stats = computed(() => store.schemeStats ?? []);
+/** 已确认的条数（标题里直接写出来，省得用户自己数） */
+const confirmedCount = computed(() => store.confirmedNetworkCount);
 
 function pct(p: number): string {
   if (!Number.isFinite(p)) return '—';
@@ -47,7 +49,24 @@ async function onRename(id: string, old: string): Promise<void> {
 
 function onApply(id: string): void {
   store.applyScheme(id);
-  ElMessage.success('已切换到该路线方案');
+  ElMessage.success('已切换到该路线网络');
+}
+
+/**
+ * 确认为「采用中的路线网络」。
+ *
+ * 🔴 用 `store.confirmScheme(id)` 而不是 `confirmRouteNetwork()`：
+ *    用户点的是**这一行**，语义就是"把这一条标为已确认"；
+ *    树工具条那个按钮才是"把当前这棵树记成一条网络"（该分叉时自动分叉）。
+ */
+function onConfirm(id: string): void {
+  store.confirmScheme(id);
+  ElMessage.success('已确认这条路线网络（可继续确认别的分支，多条并存）');
+}
+
+function onUnconfirm(id: string): void {
+  store.unconfirmRouteNetwork(id);
+  ElMessage.success('已取消确认：记录保留，退回备选');
 }
 
 async function onRemove(id: string, name: string): Promise<void> {
@@ -73,10 +92,10 @@ async function onRemove(id: string, name: string): Promise<void> {
         <svg class="schemes__ico" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2.5 4h11M2.5 8h11M2.5 12h7" />
         </svg>
-        路线方案
+        路线网络
       </span>
       <span class="schemes__empty-hint">
-        拆出一条路线后点「存为新方案」，就能切换对比同一目标的多条路线
+        拆出一条多步路线后点「确认路线网络」，同一目标可以确认多条（含分支的更长路线）
       </span>
       <el-button size="small" type="primary" plain :disabled="!store.rootId" @click="onSave">
         存为新方案
@@ -90,8 +109,8 @@ async function onRemove(id: string, name: string): Promise<void> {
         <svg class="schemes__ico" viewBox="0 0 16 16" aria-hidden="true">
           <path d="M2.5 4h11M2.5 8h11M2.5 12h7" />
         </svg>
-        路线方案
-        <span class="schemes__sub">多条路线对比</span>
+        路线网络
+        <span class="schemes__sub">已确认 {{ confirmedCount }} / 共 {{ stats.length }} 条，可切换对比</span>
       </div>
       <div class="schemes__ops">
         <el-button size="small" type="primary" plain :disabled="!store.rootId" @click="onSave">
@@ -106,17 +125,22 @@ async function onRemove(id: string, name: string): Promise<void> {
           v-for="s in stats"
           :key="s.schemeId"
           class="schemes__item"
-          :class="{ 'is-current': s.schemeId === store.currentSchemeId }"
+          :class="{ 'is-current': s.schemeId === store.currentSchemeId, 'is-confirmed': s.confirmed }"
         >
           <div class="schemes__main">
             <div class="schemes__line">
               <span class="schemes__name">{{ s.name }}</span>
               <el-tag v-if="s.schemeId === store.currentSchemeId" size="small" effect="dark">当前</el-tag>
+              <!-- 已确认 = 真正采用的路线网络；未确认只是存下来比一比的备选 -->
+              <el-tag v-if="s.confirmed" size="small" type="success" effect="dark">已确认</el-tag>
+              <el-tag v-else size="small" type="info" effect="plain">备选</el-tag>
               <el-tag v-if="s.complete" size="small" type="success" effect="light">完整</el-tag>
               <el-tag v-else size="small" type="info" effect="plain">未拆完</el-tag>
             </div>
             <div class="schemes__meta">
               <span>{{ s.steps }} 步</span>
+              <span class="schemes__sep">·</span>
+              <span>{{ s.branches }} 分支</span>
               <span class="schemes__sep">·</span>
               <span>总概率 {{ pct(s.probability) }}</span>
               <span class="schemes__sep">·</span>
@@ -134,6 +158,10 @@ async function onRemove(id: string, name: string): Promise<void> {
             >
               切换
             </el-button>
+            <el-button v-if="!s.confirmed" size="small" text type="success" @click="onConfirm(s.schemeId)">
+              确认
+            </el-button>
+            <el-button v-else size="small" text @click="onUnconfirm(s.schemeId)">取消确认</el-button>
             <el-button size="small" text @click="onRename(s.schemeId, s.name)">改名</el-button>
             <el-button size="small" text type="danger" @click="onRemove(s.schemeId, s.name)">删除</el-button>
           </div>
@@ -251,6 +279,11 @@ async function onRemove(id: string, name: string): Promise<void> {
 .schemes__item.is-current {
   border-color: var(--rw-brand);
   background: var(--rw-brand-l);
+}
+
+/* 已确认 = 采用中的路线网络：左侧一条绿色实线（与侧栏网络列表同一套视觉语言） */
+.schemes__item.is-confirmed {
+  border-left: 2px solid var(--rw-ok);
 }
 
 .schemes__main {

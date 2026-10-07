@@ -97,6 +97,17 @@ export interface SchemeStat {
   depth: number;
   /** 所有叶子都到起始物料了 = 这条路线完整 */
   complete: boolean;
+  /**
+   * 多组分反应的步数 —— 即这条路线在几个地方「分叉」。
+   *
+   * 一步把分子拆成 2 个以上前体时，树会在这里分成多条支线，
+   * 这条路线的形状就不是一条链而是一张网。这个数就是网的规模感：
+   * 0 分支 = 纯线性路线；>0 = 真正的「路线网络」。
+   */
+  branches: number;
+  /** 已确认为采用中的路线网络（未确认的只是备选草稿） */
+  confirmed: boolean;
+  confirmedAt?: number;
 }
 
 const DEFAULT_PARAMS: RunParams = {
@@ -1227,7 +1238,9 @@ function sessionSignature(snap: WorkspaceSnapshot): string {
     .sort();
 
   const schemes = (snap.schemes ?? [])
-    .map((s) => `${s.id}:${Object.keys(s.choices ?? {}).length}`)
+    // 🔴 必须带上「确认」标记：确认一条路线网络是**内容变化**，
+    //    漏了它 ⇒ 点确认后侧栏时间不刷新、任务也不上浮，用户以为没生效。
+    .map((s) => `${s.id}:${Object.keys(s.choices ?? {}).length}:${s.confirmed ? 1 : 0}`)
     .join(',');
 
   return [
@@ -1549,7 +1562,8 @@ function persistSession(): void {
     if (!rootId.value) return;
     const scheme: RouteScheme = {
       id: uid('sch'),
-      name: name?.trim() || `路线 ${schemes.value.length + 1}`,
+      // 没给名字时（「确认路线网络」走的就是这条）默认叫「网络 N」—— 与界面上的叫法一致
+      name: name?.trim() || `网络 ${schemes.value.length + 1}`,
       createdAt: Date.now(),
       choices: collectChoices()
     };
@@ -1621,6 +1635,11 @@ function persistSession(): void {
    */
   function simulateScheme(scheme: RouteScheme): SchemeStat {
     const root = rootId.value;
+    // 🔴 老数据的 choices 可能是旧结构 / 缺失 ⇒ 先兜底，否则 undefined[xxx] 会把
+    //    整个 schemeStats 计算链带崩（与 currentSchemeConflicted 同一处理）。
+    const choices = scheme.choices ?? {};
+    // 确认标记不是"算"出来的，是方案自带的属性 ⇒ 一起带进结果
+    const confirmed = { confirmed: !!scheme.confirmed, confirmedAt: scheme.confirmedAt };
     const empty: SchemeStat = {
       schemeId: scheme.id,
       name: scheme.name,
@@ -1629,10 +1648,13 @@ function persistSession(): void {
       terminals: 0,
       leaves: 0,
       depth: 0,
-      complete: false
+      complete: false,
+      branches: 0,
+      ...confirmed
     };
     if (!root) return empty;
     let steps = 0;
+    let branches = 0;
     let prob = 1;
     let terminals = 0;
     let leaves = 0;
@@ -1645,7 +1667,7 @@ function persistSession(): void {
       seen.add(nid);
       const node = nodes.value[nid];
       if (!node) continue;
-      const rid = scheme.choices[nid];
+      const rid = choices[nid];
       const rxn = rid ? node.candidates.find((r) => r.id === rid) : undefined;
       if (!rxn) {
         leaves += 1;
@@ -1653,6 +1675,8 @@ function persistSession(): void {
         continue;
       }
       steps += 1;
+      // 一步拆成 ≥2 个前体 = 这里分叉 ⇒ 路线从「一条链」变成「一张网」
+      if ((rxn.precursorList?.length ?? 0) > 1) branches += 1;
       prob *= rxn.probability;
       depth = Math.max(depth, node.depth + 1);
       for (const child of childrenOfReaction(rxn.id)) queue.push(child.id);
@@ -1665,7 +1689,9 @@ function persistSession(): void {
       terminals,
       leaves,
       depth,
-      complete: leaves > 0 && terminals === leaves
+      complete: leaves > 0 && terminals === leaves,
+      branches,
+      ...confirmed
     };
   }
 
@@ -1673,6 +1699,94 @@ function persistSession(): void {
   const schemeStats = computed<SchemeStat[]>(() =>
     schemes.value.map((s) => simulateScheme(s))
   );
+
+  /**
+   * 当前采纳树的体检结果 —— 就是「当前这条路线网络」。
+   *
+   * 🔴 口径复用 `simulateScheme`（临时造一个 choices 等于当前树的假方案），
+   *    绝不在别处再写一遍统计逻辑：侧栏显示的步数 / 分支 / 起始物料必须和
+   *    网络列表里那一行**永远一致**，否则用户会看到「同一张网两个步数」。
+   */
+  const networkStats = computed<SchemeStat>(() =>
+    simulateScheme({ id: '__current__', name: '当前路线', createdAt: 0, choices: collectChoices() })
+  );
+
+  /**
+   * 「路线网络」列表：已确认的排前面（按确认时间 新→旧），未确认的保持创建顺序。
+   * 侧栏与逆合成树工具条都读它，两处顺序才一致。
+   *
+   * ⚠️ 同一毫秒内确认的两条 `confirmedAt` 相同（Date.now() 就是 1ms 分辨率）⇒
+   *    比较函数返回 0，靠 Array.sort 的**稳定序**回落成"先创建的在前"。
+   *    这是可接受的（两条都是"刚确认"），但**别在测试里写死它们的先后**。
+   */
+  const routeNetworks = computed<SchemeStat[]>(() =>
+    [...schemeStats.value].sort((a, b) => {
+      if (a.confirmed !== b.confirmed) return a.confirmed ? -1 : 1;
+      if (a.confirmed) return (b.confirmedAt ?? 0) - (a.confirmedAt ?? 0);
+      return 0;
+    })
+  );
+
+  /** 已确认的路线网络条数（树工具条 / 侧栏共用，别再各自 filter 一遍） */
+  const confirmedNetworkCount = computed(
+    () => schemeStats.value.filter((s) => s.confirmed).length
+  );
+
+  /**
+   * 把当前这条路线**确认为一条路线网络**。
+   *
+   * 两条分支：
+   *   · 当前选中某条方案、且树没有改动过它 ⇒ 就地标为已确认（不新建，
+   *     免得同一张网出现两条一模一样的记录）；
+   *   · 否则（还没存过方案，或已经把某一步换成了别的候选）⇒ 先存一条新的再确认。
+   *     🔴 这是「改已保存的路线必须分叉」那条约定的延伸：新路线就得是新记录，
+   *        绝不能在原方案上就地改写。
+   *
+   * @returns 被确认的方案 id；没有目标分子时 null
+   */
+  function confirmRouteNetwork(): string | null {
+    if (!rootId.value) return null;
+    const id = currentSchemeId.value;
+    const cur = id ? schemes.value.find((s) => s.id === id) : undefined;
+    if (cur && !currentSchemeConflicted()) {
+      cur.choices = collectChoices();
+      cur.confirmed = true;
+      cur.confirmedAt = Date.now();
+      schedulePersist();
+      return cur.id;
+    }
+    saveScheme();
+    const created = schemes.value.find((s) => s.id === currentSchemeId.value);
+    if (!created) return null;
+    created.confirmed = true;
+    created.confirmedAt = Date.now();
+    schedulePersist();
+    return created.id;
+  }
+
+  /**
+   * 直接把**某一条记录**标为已确认 —— 不动当前树。
+   *
+   * 与 `confirmRouteNetwork()` 的分工：
+   *   · 树工具条走 confirmRouteNetwork（判据是"当前树"，该分叉就分叉）；
+   *   · 网络列表 / 方案栏里的那一行走这个（用户点的是**那一条**，语义就是它本身）。
+   */
+  function confirmScheme(id: string): void {
+    const s = schemes.value.find((x) => x.id === id);
+    if (!s) return;
+    s.confirmed = true;
+    s.confirmedAt = Date.now();
+    schedulePersist();
+  }
+
+  /** 取消确认 —— 退回「只是保存过的备选方案」，记录本身保留、节点一个不动 */
+  function unconfirmRouteNetwork(id: string): void {
+    const s = schemes.value.find((x) => x.id === id);
+    if (!s) return;
+    s.confirmed = false;
+    s.confirmedAt = undefined;
+    schedulePersist();
+  }
 
   // ---------- 大模型工艺分析 ----------
   /**
@@ -2222,6 +2336,13 @@ function persistSession(): void {
     removeScheme,
     renameScheme,
     simulateScheme,
+    // —— 路线网络（已确认的多步路线；一条任务下可以有多个） ——
+    routeNetworks,
+    networkStats,
+    confirmedNetworkCount,
+    confirmRouteNetwork,
+    confirmScheme,
+    unconfirmRouteNetwork,
     // —— 分析历史 / 相同中间体复用 ——
     switchRun,
     reuseSiblingAnalysis,

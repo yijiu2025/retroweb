@@ -119,6 +119,27 @@ a {
   text-decoration: none;
 }
 
+/* ---------- 表单控件的字体 ----------
+   🔴 表单控件**不继承** `font-family`（浏览器 UA 默认给 Arial）⇒ 按钮 / 输入框里的中文
+   会回落到宋体之类的兜底字体，跟页面正文（PingFang SC / Microsoft YaHei）明显不是一套。
+   实测命中：`.app__nav-item`、`.recent__new`、`.app__collapse`、`.tan__net-btn`，以及
+   `.el-button`（Element Plus 只设了字号，没设字族）。
+   ⚠️ 只改字体，**不动** font-size / line-height —— 那些 Element Plus 自己有定义，
+      在这里覆盖会把按钮排版整体带偏。 */
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+}
+
+/* Element Plus 内部若有组件走 `--el-font-family`，一并指回同一套栈，
+   免得"两套字体"从另一个口子再冒出来 */
+:root {
+  --el-font-family: inherit;
+}
+
 /* ---------- 通用卡片 ---------- */
 .rw-card {
   background: var(--rw-surface);

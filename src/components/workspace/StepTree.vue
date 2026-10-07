@@ -9,6 +9,29 @@ const emit = defineEmits<{ preview: [smiles: string] }>();
 const store = useWorkspaceStore();
 
 const stats = computed(() => store.stats);
+/** 已确认的路线网络条数（同一目标可以确认多条，例如小试 / 放大各一条） */
+const confirmedCount = computed(() => store.confirmedNetworkCount);
+
+/**
+ * 「确认路线网络」—— 把当前树上采纳的路线记成一条**已确认的网络**。
+ *
+ * 为什么入口放在这里：确认是「这棵树拆到这一步，路线成立」的判断，
+ * 判断发生在**树**上（展开候选 → 采纳 → 满意）。放在别处就得先切页签再回来。
+ *
+ * 两条分支由 store 决定：当前方案没被改动 ⇒ 就地确认（不新建重复记录）；
+ * 已经把某一步换成别的候选 ⇒ 自动分叉一条新记录（老方案原样保留）。
+ */
+function onConfirm(): void {
+  if (!store.route.length) {
+    ElMessage.warning('还没有可确认的路线：先展开候选并采纳其中一步');
+    return;
+  }
+  const id = store.confirmRouteNetwork();
+  if (!id) return;
+  ElMessage.success(
+    `已确认这条路线网络（${store.route.length} 步），可在左栏「目标分析 → 路线网络」查看与切换`
+  );
+}
 
 async function onSave(): Promise<void> {
   if (!store.rootId) {
@@ -52,10 +75,14 @@ async function onReset(): Promise<void> {
         <span class="tree__stat">已终止 <b>{{ stats.terminal }}</b></span>
         <span class="tree__stat">已采纳步骤 <b>{{ stats.reactions }}</b></span>
         <span class="tree__stat">最深 <b>第 {{ stats.maxDepth + 1 }} 层</b></span>
+        <span class="tree__stat">路线网络 <b>{{ confirmedCount }}</b></span>
       </div>
       <div class="tree__ops">
         <el-button link size="small" @click="store.collapseAll()">折叠全部</el-button>
         <el-button link size="small" @click="store.expandAll()">展开全部</el-button>
+        <!-- 拆到满意就在这里确认：确认后的多步路线 = 一条「路线网络」，
+             可以有多个（再拆出别的一条、再确认即可，两条都留着可切换） -->
+        <el-button size="small" type="primary" plain @click="onConfirm">确认路线网络</el-button>
         <el-button link size="small" type="primary" @click="onSave">保存</el-button>
         <el-button link size="small" type="danger" @click="onReset">清空</el-button>
       </div>
@@ -75,9 +102,13 @@ async function onReset(): Promise<void> {
   min-height: 0;
 }
 
+/* 按钮变多了（折叠 / 展开 / 确认路线网络 / 保存 / 清空）⇒ 允许换行，
+   窄屏下不会把左边的统计 chips 挤扁 */
 .tree__ops {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  justify-content: flex-end;
   gap: 2px;
 }
 
