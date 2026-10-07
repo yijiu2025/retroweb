@@ -7,9 +7,12 @@
  * │  设定目标并分析后，这张卡**整体消失**。                          │
  * └──────────────────────────────────────────────────────────────────┘
  * ┌─ 路线态（已有目标）──────────────────────────────────────────────┐
- * │  顶部：通知条（合规提示可关闭）+ 路线方案（有方案才出现）          │
+ * │  顶部：通知条（合规提示可关闭）                                   │
  * │  主区：目标分析 / 逆合成树 / 路线网络 / 步骤详情 四页签            │
  * │        **默认「目标分析」**（目标分子 + 已确认路线），不直接甩树  │
+ * │        🔴 页签在最上面，路线方案栏（有方案才出现）夹在**页签与内容  │
+ * │           之间**——见 el-tabs 里那段的注释；「目标分析」页签下整条  │
+ * │           不渲染（与正文卡重复）                                  │
  * │  左栏：目标分析卡（结构 + 已确认路线摘要），与「最近的任务」并列   │
  * │  右栏：运行参数 / 方案对比，底部挂状态条（见 RouteStats）          │
  * └──────────────────────────────────────────────────────────────────┘
@@ -103,14 +106,10 @@ onMounted(() => {
     <!-- 目标分子已移到左侧栏的「目标分析」卡（与「最近的任务」并列），
          主区顶部不再占这一行 —— 见 AppShell 的 .app__target。 -->
 
-    <!-- 路线方案栏：**有方案才渲染**。无方案时入口在左栏目标分析卡的「存为新方案」。
-         🔴 「目标分析」页签下**整条不渲染**（用户报「目标分析界面这里不显示路线网络」，
-            指的就是它 —— 顶栏与正文卡重复）：
-            该页签正文的「路线网络」卡已经把同一份 `routeNetworks` 画过一遍
-            （每条网络一条 chip，且 chip 上带总概率），顶栏再挂一条 ⇒
-            同一份数据在一屏里出现两次，用户看不出该看哪一个。
-            其余页签（在树 / 网络图旁边切方案）照旧显示。 -->
-    <SchemeBar v-if="store.schemeStats.length && store.mainTab !== 'overview'" />
+    <!-- 路线方案栏（`SchemeBar`）**已挪进下面的 `<el-tabs>`**：
+         用户要的顺序是「页签在顶部 → 路线网络栏 → 内容」，
+         而 Element Plus 会把 `el-tabs` 的默认插槽渲染进 `.el-tabs__content`
+         ⇒ 把它放在页签之后，就正好夹在**页签与内容之间**。 -->
 
     <!-- 通知区：合规提示 + 全局错误。统一的轻量细条（替代 el-alert 的大色块，
          两条摞在一起时不再把工作台顶成「告警大杂烩」） -->
@@ -163,6 +162,25 @@ onMounted(() => {
     </div>
 
     <el-tabs v-model="tab" class="workspace__tabs">
+      <!-- 🔴 路线方案栏夹在**页签与内容之间**：
+           用户要的顺序是「页签在顶部 → 路线网络栏 → 内容」。
+           Element Plus 把 `el-tabs` 的默认插槽整块渲染进 `.el-tabs__content`
+           （`tabs.mjs`：`panels = h('div', { class: 'el-tabs__content' }, [renderSlot(slots, 'default')])`），
+           所以把 `SchemeBar` 放在**页签之后、第一个 `el-tab-pane` 之前**，
+           它就会落在页签下方、内容上方；不必自己拆 el-tabs 的 header / content。
+
+           非页签子节点不会污染页签导航 —— `useOrderedChildren` 只按
+           `type.name === 'ElTabPane'` 收集（`getOrderedChildren` 里那行 filter）。
+
+           可见性沿用既定口径：有方案才渲染；**「目标分析」页签下整条不渲染**
+           （该页签正文的「路线网络」卡已经把同一份 `routeNetworks` 画过一遍且带总概率，
+           顶栏再挂一条 ⇒ 同一份数据一屏出现两次，用户不知道该看哪一个）。 -->
+      <div
+        v-if="store.schemeStats.length && store.mainTab !== 'overview'"
+        class="workspace__schemes"
+      >
+        <SchemeBar />
+      </div>
       <!-- 默认页签：打开任务先看「在拆什么 + 已确认到哪一步」，而不是一屏未成形的树 -->
       <el-tab-pane label="目标分析" name="overview">
         <TargetOverview @preview="openPreview" />
@@ -302,6 +320,13 @@ onMounted(() => {
 .workspace__notice-close:hover {
   color: var(--rw-text);
   background: var(--rw-surface-3);
+}
+
+/* 路线方案栏的外壳：它现在在 `.el-tabs__content` 里（页签与内容之间），
+   拿不到 `.workspace` 的 gap ⇒ 下边距要自己带，否则会贴住下方内容。
+   （与页签 header 的 `margin-bottom: 12px` 一起构成「页签 / 方案栏 / 内容」三段呼吸） */
+.workspace__schemes {
+  margin-bottom: 10px;
 }
 
 /* ---------- 页签 ----------
