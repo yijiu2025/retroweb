@@ -13,10 +13,15 @@
  * 追问：分析完成后可以在下方继续提问（store.askFollowup）。请求会带上
  * **产物 / 前体 / 路线上下文 + 这份结构化分析 + 历史问答**，回答是自由文本（不是 JSON），
  * 所以问「放大热风险」「换溶剂」这类分析结构里没覆盖的问题也能得到连贯回答。
+ *
+ * 候选条件：面板顶部可以先「列出候选条件」（store.analyzeConditions）—— 反应条件本就有
+ * 多套可行组合（溶剂 / 温度 / 碱与缩合剂 / 浓度），一次只给一套等于把模型的第一直觉当唯一答案。
+ * 选一套之后（store.chooseCondition）深入分析会把它作为 `chosen_condition` 传回后端并**锁定**，
+ * 输出的 `conditions` 必须沿用它。关掉「先列候选条件」（运行参数里）就是老行为：直接给一套。
  */
 import { computed, ref } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
-import type { MassRow, StepAnalysis } from '@/types/retro';
+import type { ConditionOption, MassRow, StepAnalysis } from '@/types/retro';
 import MolView from '@/components/mol/MolView.vue';
 
 const props = defineProps<{ nodeId: string }>();
@@ -107,6 +112,55 @@ function ask(): void {
   question.value = '';
   void store.askFollowup(props.nodeId, q);
 }
+
+/* ---------- 候选反应条件（先枚举多套 → 选一套 → 锁定它深入分析） ---------- */
+const plan = computed(() => analysis.value?.condOptions ?? null);
+const planStatus = computed(() => plan.value?.status ?? 'idle');
+const planStreaming = computed(() => planStatus.value === 'streaming');
+const planOptions = computed(() => plan.value?.data?.options ?? []);
+/** 推理模型在枚举阶段只吐思考时，也要让人看到「在动」 */
+const planThinkingOnly = computed(
+  () => !(plan.value?.raw || '').length && !!(plan.value?.reasoning || '').length
+);
+const chosenId = computed(() => analysis.value?.chosenConditionId);
+/** 已选方案对象：从 condOptions 现查（切条件/重新枚举后自动跟着变） */
+const chosenOption = computed(() => store.chosenCondition(props.nodeId));
+/** 「先列候选条件」这条默认流程还没走：开关开着、且这次还没列过 */
+const planFirstPending = computed(
+  () => store.condPlanFirst && !planOptions.value.length && planStatus.value !== 'streaming'
+);
+
+/** 卡片上的条件摘要（只列有值的字段，顺序固定） */
+const PLAN_ROWS: { key: keyof ConditionOption; label: string }[] = [
+  { key: 'solvent', label: '溶剂' },
+  { key: 'temperature', label: '温度' },
+  { key: 'time', label: '时间' },
+  { key: 'atmosphere', label: '气氛' },
+  { key: 'catalyst', label: '催化剂 / 碱' },
+  { key: 'equiv', label: '当量' },
+  { key: 'concentration', label: '浓度' },
+  { key: 'workup', label: '后处理' }
+];
+
+function planRows(o: ConditionOption): { label: string; value: string }[] {
+  return PLAN_ROWS.map(({ key, label }) => ({ label, value: String(o[key] ?? '').trim() })).filter(
+    (r) => r.value
+  );
+}
+
+function enumeratePlan(force = false): void {
+  void store.analyzeConditions(props.nodeId, { force });
+}
+
+/** 选这套条件 → 立刻用它跑一次深入分析（分析会锁定这套条件，不再另换） */
+function useOption(o: ConditionOption): void {
+  store.chooseCondition(props.nodeId, o.id);
+}
+
+/** 取消选择：恢复「不限条件」，按模型自己的判断直接分析 */
+function clearChosen(): void {
+  store.chooseCondition(props.nodeId, null);
+}
 </script>
 
 <template>
@@ -137,8 +191,27 @@ function ask(): void {
           >
             接着分析
           </el-button>
+          <!-- 🔴 「先列候选条件」开着且还没列过时，主按钮就先做这件事 ——
+               这是默认流程：先把可能的条件摆出来，挑一套再深入分析。
+               列过一次（或关掉这个设置）之后，按钮回到「开始分析」。 -->
+          <el-button
+            v-else-if="status === 'failed'"
+            size="small"
+            type="primary"
+            @click="run(false)"
+          >
+            重试
+          </el-button>
+          <el-button
+            v-else-if="planFirstPending"
+            size="small"
+            type="primary"
+            @click="enumeratePlan(false)"
+          >
+            先看候选条件
+          </el-button>
           <el-button v-else size="small" type="primary" @click="run(false)">
-            {{ status === 'failed' ? '重试' : '开始分析' }}
+            {{ chosenOption ? '按已选条件分析' : '开始分析' }}
           </el-button>
         </template>
         <el-button
@@ -166,6 +239,123 @@ function ask(): void {
       class="ana__alert"
       title="先在这一步采纳一个候选反应，然后就能分析它的工艺条件"
     />
+
+    <!-- 候选反应条件：反应条件本就有多套可行组合，先枚举再由用户挑一套，
+         选定后下面的分析会**锁定**这套条件（后端 prompt 里明确要求不许另换溶剂/温度）。 -->
+    <div v-if="reaction" class="ana__plan">
+      <div class="ana__h">
+        候选反应条件
+        <span class="ana__tag-flow">先选条件，再深入分析</span>
+      </div>
+
+      <p class="ana__plan-intro">
+        溶剂 / 温度 / 碱与缩合剂 / 浓度 / 投料方式通常有多种可行组合。
+        先列出候选方案、挑一套，下面的分析就会锁定这套条件展开（而不是只给模型的第一直觉）。
+      </p>
+
+      <div class="ana__plan-ops">
+        <el-button
+          size="small"
+          type="primary"
+          :loading="planStreaming"
+          @click="enumeratePlan(planOptions.length > 0)"
+        >
+          {{ planOptions.length ? '重新列出候选条件' : '列出候选条件' }}
+        </el-button>
+        <el-button
+          v-if="planStreaming"
+          size="small"
+          type="danger"
+          plain
+          @click="store.cancelConditions(nodeId)"
+        >
+          停止
+        </el-button>
+        <el-button v-if="chosenId" size="small" text @click="clearChosen">
+          不限条件（直接分析）
+        </el-button>
+      </div>
+
+      <!-- 枚举中：与主分析一样区分「思考」与「正文」 -->
+      <div v-if="planStreaming" class="ana__streaming">
+        <div class="ana__streaming-line">
+          <span class="ana__dot" />
+          <template v-if="planThinkingOnly">
+            <span>模型正在思考…（已思考 {{ (plan?.reasoning || '').length }} 字）</span>
+          </template>
+          <template v-else>
+            <span>正在列出候选条件…（{{ (plan?.raw || '').length }} 字符）</span>
+          </template>
+        </div>
+        <pre v-if="planThinkingOnly" class="ana__raw ana__raw--think rw-scroll">{{ plan?.reasoning }}</pre>
+        <pre v-else class="ana__raw ana__raw--live rw-scroll">{{ plan?.raw || '…' }}</pre>
+      </div>
+
+      <div v-else-if="planStatus === 'failed'" class="ana__error">
+        <b>候选条件枚举失败：</b>{{ plan?.error || '未知错误' }}
+        <el-button size="small" text type="primary" @click="enumeratePlan(true)">重试</el-button>
+      </div>
+
+      <template v-else-if="planOptions.length">
+        <p v-if="plan?.data?.key_variable" class="ana__plan-key">
+          <span>关键变量</span>{{ plan.data.key_variable }}
+        </p>
+
+        <div class="ana__plan-grid">
+          <div
+            v-for="o in planOptions"
+            :key="o.id"
+            class="ana__plan-card"
+            :class="{ 'is-chosen': o.id === chosenId }"
+          >
+            <div class="ana__plan-card-head">
+              <span class="ana__plan-id">{{ o.id }}</span>
+              <span class="ana__plan-name">{{ o.name }}</span>
+              <span v-if="o.id === chosenId" class="ana__plan-badge">已选</span>
+            </div>
+            <div v-if="o.strategy" class="ana__plan-strategy">{{ o.strategy }}</div>
+
+            <dl class="ana__plan-cond">
+              <template v-for="r in planRows(o)" :key="r.label">
+                <dt>{{ r.label }}</dt>
+                <dd>{{ r.value }}</dd>
+              </template>
+            </dl>
+
+            <div v-if="o.pros?.length || o.cons?.length" class="ana__plan-pc">
+              <ul v-if="o.pros?.length" class="ana__plan-pros">
+                <li v-for="(p, i) in o.pros" :key="i">{{ p }}</li>
+              </ul>
+              <ul v-if="o.cons?.length" class="ana__plan-cons">
+                <li v-for="(c, i) in o.cons" :key="i">{{ c }}</li>
+              </ul>
+            </div>
+
+            <p v-if="o.risk" class="ana__plan-line"><span>风险</span>{{ o.risk }}</p>
+            <p v-if="o.best_for" class="ana__plan-line"><span>适用</span>{{ o.best_for }}</p>
+
+            <div class="ana__plan-card-foot">
+              <el-button
+                size="small"
+                :type="o.id === chosenId ? 'success' : 'primary'"
+                :plain="o.id === chosenId"
+                @click="useOption(o)"
+              >
+                {{ o.id === chosenId ? '用它重新分析' : '选它，深入分析' }}
+              </el-button>
+              <span v-if="typeof o.confidence === 'number'" class="ana__plan-conf">
+                把握度 {{ (o.confidence * 100).toFixed(0) }}%
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <p v-if="plan?.data?.recommendation" class="ana__plan-rec">
+          <span>模型建议</span>{{ plan.data.recommendation }}
+        </p>
+        <p v-if="plan?.data?.note" class="ana__warn">{{ plan.data.note }}</p>
+      </template>
+    </div>
 
     <!-- 流式中：实时显示模型输出 -->
     <div v-if="status === 'streaming'" class="ana__streaming">
@@ -281,7 +471,13 @@ function ask(): void {
       </div>
 
       <div v-if="condEntries.length" class="ana__block">
-        <div class="ana__h">反应条件</div>
+        <div class="ana__h">
+          反应条件
+          <!-- 条件来自哪套候选方案：让「这份分析是按哪套条件做的」一目了然 -->
+          <span v-if="chosenOption" class="ana__cond-lock">
+            按候选方案 {{ chosenOption.id }} · {{ chosenOption.name }}
+          </span>
+        </div>
         <dl class="ana__cond">
           <template v-for="c in condEntries" :key="c.key">
             <dt>{{ c.label }}</dt>
@@ -898,6 +1094,193 @@ function ask(): void {
 
 .ana__think .ana__raw {
   margin-top: 6px;
+}
+
+/* ---------- 候选反应条件 ---------- */
+.ana__plan {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface-2);
+}
+
+.ana__plan-intro {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--rw-text-3);
+}
+
+.ana__plan-ops {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ana__plan-key,
+.ana__plan-rec {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--rw-text-2);
+}
+
+.ana__plan-key > span,
+.ana__plan-rec > span {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--rw-brand-l);
+  color: var(--rw-brand-d);
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+/* 卡片网格：列宽有下限，窄栏（右辅助面板）也不会把条件挤成一列字 */
+.ana__plan-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(258px, 1fr));
+  gap: 10px;
+}
+
+.ana__plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+}
+
+.ana__plan-card.is-chosen {
+  border-color: var(--rw-ok);
+  box-shadow: 0 0 0 2px var(--rw-ok-l);
+}
+
+.ana__plan-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ana__plan-id {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--rw-brand);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.ana__plan-name {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rw-text);
+}
+
+.ana__plan-badge {
+  flex: 0 0 auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--rw-ok);
+  color: #fff;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.ana__plan-strategy {
+  align-self: flex-start;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--rw-brand-soft);
+  color: var(--rw-brand-d);
+  font-size: 11px;
+}
+
+.ana__plan-cond {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ana__plan-cond dt {
+  color: var(--rw-text-3);
+  white-space: nowrap;
+}
+
+.ana__plan-cond dd {
+  margin: 0;
+  color: var(--rw-text-2);
+  word-break: break-word;
+}
+
+.ana__plan-pc ul {
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.ana__plan-pros {
+  color: var(--rw-ok);
+}
+
+.ana__plan-cons {
+  color: var(--rw-warn);
+}
+
+.ana__plan-line {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--rw-text-2);
+}
+
+.ana__plan-line > span {
+  display: inline-block;
+  margin-right: 6px;
+  color: var(--rw-text-3);
+}
+
+.ana__plan-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  /* margin-top:auto：卡片高度不一时，按钮沉到同一条基线上 */
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+.ana__plan-conf {
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+/* 「这份分析是按哪套候选条件做的」—— 贴在「反应条件」标题右侧 */
+.ana__cond-lock {
+  margin-left: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--rw-ok-l);
+  color: var(--rw-ok);
+  font-size: 10.5px;
+  font-weight: 600;
 }
 
 /* ---------- 追问 ---------- */

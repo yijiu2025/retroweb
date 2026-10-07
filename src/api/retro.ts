@@ -13,6 +13,8 @@ import { RETRO_BASE_URL } from '@/config/services';
 import type {
   AnalyzeRequest,
   AnalyzeStreamEvent,
+  ConditionsRequest,
+  ConditionsStreamEvent,
   FollowupRequest,
   JobCreateResponse,
   JobSnapshot,
@@ -409,6 +411,37 @@ export async function streamAnalyze(
 ): Promise<void> {
   await postSse<AnalyzeStreamEvent>(
     '/llm/analyze/stream',
+    req,
+    signal,
+    (evt) => {
+      if (evt.type === 'meta') handlers.onMeta?.(evt.model);
+      else if (evt.type === 'thinking') handlers.onThinking?.(evt.text);
+      else if (evt.type === 'thinking_end') handlers.onThinkingEnd?.(evt.chars);
+      else if (evt.type === 'delta') handlers.onDelta?.(evt.text);
+      else if (evt.type === 'done') handlers.onDone(evt);
+      else if (evt.type === 'error') handlers.onError(evt.error);
+    },
+    handlers.onError
+  );
+}
+
+/**
+ * 流式「候选反应条件枚举」：先列出这一步可以怎么做（几套条件），再由用户挑一套深入分析。
+ *
+ * 与 streamAnalyze 走同一套 SSE 分帧，事件序列也一致 —— 只有 done 的负载不同（条件方案数组
+ * 而非工艺分析 JSON），所以回调类型直接复用 AnalyzeStreamHandlers、只换 onDone。
+ */
+export type ConditionsStreamHandlers = Omit<AnalyzeStreamHandlers, 'onDone'> & {
+  onDone: (payload: Extract<ConditionsStreamEvent, { type: 'done' }>) => void;
+};
+
+export async function streamConditions(
+  req: ConditionsRequest,
+  handlers: ConditionsStreamHandlers,
+  signal?: AbortSignal
+): Promise<void> {
+  await postSse<ConditionsStreamEvent>(
+    '/llm/conditions/stream',
     req,
     signal,
     (evt) => {

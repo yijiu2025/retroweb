@@ -285,6 +285,67 @@ export interface StepFollowup {
 }
 
 /**
+ * 一套**候选反应条件方案** —— 由 `/api/llm/conditions/stream` 枚举出来，供用户挑一套。
+ *
+ * 反应条件（溶剂 / 温度 / 碱与缩合剂 / 浓度 / 投料方式）本就是一个组合空间，
+ * 一次只给一套等于把模型的第一直觉当成唯一答案。先枚举、再选定，使用者才能比较取舍；
+ * 选定后深入分析会把这套条件**锁定**回模型（见 AnalyzeRequest.chosen_condition）。
+ *
+ * 字段名与后端 CONDITIONS_SYSTEM 的 JSON 结构一一对应，全部可选（模型可能漏字段）。
+ */
+export interface ConditionOption {
+  /** 方案编号 A / B / C…（同一份枚举内唯一），前端选中它回传给分析 */
+  id: string;
+  /** 简短方案名，如「低温慢加 · DCM 体系」 */
+  name: string;
+  /** 设计取向，如 温和优先 / 高产率优先 / 低成本易放大 / 绿色低毒 */
+  strategy?: string;
+  solvent?: string;
+  temperature?: string;
+  time?: string;
+  atmosphere?: string;
+  /** 催化剂 / 碱 / 缩合剂 / 配体及当量 */
+  catalyst?: string;
+  /** 关键试剂当量与相对基准 */
+  equiv?: string;
+  concentration?: string;
+  /** 后处理一句话概览 */
+  workup?: string;
+  pros?: string[];
+  cons?: string[];
+  /** 这套方案最可能出的问题与放大风险 */
+  risk?: string;
+  /** 什么情况下该选它 */
+  best_for?: string;
+  confidence?: number;
+}
+
+/** 一次候选条件枚举的结果（模型原始输出抽成 JSON 后归一化） */
+export interface ConditionsResult {
+  reaction_type?: string;
+  /** 这一步为什么会有多套条件：最关键的变量 */
+  key_variable?: string;
+  options: ConditionOption[];
+  /** 在什么前提下推荐哪一套 */
+  recommendation?: string;
+  /** 安全底线提示：条件为模型推断，实验前必须由专业人员复核 */
+  note?: string;
+}
+
+/** 一次候选条件枚举的运行态（与 StepAnalysis 同构，前端复用同一套流式解析） */
+export interface StepConditions {
+  status: 'streaming' | 'done' | 'failed';
+  raw: string;
+  reasoning?: string;
+  data?: ConditionsResult | null;
+  computed?: MassInfo | null;
+  model?: string;
+  error?: string;
+  at?: number;
+  elapsed?: number;
+}
+
+/**
  * 一步反应的 AI 工艺分析（挂在节点上，按 reactionId 存 ⇒ 天然「结果保留」）。
  * `raw` 是模型原始输出（流式期间实时追加），`data` 是流结束后抽出来的结构化结果。
  */
@@ -300,6 +361,10 @@ export interface StepAnalysis {
   computed?: MassInfo | null;
   /** 这份分析上的追问记录（最新在后） */
   followups?: StepFollowup[];
+  /** 候选反应条件枚举（可选：先枚举再深入分析的流程才有） */
+  condOptions?: StepConditions | null;
+  /** 用户选定的候选条件 id（选了之后深入分析会锁定这套条件） */
+  chosenConditionId?: string;
   error?: string;
   model?: string;
   at?: number;
@@ -321,6 +386,22 @@ export interface AnalyzeRequest {
   continue_from?: string;
   /** 勾选的分析模块（['mechanism','order','lcms',...]）；缺省/空 = 全量分析 */
   modules?: string[];
+  /**
+   * 用户从候选条件里选定的那一套：给了就把整套条件写进 prompt 并**锁定** ——
+   * `conditions` 字段必须沿用它，投料顺序 / 后处理 / 机理都要和它自洽。
+   */
+  chosen_condition?: ConditionOption | null;
+}
+
+/** 发起一次「候选反应条件枚举」的请求体（上下文与 AnalyzeRequest 完全一致） */
+export interface ConditionsRequest {
+  product: string;
+  precursors: string[];
+  probability?: number;
+  model?: string;
+  context?: AnalyzeRequest['context'];
+  /** 想要几套方案（后端夹到 2~6，默认 4） */
+  count?: number;
 }
 
 /** 发起一次「追问」的请求体 —— 带着这一步反应的上下文，问它的其他问题 */
@@ -430,6 +511,24 @@ export type AnalyzeStreamEvent =
   | {
       type: 'done';
       data: StepAnalysisData | null;
+      computed: MassInfo;
+      raw: string;
+      model: string;
+      reasoning?: string;
+      /** 'stop' = 正常结束；'length' = 被 max_tokens 截断 */
+      finish_reason?: string;
+    }
+  | { type: 'error'; error: string };
+
+/** SSE 事件（/api/llm/conditions/stream）—— 与 AnalyzeStreamEvent 同构，只有 done 负载不同 */
+export type ConditionsStreamEvent =
+  | { type: 'meta'; model: string; computed: MassInfo }
+  | { type: 'thinking'; text: string }
+  | { type: 'thinking_end'; chars: number }
+  | { type: 'delta'; text: string }
+  | {
+      type: 'done';
+      data: ConditionsResult | null;
       computed: MassInfo;
       raw: string;
       model: string;

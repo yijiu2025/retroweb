@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 运行参数（预测设置 / 拆分约束 / 大模型设置 / 分析模块）+ 模型预热。
+ * 运行参数（预测设置 / 拆分约束 / 大模型设置 / 条件方案 / 分析模块）+ 模型预热。
  *
  * 🔴 「自动往下拆 K 层」**不在这里**：它是「开始一个任务」时的动作，已挪到
  *    新建逆合成分析面板（TargetSetupPanel）底部；「拆分约束」这组参数因此要显式
@@ -548,7 +548,50 @@ onMounted(() => {
         </div>
       </details>
 
-      <!-- 分组四：分析模块（芯片式多选：选中=品牌色卡片；全选/清空收进标题行） -->
+      <!-- 分组四：条件方案（工艺分析的前置步骤：先列候选条件，选定后再深入分析） -->
+      <details class="params__group">
+        <summary class="params__group-head">
+          <span class="params__group-title">
+            <svg class="params__group-ico" viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M2.5 4h11M2.5 8h6M2.5 12h9" />
+              <circle cx="12.5" cy="8" r="1.7" />
+            </svg>
+            条件方案
+            <el-tooltip
+              content="反应条件（溶剂 / 温度 / 碱与缩合剂 / 浓度 / 投料方式）本就是组合空间：先把可行的几套列出来，挑一套再深入分析，比一次只给一套更接近实际筛选流程。"
+              placement="top"
+            >
+              <span class="params__hint">?</span>
+            </el-tooltip>
+          </span>
+          <span class="params__group-meta">
+            {{ store.condPlanFirst ? `先列候选 · ${store.condOptionCount} 套` : '直接分析' }}
+          </span>
+        </summary>
+        <div class="params__group-body">
+          <div class="params__row">
+            <label>先列候选条件</label>
+            <el-switch v-model="store.condPlanFirst" size="small" />
+          </div>
+          <div class="params__row">
+            <label>候选方案数</label>
+            <el-input-number
+              v-model="store.condOptionCount"
+              :min="2"
+              :max="6"
+              size="small"
+              :disabled="!store.condPlanFirst"
+            />
+          </div>
+          <p class="params__modules-note">
+            开启后，「AI 工艺分析」面板会先列出这一步反应的多套条件方案（溶剂 / 温度 / 碱与缩合剂 / 浓度
+            各成一派，并给出优缺点与适用场景）。选一套再深入分析 —— 分析会<b>锁定</b>这套条件，不会另换。<br />
+            关闭 = 直接按模型的第一直觉给一套条件做分析；面板里仍可随时手动「列出候选条件」。
+          </p>
+        </div>
+      </details>
+
+      <!-- 分组五：分析模块（芯片式多选：选中=品牌色卡片；全选/清空收进标题行） -->
       <details class="params__group">
         <summary class="params__group-head">
           <span class="params__group-title">

@@ -8,11 +8,20 @@
  */
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
-import { llmApi, retroApi, RetroApiError, streamAnalyze, streamFollowup } from '@/api/retro';
+import {
+  llmApi,
+  retroApi,
+  RetroApiError,
+  streamAnalyze,
+  streamConditions,
+  streamFollowup
+} from '@/api/retro';
 import type {
   AnalysisModuleKey,
   AnalysisRun,
   AnalyzeRequest,
+  ConditionOption,
+  ConditionsRequest,
   FollowupRequest,
   HistoryTask,
   JobProgress,
@@ -27,6 +36,7 @@ import type {
   Session,
   SessionStatus,
   StepAnalysis,
+  StepConditions,
   StepFollowup,
   WorkspaceSnapshot
 } from '@/types/retro';
@@ -42,6 +52,8 @@ const MAX_RUNS = 6;
 const MAX_ANALYSES = 6;
 /** 每份工艺分析最多保留几条追问（追问会累积，不设上限 localStorage 迟早爆） */
 const MAX_FOLLOWUPS = 10;
+/** 候选反应条件枚举的偏好（跨会话保留，属"用户习惯"而非任务数据） */
+const COND_PREF_KEY = 'retroweb_cond_pref';
 
 /**
  * 候选反应的**确定性 id**：由「节点 + 前体组合」推出。
@@ -172,7 +184,12 @@ function writeSessions(list: Session[]): void {
             if (!n.analyses) return [id, n];
             const analyses: NonNullable<MolNode['analyses']> = {};
             for (const [k, rec] of Object.entries(n.analyses)) {
-              analyses[k] = { ...rec, raw: '' };
+              // 候选条件枚举的模型原文（condOptions.raw）与 rec.raw 同量级，一起丢掉
+              analyses[k] = {
+                ...rec,
+                raw: '',
+                ...(rec.condOptions ? { condOptions: { ...rec.condOptions, raw: '' } } : {})
+              };
             }
             return [id, { ...n, analyses }];
           })
@@ -185,9 +202,40 @@ function writeSessions(list: Session[]): void {
   }
 }
 
+/**
+ * 候选条件枚举的偏好。属于「用户习惯」而非任务数据 ⇒ 单独存一个 key，
+ * 不进会话快照（换个任务不该把上一个人的偏好带过去）。
+ *
+ * 🔴 读写都要 try：SSR 测试环境（vue-pinia-real-store-harness 用 node 跑 store）
+ *    里没有 localStorage，直接访问会抛 ReferenceError，一抛就连 store 都建不起来。
+ */
+function readCondPref(): { planFirst: boolean; count: number } {
+  const def = { planFirst: true, count: 4 };
+  try {
+    const raw = localStorage.getItem(COND_PREF_KEY);
+    if (!raw) return def;
+    const obj = JSON.parse(raw) as { planFirst?: unknown; count?: unknown };
+    const count = Number(obj?.count);
+    return {
+      // 只有显式存成 false 才算关（老数据/坏数据都当默认开启）
+      planFirst: obj?.planFirst !== false,
+      count: Number.isFinite(count) ? Math.max(2, Math.min(6, Math.round(count))) : def.count
+    };
+  } catch {
+    return def;
+  }
+}
+
+function writeCondPref(v: { planFirst: boolean; count: number }): void {
+  try {
+    localStorage.setItem(COND_PREF_KEY, JSON.stringify(v));
+  } catch {
+    /* 隐私模式 / 配额满：偏好存不上不影响本次使用 */
+  }
+}
+
 function isAbort(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;
-  return code === 'ERR_CANCELED' || (err instanceof Error && err.name === 'CanceledError');
+  const code = (err as { code?: string })?.code;  return code === 'ERR_CANCELED' || (err instanceof Error && err.name === 'CanceledError');
 }
 
 /** 可被打断的 sleep：abort 时立即 resolve，让轮询循环能尽快退出 */
@@ -209,6 +257,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const params = ref<RunParams>({ ...DEFAULT_PARAMS });
   /** AI 工艺分析勾选的模块（默认全选）。空数组 = 全量分析（与后端语义一致） */
   const analysisModules = ref<AnalysisModuleKey[]>([...ALL_ANALYSIS_MODULES]);
+  /**
+   * 「先列候选条件再深入分析」—— 反应条件本就有多套组合，默认先枚举让用户挑一套。
+   * 关掉 = 老行为：直接按模型的第一直觉给一套条件做深入分析。
+   */
+  const condPlanFirst = ref(readCondPref().planFirst);
+  /** 一次枚举几套候选条件方案（后端夹到 2~6） */
+  const condOptionCount = ref(readCondPref().count);
+  watch([condPlanFirst, condOptionCount], () => {
+    writeCondPref({ planFirst: condPlanFirst.value, count: condOptionCount.value });
+  });
   const models = ref<RetroModel[]>([]);
   const modelsLoading = ref(false);
   const modelLoadingKey = ref<string | null>(null);
@@ -1635,6 +1693,19 @@ function persistSession(): void {
     return node.analyses?.[rid];
   }
 
+  /**
+   * 该节点「用户选定的候选条件」对应的那套方案（没选过 = undefined）。
+   *
+   * 🔴 从 condOptions 里**按 id 现查**，不缓存对象引用：枚举结果可能被重新枚举覆盖，
+   *    缓存引用会指向一份已经不在界面上显示的旧方案。
+   */
+  function chosenCondition(nodeId: string): ConditionOption | undefined {
+    const rec = analysisOf(nodeId);
+    const id = rec?.chosenConditionId;
+    if (!id) return undefined;
+    return rec?.condOptions?.data?.options.find((o) => o.id === id);
+  }
+
   /** 从目标分子到该节点，已经走过的步骤（作为大模型的路线上下文） */
   function routeContext(nodeId: string): AnalyzeRequest['context'] {
     const chain: MolNode[] = [];
@@ -1713,7 +1784,11 @@ function persistSession(): void {
       data: null,
       computed: null,
       model: llmStatus.value?.model,
-      at: Date.now()
+      at: Date.now(),
+      // 🔴 候选条件与「已选条件」必须跨「重新分析」保留：不带上就会在这次分析开始时被抹掉，
+      //    于是界面上「已选条件方案」的标记与本轮枚举结果一起消失（枚举等于白跑）。
+      ...(prev?.condOptions ? { condOptions: prev.condOptions } : {}),
+      ...(prev?.chosenConditionId ? { chosenConditionId: prev.chosenConditionId } : {})
     };
 
     /** 一律通过响应式代理写回（直接改本地裸对象不会触发 Vue 更新） */
@@ -1740,6 +1815,8 @@ function persistSession(): void {
       context: routeContext(nodeId),
       // 勾选的模块；空数组 = 全量（后端据此裁剪 prompt，只输出勾选字段）
       modules: [...analysisModules.value],
+      // 用户选定的候选条件：锁定这套条件，否则模型会另换一套溶剂/温度，用户的选择就白做了
+      chosen_condition: chosenCondition(nodeId) ?? null,
       ...(continueFrom ? { continue_from: continueFrom } : {})
     };
 
@@ -1791,6 +1868,145 @@ function persistSession(): void {
     if (rec && rec.status === 'streaming') {
       rec.status = 'failed';
       rec.error = '已手动停止';
+    }
+  }
+
+  /* ---------- 候选反应条件（先枚举 → 选一套 → 深入分析） ---------- */
+
+  /**
+   * 枚举「这一步反应可能的反应条件」—— 先让模型列出几套方案，再由用户挑一套深入分析。
+   *
+   * 反应条件（溶剂 / 温度 / 碱与缩合剂 / 浓度 / 投料方式）本就是组合空间，一次只给一套
+   * 等于把模型的第一直觉当唯一答案。结果挂在 `analysis.condOptions` 上（按 reactionId 存 ⇒
+   * 同一个分子换过不同拆法，各有各的枚举结果）。
+   *
+   * 已有 done 的结果默认不重跑（要看就展开展示），想重新枚举传 `force`。
+   */
+  async function analyzeConditions(nodeId: string, opts: { force?: boolean } = {}): Promise<void> {
+    const node = nodes.value[nodeId];
+    const rid = node?.chosenReactionId;
+    if (!node || !rid) return;
+    const rxn = node.candidates.find((r) => r.id === rid);
+    if (!rxn) return;
+
+    if (!node.analyses) node.analyses = {};
+    // 🔴 枚举通常发生在「还没做过深入分析」的时候 ⇒ 记录不存在要自己建出来，
+    //    否则 condOptions 无处安放（沿用 StepAnalysis 的状态字段形状，status 先 idle）。
+    if (!node.analyses[rid]) {
+      node.analyses[rid] = { reactionId: rid, status: 'idle', raw: '' };
+    }
+    const prev = node.analyses[rid];
+    if (prev.condOptions?.status === 'streaming') return;
+    if (prev.condOptions?.status === 'done' && !opts.force) return;
+
+    // 用独立 key：枚举与深入分析可以并存（选了条件就立刻跑分析，两者是两条流）
+    const ak = `cond:${nodeId}`;
+    analysisAborts.get(ak)?.abort();
+    const controller = new AbortController();
+    analysisAborts.set(ak, controller);
+
+    const t0 = Date.now();
+    prev.condOptions = {
+      status: 'streaming',
+      raw: '',
+      data: null,
+      computed: null,
+      model: llmStatus.value?.model,
+      at: Date.now()
+    };
+
+    /** 一律重新从响应式对象上取 —— 记录可能刚被 analyzeStep 重建过，别缓存引用 */
+    const cur = (): StepConditions | undefined =>
+      node.analyses?.[rid]?.condOptions ?? undefined;
+    const patch = (p: Partial<StepConditions>): void => {
+      const c = cur();
+      if (c) Object.assign(c, p);
+    };
+    const append = (key: 'raw' | 'reasoning', text: string): void => {
+      const c = cur();
+      if (c) c[key] = (c[key] || '') + text;
+    };
+
+    const req: ConditionsRequest = {
+      product: node.smiles,
+      precursors: rxn.precursorList,
+      probability: rxn.probability,
+      model: params.value.model,
+      context: routeContext(nodeId),
+      count: condOptionCount.value
+    };
+
+    try {
+      await streamConditions(
+        req,
+        {
+          onMeta: (m) => patch({ model: m }),
+          onThinking: (t) => append('reasoning', t),
+          onDelta: (t) => append('raw', t),
+          onDone: (p) => {
+            patch({
+              raw: p.raw || cur()?.raw || '',
+              reasoning: p.reasoning || cur()?.reasoning || '',
+              data: p.data,
+              computed: p.computed,
+              model: p.model,
+              status: 'done',
+              elapsed: Math.round((Date.now() - t0) / 100) / 10
+            });
+            analysisAborts.delete(ak);
+          },
+          onError: (m) => {
+            patch({ status: 'failed', error: m, elapsed: Math.round((Date.now() - t0) / 100) / 10 });
+            analysisAborts.delete(ak);
+          }
+        },
+        controller.signal
+      );
+    } finally {
+      const c = cur();
+      // 被 abort 时既走不到 done 也走不到 error ⇒ 这里收尾，避免永远停在「枚举中」
+      if (c && c.status === 'streaming') {
+        c.status = 'failed';
+        c.error = c.error || '枚举已中断';
+      }
+      analysisAborts.delete(ak);
+      schedulePersist();
+    }
+  }
+
+  /**
+   * 选定一套候选条件（`optionId = null` = 取消选择，恢复「不限条件」）。
+   *
+   * 🔴 只改 `chosenConditionId`、**不动 condOptions** —— 用户要能来回切换比较；
+   *    分析侧读的是 `chosenCondition(nodeId)`（按 id 现查），所以这里不用同步改别的字段。
+   * opts.analyze 默认 true：选定即用这套条件跑一次深入分析。
+   */
+  function chooseCondition(
+    nodeId: string,
+    optionId: string | null,
+    opts: { analyze?: boolean } = {}
+  ): void {
+    const rec = analysisOf(nodeId);
+    if (!rec) return;
+    if (optionId === null) {
+      rec.chosenConditionId = undefined;
+    } else {
+      const exists = rec.condOptions?.data?.options.some((o) => o.id === optionId);
+      if (!exists) return;
+      rec.chosenConditionId = optionId;
+    }
+    schedulePersist();
+    if (opts.analyze !== false) void analyzeStep(nodeId, { force: true });
+  }
+
+  function cancelConditions(nodeId: string): void {
+    const ak = `cond:${nodeId}`;
+    analysisAborts.get(ak)?.abort();
+    analysisAborts.delete(ak);
+    const c = analysisOf(nodeId)?.condOptions;
+    if (c && c.status === 'streaming') {
+      c.status = 'failed';
+      c.error = '已手动停止';
     }
   }
 
@@ -2019,6 +2235,12 @@ function persistSession(): void {
     analyzeStep,
     analyzeRoute,
     cancelAnalysis,
+    condPlanFirst,
+    condOptionCount,
+    chosenCondition,
+    analyzeConditions,
+    chooseCondition,
+    cancelConditions,
     askFollowup,
     cancelFollowup,
     loadModels,
