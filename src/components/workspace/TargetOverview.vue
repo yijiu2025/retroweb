@@ -134,7 +134,11 @@ async function copySmiles(): Promise<void> {
               <span class="ov__net-name">{{ n.name }}</span>
               <span v-if="n.confirmed" class="ov__net-tag">已确认</span>
               <span v-else class="ov__net-tag ov__net-tag--draft">备选</span>
-              <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支</span>
+              <!-- 🔴 总概率（横向选优的**主指标**）必须落在这条 chip 上：
+                   顶部 `SchemeBar` 在「目标分析」页签已整条收起（见 WorkspaceView），
+                   这一页只剩这排 chip 可比 —— 少了概率就只剩名字，等于没法选优。
+                   口径与侧栏 `.tan__net-meta`（同一步数 / 分支 / 概率）保持一致。 -->
+              <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支 · {{ pctText(n.probability) }}</span>
             </button>
           </div>
 
