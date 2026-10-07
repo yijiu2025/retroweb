@@ -10,8 +10,16 @@
  * 三块内容：
  *   ① **目标分子**：结构缩略图（点开放大）+ 分子式 / MW / 重原子 + SMILES（点一下即复制）
  *   ② **路线网络**：当前这条网络的多步路线（步数 / 分支 / 起始物料 / 最深 / 总概率）
- *      + 这条任务下**已确认的多个网络**（可点切换）+ 各步明细
- *   ③ 操作：存为新方案（还没有网络时）/ 切换目标
+ *      + 这条任务下**已确认的多个网络**（可点切换）+ 各步明细（**逐步画结构式**）
+ *   ③ 操作：存为新方案（**只在还没有网络时**）
+ *
+ * 为什么逐步画结构式而不是写 SMILES：侧栏可用宽只有 ~200px，SMILES 截到 16 个字符
+ * （`CC(C)Cc1ccc(C(C)…`）既认不出分子也没法核对这一步在拆什么；结构式一眼能看出来。
+ * 完整 SMILES 与「产物 ← 前体」都留在缩略图的 title 里，悬停可核对。
+ *
+ * 为什么**没有**「切换目标」：同页签正文的「目标分子」卡头部就有一个
+ * （TargetOverview），侧栏这条是重复入口；而且它和「存为新方案」并排占掉一行高度，
+ * 这行高度给结构式更值。删掉不丢功能 —— 全站仍能从主区切目标。
  *
  * 🔴 「已确认路线」→「路线网络」的语义变化（见 store 的 confirmRouteNetwork）：
  *    一条路线**可以有分支**（多组分反应一步拆出多个前体），那就是一张网而不是一条链；
@@ -51,11 +59,6 @@ const totalPct = computed(() =>
 function pct(p: number): string {
   if (!Number.isFinite(p)) return '—';
   return `${(p * 100).toFixed(1)}%`;
-}
-
-/** 结构太长时截断 —— 侧栏只有 ~200px 可用 */
-function short(s: string, n = 16): string {
-  return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
 /** 切换当前查看的是哪一条网络（不删任何节点，见 store.applyScheme） */
@@ -148,22 +151,37 @@ async function copySmiles(): Promise<void> {
         同一个目标可以确认多条网络，在这里切换查看。
       </p>
 
-      <!-- 各步明细：这就是"长路线"本身 -->
+      <!-- 各步明细：这就是"长路线"本身。
+           🔴 每一步画**结构式**，不是截断的 SMILES —— 侧栏 ~200px 宽，
+              16 个字符的 SMILES 截断后认不出分子；结构式一眼看出这一步在拆什么。
+              点缩略图放大（与主区分子小卡同一手势）。
+              完整 SMILES 与「产物 ← 前体」留在 title 里，悬停即可核对。 -->
       <ol v-if="steps.length" class="tan__steps">
-        <li v-for="s in steps" :key="s.nodeId" :title="`${s.product} ← ${s.precursors.join(' + ')}`">
+        <li v-for="s in steps" :key="s.nodeId">
           <span class="tan__step-no">{{ s.step }}</span>
-          <code class="rw-mono tan__step-mol">{{ short(s.product) }}</code>
-          <span v-if="s.precursors.length > 1" class="tan__step-branch" title="该步分叉（多组分）">⑂</span>
-          <span class="tan__step-p">{{ (s.probability * 100).toFixed(0) }}%</span>
+          <button
+            type="button"
+            class="tan__step-mol"
+            :title="`${s.product} ← ${s.precursors.join(' + ')}\n点击放大查看结构式`"
+            @click="emit('preview', s.product)"
+          >
+            <MolView :smiles="s.product" fit :bond-px="20" :min-px="40" :max-px="120" />
+          </button>
+          <!-- 尾巴（分叉标记 + 概率）包成**定宽**一组 ⇒ 各行给结构式留的宽度一致。
+               不给宽度的话「⑂ 90%」比「80%」宽，同一列里盒子的右边界会参差。 -->
+          <span class="tan__step-tail">
+            <span v-if="s.precursors.length > 1" class="tan__step-branch" title="该步分叉（多组分）">⑂</span>
+            <span class="tan__step-p">{{ (s.probability * 100).toFixed(0) }}%</span>
+          </span>
         </li>
       </ol>
     </div>
 
-    <div class="tan__ops">
-      <el-button v-if="!netCount" size="small" plain @click="promptSaveScheme(store)">存为新方案</el-button>
-      <el-tooltip content="回到标定面板，换一个目标分子（会开始一个新任务）" placement="bottom" :show-after="150">
-        <el-button size="small" type="primary" plain @click="store.openTargetSetup()">切换目标</el-button>
-      </el-tooltip>
+    <!-- 「切换目标」已删除（用户要求）：同页签正文的「目标分子」卡头部就有它
+         （TargetOverview），侧栏这条属重复入口。合并到 v-if 里 ⇒
+         还有网络时整块不渲染（不留一个空的 flex 容器占掉 .tan 的 8px 间距）。 -->
+    <div v-if="!netCount" class="tan__ops">
+      <el-button size="small" plain @click="promptSaveScheme(store)">存为新方案</el-button>
     </div>
   </section>
 </template>
@@ -449,14 +467,40 @@ async function copySmiles(): Promise<void> {
   color: var(--rw-brand-d);
 }
 
+/* 结构式缩略图：占满中间剩余宽度。
+   定尺寸盒子 + `fit` ⇒ smiles-drawer 的 SVG 按 viewBox 等比缩放，大分子不被裁
+   （与主区分子小卡同一个做法）。hover 变品牌色边，提示「点开放大」。 */
 .tan__step-mol {
   flex: 1;
   min-width: 0;
-  font-size: 10.5px;
-  color: var(--rw-text-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 32px;
+  padding: 1px 4px;
+  border: 1px solid var(--rw-border);
+  border-radius: 4px;
+  background: var(--rw-surface-2);
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  cursor: zoom-in;
+  transition: border-color 0.15s;
+}
+
+.tan__step-mol:hover {
+  border-color: var(--rw-brand);
+}
+
+/* 尾巴：分叉标记 + 概率，**定宽**一组。
+   定宽是为了让结构式盒子的左右边界逐行对齐 —— 概率 2~3 位数、「⑂」有行无行，
+   不给宽度则每行剩余宽度不同，同一列里的盒子就会参差
+   （`tabular-nums` 只保证数字等宽，管不了"有没有⑂"和位数）。 */
+.tan__step-tail {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 44px;
 }
 
 /* 分叉标记：这一步是多组分反应（父节点在此分成多条支线） */
@@ -471,6 +515,7 @@ async function copySmiles(): Promise<void> {
   flex: 0 0 auto;
   font-size: 10px;
   color: var(--rw-text-3);
+  text-align: right;
   font-variant-numeric: tabular-nums;
 }
 
