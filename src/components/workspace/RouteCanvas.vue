@@ -23,8 +23,12 @@
  * 🔴 布局是**自己算坐标 + 绝对定位**（不是 flex 流）：
  *    连线要跨卡片（父节点竖直居中于子节点之间），只有拿到坐标才能画得出那种
  *    「总线 + 支线」的肘形连线。缩放靠 `transform: scale`，外面套一层撑开滚动区的 sizer。
+ *
+ * 🔴 交互只有**一套坐标**：`sizer`（宽高 = 画布 × zoom）+ 容器的 `scrollLeft/Top`。
+ *    拖动平移、滚轮缩放、原生滚动条三者都落在这一套上 —— 谁也不用维护自己的偏移量，
+ *    因此不会出现"拖过之后再缩放，图就跳走"（各存一份 translate 的写法必踩）。
  */
-import { computed, onMounted, nextTick, ref, watch } from 'vue';
+import { computed, onBeforeUnmount, onMounted, nextTick, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { MolNode } from '@/types/retro';
@@ -119,6 +123,8 @@ const flipped = ref(false);
 const showLegend = ref(false);
 const zoom = ref(1);
 const wrap = ref<HTMLElement | null>(null);
+/** sizer 的 DOM 引用 —— 缩放时要**同步**改它的宽高，见 `zoomAt` 的注释 */
+const sizerEl = ref<HTMLElement | null>(null);
 
 const hasRoute = computed(() => cards.value.length > 0);
 const route = computed(() => store.route);
@@ -312,23 +318,144 @@ function build(): void {
 
 watch([() => store.rootId, () => store.nodes, flipped], build, { deep: true, immediate: true });
 
-/* ---------- 缩放 / 适应视图 ---------- */
+/* ---------- 缩放 / 平移 ---------- */
+/**
+ * 缩放范围。比原来（0.35~2）宽 —— 深树要缩得下去看全貌，细节也要放得大。
+ */
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 3;
+
+function clampZoom(z: number): number {
+  return Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, z));
+}
+
+/**
+ * 以**容器内某点**为锚点缩放：锚点底下的那个"图上的点"缩放前后停在原地。
+ *
+ * 🔴 必须**先同步把 sizer 撑到新尺寸**，再写 scrollLeft。两个坑：
+ *    ① 只改 `zoom` 就写 scrollLeft ⇒ 被**旧的** scrollWidth 夹住，放大时必然偏移；
+ *    ② 改成 `await nextTick()` 再写 ⇒ 连续滚轮之间会读到"还没应用"的 scrollLeft，
+ *       锚点一路漂。手动写一次 style 把两个问题一起解决（Vue 随后写入的是同一个值）。
+ */
+function zoomAt(next: number, anchorX: number, anchorY: number): void {
+  const el = wrap.value;
+  if (!el) return;
+  const z = clampZoom(next);
+  if (z === zoom.value) return;
+  // 锚点当前对应的**内容坐标**（缩放前）
+  const cx = (el.scrollLeft + anchorX) / zoom.value;
+  const cy = (el.scrollTop + anchorY) / zoom.value;
+  zoom.value = z;
+  const s = sizerEl.value;
+  if (s) {
+    s.style.width = `${canvasW.value * z}px`;
+    s.style.height = `${canvasH.value * z}px`;
+  }
+  el.scrollLeft = cx * z - anchorX;
+  el.scrollTop = cy * z - anchorY;
+}
+
+/** 按钮缩放没有指针位置，取视口中心最不突兀 */
+function centerAnchor(): [number, number] {
+  const el = wrap.value;
+  return el ? [el.clientWidth / 2, el.clientHeight / 2] : [0, 0];
+}
+
 function fitView(): void {
-  const w = wrap.value?.clientWidth ?? 0;
-  if (!w || !canvasW.value) {
+  const el = wrap.value;
+  const w = el?.clientWidth ?? 0;
+  if (!el || !w || !canvasW.value) {
     zoom.value = 1;
     return;
   }
-  zoom.value = Math.min(1, Math.max(0.35, (w - 28) / canvasW.value));
+  zoom.value = clampZoom(Math.min(1, (w - 28) / canvasW.value));
+  // 「适应视图」= 看到全部，所以滚动也回到左上角
+  el.scrollLeft = 0;
+  el.scrollTop = 0;
 }
 
-function zoomBy(delta: number): void {
-  zoom.value = Math.min(2, Math.max(0.35, Math.round((zoom.value + delta) * 100) / 100));
+/** ① 工具条 ± ：乘法步进（连续量，而不是固定 ±0.1 —— 缩到 20% 时 ±0.1 就没手感了） */
+function zoomBy(dir: 1 | -1): void {
+  const [ax, ay] = centerAnchor();
+  zoomAt(zoom.value * (dir > 0 ? 1.25 : 1 / 1.25), ax, ay);
 }
 
 function resetZoom(): void {
-  zoom.value = 1;
+  const [ax, ay] = centerAnchor();
+  zoomAt(1, ax, ay);
 }
+
+/**
+ * ② 滚轮缩放 —— 画布类工具的通用手势（Reaxys / ChemDraw / Ketcher 都是滚轮缩放）。
+ *
+ * 🔴 delta 要归一化：Firefox 行模式（`deltaMode === 1`）一个刻度是 ±3，像素模式是 ±100，
+ *    差 30 多倍 —— 不归一化会出现"同一份代码在 Chrome 好用、Firefox 里滚不动"。
+ * 🔴 用 `Math.exp` 而不是 `zoom + k*delta`：这样每个刻度是**固定倍率**，
+ *    缩到 20% 和放到 300% 的手感一致（线性加法在大倍率下会一顿一顿）。
+ */
+function onWheel(e: WheelEvent): void {
+  const el = wrap.value;
+  if (!el) return;
+  // 🔴 必须拦掉默认行为：不拦的话浏览器会**同时**按 deltaY 滚这个容器 ——
+  //    缩放刚把 scroll 换算好，紧接着又被滚走一截（用户看到的就是"缩放时图乱跳"）。
+  //    这条能在探针里被抓住（断言 `defaultPrevented === true`），别删。
+  e.preventDefault();
+  const dy = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 100 : e.deltaY;
+  const rect = el.getBoundingClientRect();
+  zoomAt(zoom.value * Math.exp(-dy * 0.0016), e.clientX - rect.left, e.clientY - rect.top);
+}
+
+/* ③ 按住拖动平移（pan）—— 改的是 scrollLeft/Top，与 sizer / 滚动条完全兼容：
+      原生滚动条、滚轮（未命中缩放时）走的是同一套坐标，不会出现两套偏移互相打架。 */
+const panning = ref(false);
+let panFrom: { x: number; y: number; left: number; top: number } | null = null;
+
+function onPointerDown(e: PointerEvent): void {
+  const el = wrap.value;
+  if (!el || e.button !== 0) return;
+  // 只接管鼠标：触屏交给原生滚动 / 双指缩放，别把人家的手势吃掉
+  if (e.pointerType !== 'mouse') return;
+  // 卡片底部图标这类交互元素有自己的点击，不能被拖动抢走
+  if ((e.target as HTMLElement | null)?.closest('button, a, input, textarea, select')) return;
+  e.preventDefault(); // 免得拖动时把卡片里的文字选中
+  panFrom = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
+  panning.value = true;
+  el.setPointerCapture(e.pointerId);
+}
+
+function onPointerMove(e: PointerEvent): void {
+  const el = wrap.value;
+  if (!panFrom || !el) return;
+  el.scrollLeft = panFrom.left - (e.clientX - panFrom.x);
+  el.scrollTop = panFrom.top - (e.clientY - panFrom.y);
+}
+
+function onPointerUp(e: PointerEvent): void {
+  const el = wrap.value;
+  if (!panFrom) return;
+  panFrom = null;
+  panning.value = false;
+  if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+}
+
+/**
+ * 滚轮监听必须**手动注册**（`passive: false`）。
+ * 模板上的 `@wheel` 无法保证非被动监听 —— 一旦被浏览器按被动处理，
+ * `preventDefault()` 就是空转：画布缩放了，整个页面**同时**跟着滚。
+ */
+let wheelBound: HTMLElement | null = null;
+function bindWheel(): void {
+  const el = wrap.value;
+  if (el === wheelBound) return;
+  wheelBound?.removeEventListener('wheel', onWheel);
+  wheelBound = el;
+  wheelBound?.addEventListener('wheel', onWheel, { passive: false });
+}
+watch(wrap, bindWheel, { immediate: true, flush: 'post' });
+onBeforeUnmount(() => {
+  wheelBound?.removeEventListener('wheel', onWheel);
+  wheelBound = null;
+});
 
 onMounted(async () => {
   build();
@@ -535,11 +662,11 @@ const dirHint = computed(() =>
         </el-button>
         <el-button size="small" @click="fitView">适应视图</el-button>
         <div class="rcanvas__zoom">
-          <el-button size="small" text @click="zoomBy(-0.1)">−</el-button>
+          <el-button size="small" text title="缩小" @click="zoomBy(-1)">−</el-button>
           <button type="button" class="rcanvas__zoom-val" title="点击还原 100%" @click="resetZoom">
             {{ Math.round(zoom * 100) }}%
           </button>
-          <el-button size="small" text @click="zoomBy(0.1)">＋</el-button>
+          <el-button size="small" text title="放大" @click="zoomBy(1)">＋</el-button>
         </div>
         <el-button size="small" :type="showLegend ? 'primary' : 'default'" plain @click="showLegend = !showLegend">
           图例
@@ -581,7 +708,7 @@ const dirHint = computed(() =>
           <b>{{ materials.length }}</b>
         </div>
         <div class="rcanvas__score-hint">
-          {{ dirHint }} —— 点卡片底部图标可展开 / 分析 / 标记可购买
+          {{ dirHint }} —— 拖动可平移、滚轮可缩放；点卡片底部图标可展开 / 分析 / 标记可购买
         </div>
       </div>
 
@@ -592,8 +719,21 @@ const dirHint = computed(() =>
         </p>
       </div>
 
-      <div v-else ref="wrap" class="rcanvas__wrap rw-scroll">
-        <div class="rcanvas__sizer" :style="{ width: canvasW * zoom + 'px', height: canvasH * zoom + 'px' }">
+      <!-- 画布：按住拖动平移（pan）、滚轮缩放（以指针为锚点）。
+           🔴 只改 scrollLeft/Top，不引入第二套坐标 —— 滚动条、拖动、缩放共用同一个
+              `sizer`（宽高 = 画布 × zoom），三者不会互相打架。 -->
+      <div
+        v-else
+        ref="wrap"
+        class="rcanvas__wrap rw-scroll"
+        :class="{ 'is-panning': panning }"
+        title="拖动平移 · 滚轮缩放"
+        @pointerdown="onPointerDown"
+        @pointermove="onPointerMove"
+        @pointerup="onPointerUp"
+        @pointercancel="onPointerUp"
+      >
+        <div ref="sizerEl" class="rcanvas__sizer" :style="{ width: canvasW * zoom + 'px', height: canvasH * zoom + 'px' }">
           <div class="rcanvas__plane" :style="scaleStyle">
             <!-- 连线（在卡片下层，不接鼠标事件） -->
             <svg class="rcanvas__wires" :width="canvasW" :height="canvasH" aria-hidden="true">
@@ -834,6 +974,19 @@ const dirHint = computed(() =>
   background-color: var(--rw-surface);
   background-image: radial-gradient(var(--rw-border) 1px, transparent 1px);
   background-size: 22px 22px;
+  /* 抓手光标 = "这块画布能拖"的可发现性（不写的话只能靠工具条那句提示） */
+  cursor: grab;
+}
+
+/* 拖动中：光标变抓手、禁掉文字选中、卡片暂不接指针 ——
+   否则拖过卡片时 :hover 一路闪，动作图标行跟着一亮一暗。 */
+.rcanvas__wrap.is-panning {
+  cursor: grabbing;
+  user-select: none;
+}
+
+.rcanvas__wrap.is-panning .rcanvas__plane {
+  pointer-events: none;
 }
 
 .rcanvas__sizer {

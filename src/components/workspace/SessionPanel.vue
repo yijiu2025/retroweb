@@ -89,7 +89,10 @@ async function onRemove(id: string, name: string): Promise<void> {
          「新任务」放在这里（而不是只有工作台里能建）—— 左侧这一列才是任务的总入口。 -->
     <div class="recent__head">
       <span class="recent__title">最近的任务</span>
-      <span class="recent__count">{{ all.length }}</span>
+      <!-- 🔴 计数必须是**本组的条数**，不是总数。写总数会和下面只列 6 行自相矛盾：
+           「最近的任务 8」底下却只有 6 行 ⇒ 看着像漏渲染了（用户正是这么报上来的：
+           「最近的任务最多显示6条」）。总数挪进 title，需要时可见。 -->
+      <span class="recent__count" :title="`共 ${all.length} 个任务`">{{ recent.length }}</span>
       <button type="button" class="recent__new" title="新建任务（当前任务会保留在列表里）" @click="emit('new')">
         <span aria-hidden="true">＋</span>新任务
       </button>
