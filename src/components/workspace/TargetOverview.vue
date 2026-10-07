@@ -39,6 +39,18 @@ const totalPct = computed(() =>
 const networks = computed(() => store.routeNetworks);
 const startList = computed(() => store.startingMaterials);
 
+/**
+ * 「路线网络」列表为空时，补一句说明。
+ *
+ * 🔴 不能不吭声：`.ov__nets` 的 `v-if` 一旦为假，卡片里就只剩 chips 与步骤表，
+ *    看上去像"目标分析页签不显示路线网络"（用户报的就是这个）。
+ *    侧栏同款场景是有 `.tan__hint` 的，页签这边原本什么都没有 —— 同一份状态
+ *    两处口径不一，用户只能猜。
+ *    ⚠️ 只在树上有步骤时才提这条：一步都没有时，下面 `.ov__empty` 那段
+ *    （"还没有确定的路线…"）已经把话说完了，两条一起出现是重复。
+ */
+const showNetHint = computed(() => !networks.value.length && steps.value.length > 0);
+
 /** 切换当前查看的网络（不删节点，旧子树只是藏起来） */
 function switchNet(id: string): void {
   if (id === store.currentSchemeId) return;
@@ -125,6 +137,12 @@ async function copySmiles(): Promise<void> {
               <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支</span>
             </button>
           </div>
+
+          <!-- 一条网络都还没存过：说清"这里为什么空、怎么才有"（见 showNetHint 注释） -->
+          <p v-if="showNetHint" class="ov__net-hint">
+            当前这条路线还没存成「路线网络」—— 到「<b>逆合成树</b>」页签点「<b>确认路线网络</b>」，
+            它就会记在这里；同一个目标可以确认多条（比如小试 / 放大各一条），随时切换对比。
+          </p>
 
           <table v-if="steps.length" class="ov__table">
             <thead>
@@ -286,6 +304,24 @@ async function copySmiles(): Promise<void> {
   flex-wrap: wrap;
   gap: 6px;
   margin-bottom: 10px;
+}
+
+/* 网络列表为空时的说明（见 showNetHint 注释）。
+   虚线 + 浅底 = "这里本该有东西，但还没有"；与侧栏 `.tan__hint` 同款语气，
+   两处对同一状态的解释才一致。 */
+.ov__net-hint {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border: 1px dashed var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface-2);
+  font-size: 12px;
+  line-height: 1.65;
+  color: var(--rw-text-3);
+}
+
+.ov__net-hint b {
+  color: var(--rw-text-2);
 }
 
 .ov__net {
