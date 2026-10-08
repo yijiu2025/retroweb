@@ -35,8 +35,16 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
 import type { MolNode } from '@/types/retro';
 import { SUPPLIERS, querySupplier, resolveSupplierQuery } from '@/utils/suppliers';
-import { requestCas } from '@/utils/pubchem';
+import { casState, requestCas, requestCasMany } from '@/utils/pubchem';
 import { copyText } from '@/utils/clipboard';
+import {
+  ROUTE_COPY_MODES,
+  buildRouteCopy,
+  routeCopyOkMsg,
+  type RouteCopyInput,
+  type RouteCopyMode
+} from '@/utils/route-copy';
+import { buildMolIdents, molCasNote, type MolIdent } from '@/composables/useMolIdents';
 import MolView from '@/components/mol/MolView.vue';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
@@ -555,21 +563,56 @@ function rotate(): void {
   ElMessage.info(flipped.value ? '已切到逆合成方向（目标在左）' : '已切到合成方向（原料在左）');
 }
 
-/** Reaxys 的「Copy route」：把这条路线导成「反应式 SMILES」文本 */
-async function copyRoute(): Promise<void> {
-  const lines = [...route.value]
-    .sort((a, b) => b.step - a.step)
-    .map(
-      (s) =>
-        `${s.precursors.join('.')}>>${s.product}    # 第 ${s.step} 步 · ${(s.probability * 100).toFixed(1)}%`
-    );
-  if (!lines.length) {
+/**
+ * Reaxys 的「Copy route」—— 但**不止一种格式**。
+ *
+ * 🔴 原来只有一个按钮、一种输出（反应式 SMILES）。实际场景里要粘的东西五花八门：
+ *    粘进 RDKit 要反应式、粘进 Excel 要表格、粘进文献笔记要人读的清单、
+ *    建采购清单要起始物料的 CAS。所以做成下拉，格式在 `utils/route-copy.ts` 里生成。
+ *
+ * 🔴 CAS 是**尽力而为**的外部数据（PubChem，见 utils/pubchem.ts）：
+ *    查不到就在该处留空，**绝不能**写 "undefined" / "null" 字面量进要粘的文本里
+ *    （粘进 Excel 之后那一列就没法用了）。这条在 route-copy 的 `casOf` 里兜着。
+ */
+function copyInput(): RouteCopyInput {
+  const root = store.rootId ? store.nodes[store.rootId] : undefined;
+  return {
+    route: store.route,
+    target: root?.smiles,
+    targetName: casState(root?.smiles ?? '')?.name,
+    materials: store.startingMaterials.map((n) => ({ smiles: n.smiles, formula: n.formula })),
+    totalProbability: store.routeProbability,
+    casOf: (smiles) => casState(smiles)
+  };
+}
+
+/**
+ * 拉开「复制路线」菜单时，把这条路线上所有分子的 CAS 入队。
+ *
+ * 🔴 为什么是**开菜单**而不是**点复制时**：PubChem 是异步的 —— 点下去那一刻才入队，
+ *    剪贴板里那份文本必然还是没有 CAS 的（用户白等一次，还以为功能坏了）。
+ *    开菜单时入队，用户读菜单、挑格式的那几秒里 CAS 就到了，复制出来是全的。
+ *    与卡片复制 / 询价同一个口径：**用户露出意图才查**，页面一打开绝不查。
+ */
+function onCopyRouteMenu(visible: boolean): void {
+  if (!visible) return;
+  const root = store.rootId ? store.nodes[store.rootId] : undefined;
+  requestCasMany([
+    root?.smiles ?? '',
+    ...store.route.flatMap((s) => [s.product, ...s.precursors])
+  ]);
+}
+
+async function copyRouteAs(mode: RouteCopyMode): Promise<void> {
+  const input = copyInput();
+  const text = buildRouteCopy(mode, input);
+  if (!text) {
     ElMessage.warning('还没有采纳任何一步，没有路线可复制');
     return;
   }
   // 走全站唯一入口（见 utils/clipboard.ts）
-  await copyText(lines.join('\n'), {
-    okMsg: `已复制 ${lines.length} 步反应式 SMILES`,
+  await copyText(text, {
+    okMsg: routeCopyOkMsg(mode, input),
     failMsg: '浏览器拒绝了剪贴板访问'
   });
 }
@@ -643,7 +686,7 @@ const ICON_TITLE: Record<ActionKey, string> = {
   analysis: '查看这一步的工艺分析',
   buy: '标记为可购买原料',
   unbuy: '取消「可购买」标记',
-  copy: '复制 SMILES',
+  copy: '复制标识：SMILES / CAS / 名称 / 分子式 / 分子量 / PubChem CID',
   preview: '放大预览结构',
   remove: '删除这一支',
   query: '查价：选一家供应商（默认按 CAS 号检索）'
@@ -701,18 +744,48 @@ function onAction(key: ActionKey, card: RCard): void {
     case 'unbuy':
       store.markPurchased(card.id, false);
       break;
-    case 'copy':
-      void copyText(card.smiles, { okMsg: '已复制 SMILES' });
-      break;
     case 'preview':
       emit('preview', card.smiles);
       break;
     case 'remove':
       store.removeBranch(card.id);
       break;
-    // 🔴 'query' 不在这里：它是唯一一个**要下拉选人**的动作，模板里由
-    //    `el-dropdown` 包住按钮渲染（见 `onQuerySupplier`）。
+    // 🔴 'copy' 与 'query' 都不在这里：这两个要**先选一项**（复制哪种标识 /
+    //    找哪一家），模板里由 `el-dropdown` 包住按钮渲染
+    //    （见 `copyCardIdent` / `onQuerySupplier`）。
   }
+}
+
+/* ---------- 卡片上的「复制标识」（与左侧树的「复制」同一个口径） ---------- */
+
+/**
+ * 这张卡片能复制哪些标识。
+ *
+ * 🔴 这里用 `buildMolIdents`（纯函数）而**不是** `useMolIdents` composable ——
+ *    卡片是在 `v-for` 里画的，一个循环就是几十份订阅；composable 是给
+ *    「一行/一个弹窗一份」的场景用的。口径本身在 `composables/useMolIdents.ts`
+ *    里，两边共用同一份组装函数。
+ */
+function cardIdents(card: RCard): MolIdent[] {
+  return buildMolIdents(
+    { smiles: card.smiles, formula: card.node.formula, mw: card.node.mw },
+    casState(card.smiles)
+  );
+}
+
+/** 拉开菜单时才去查这个分子的 CAS（懒查；理由同 StepRow 的复制菜单） */
+function onCopyMenu(visible: boolean, smiles: string): void {
+  if (visible && smiles) requestCas(smiles);
+}
+
+/** 卡片上这次复制到的是哪一项（用户拉开菜单后 CAS 到达会自动重算） */
+function cardCasNote(card: RCard): string {
+  return molCasNote(true, casState(card.smiles));
+}
+
+async function copyCardIdent(key: string, card: RCard): Promise<void> {
+  const it = cardIdents(card).find((x) => x.key === key);
+  if (it) await copyText(it.value, { okMsg: `已复制 ${it.label}` });
 }
 
 /* ---------- 询价：选供应商 + 这次的检索标识（CAS 优先） ---------- */
@@ -825,7 +898,25 @@ const dirHint = computed(() =>
           <el-button size="small" :type="showLegend ? 'primary' : 'default'" plain @click="showLegend = !showLegend">
             图例
           </el-button>
-          <el-button size="small" @click="copyRoute">复制路线</el-button>
+          <el-dropdown trigger="click" @visible-change="onCopyRouteMenu">
+            <el-button size="small">
+              复制路线<span class="rcanvas__caret">▾</span>
+            </el-button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item
+                  v-for="m in ROUTE_COPY_MODES"
+                  :key="m.key"
+                  @click="copyRouteAs(m.key)"
+                >
+                  <span class="rcanvas__mode">
+                    <span class="rcanvas__mode-name">{{ m.label }}</span>
+                    <span class="rcanvas__mode-hint">{{ m.hint }}</span>
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
           <el-dropdown trigger="click">
             <el-button size="small">导出<span class="rcanvas__caret">▾</span></el-button>
             <template #dropdown>
@@ -916,6 +1007,8 @@ const dirHint = computed(() =>
               :key="c.id"
               class="rcanvas__card"
               :class="[`is-${c.kind}`, { 'is-active': store.activeNodeId === c.id }]"
+              :data-smiles="c.smiles"
+              :data-kind="c.kind"
               :style="{ left: c.x + 'px', top: c.y + 'px', width: CARD_W + 'px', height: CARD_H + 'px' }"
             >
               <!-- 目标产物自己带个牌子：蓝色高亮框说明"这是重点"，牌子说明"这是目标"。
@@ -931,14 +1024,57 @@ const dirHint = computed(() =>
 
               <!-- 卡片底部动作图标行 -->
               <div class="rcanvas__acts">
+                <!-- 🔴 分支顺序即优先级，且必须写成**一条 if/else-if/else 链**：
+                     这里原先是两个独立 `v-if`（copy 一个、query 一个）后面跟一个 `v-else`，
+                     `v-else` 挂的是**最后那个** `v-if`（query）⇒ `a==='copy'` 时
+                     query 的 v-if 为假、`v-else` 生效，于是页面上**同时出现**
+                     「复制下拉」和「复制按钮」两个复制图标。
+                     Vue 只认紧邻的 v-else，中间隔了别的元素就彻底失效（这里正是）。 -->
                 <template v-for="a in actionsFor(c)" :key="a">
-                  <!-- 🔴 「询价」是唯一需要**先选人**的动作 ⇒ 单独走下拉。
+                  <!-- 「复制」：要**先选复制哪一种标识** ⇒ 走下拉。
+                       原来只有一个 SMILES，用户在画布里想拿 CAS 只能挪到左侧树去复制；
+                       口径与树的「复制」完全一致（composables/useMolIdents）。 -->
+                  <el-dropdown
+                    v-if="a === 'copy'"
+                    trigger="click"
+                    size="small"
+                    placement="top-start"
+                    @command="(k: string) => copyCardIdent(k, c)"
+                    @visible-change="(v: boolean) => onCopyMenu(v, c.smiles)"
+                  >
+                    <button
+                      type="button"
+                      class="rcanvas__act"
+                      :title="ICON_TITLE.copy"
+                      :aria-label="ICON_TITLE.copy"
+                    >
+                      <ActIcon :d="ICONS.copy" />
+                    </button>
+                    <template #dropdown>
+                      <el-dropdown-menu>
+                        <el-dropdown-item v-for="it in cardIdents(c)" :key="it.key" :command="it.key">
+                          <span class="rcanvas__id">
+                            <span class="rcanvas__id-name">{{ it.label }}</span>
+                            <span class="rcanvas__id-value">{{ it.value }}</span>
+                          </span>
+                        </el-dropdown-item>
+                        <el-dropdown-item v-if="cardCasNote(c)" disabled>
+                          {{ cardCasNote(c) }}
+                        </el-dropdown-item>
+                      </el-dropdown-menu>
+                    </template>
+                  </el-dropdown>
+
+                  <!-- 🔴 「询价」要**先选人** ⇒ 同样走下拉。
                        `el-dropdown` 必须在按钮**外面**：整个图标才是热区
                        （放里面只有图标中心那点区域管用，用户以为按钮坏了）。
                        菜单顺带给出「这家这次用 CAS 还是 SMILES」——
-                       否则点完跳过去搜不到，用户只会以为是这家没货。 -->
+                       否则点完跳过去搜不到，用户只会以为是这家没货。
+                       🔴 必须是 `v-else-if`（紧邻上一个 `v-if`），不能另起一个 `v-if`：
+                          两个独立 v-if 后面跟 `v-else` ⇒ v-else 归最后那个 v-if 管，
+                          `a==='copy'` 时会**额外**渲染出一个复制按钮（两个复制图标）。 -->
                   <el-dropdown
-                    v-if="a === 'query'"
+                    v-else-if="a === 'query'"
                     trigger="click"
                     size="small"
                     placement="top-start"
@@ -1425,6 +1561,53 @@ const dirHint = computed(() =>
   color: var(--rw-text-3);
   font-size: 11px;
   line-height: 1.5;
+}
+
+/* 「复制路线」的格式菜单：标题 + 一行说明（两行排布，宽度给够否则说明被压成竖排） */
+.rcanvas__mode {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 250px;
+  padding: 2px 0;
+}
+
+.rcanvas__mode-name {
+  color: var(--rw-text);
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+
+.rcanvas__mode-hint {
+  color: var(--rw-text-3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+/* 复制标识菜单：值紧跟标签，不要被 `margin-left:auto` 甩到最右
+   （询价那边需要靠右对齐是因为值短、名字长；标识值长短不一，靠右会散）。
+   scoped 样式对 `#dropdown` 插槽**有效** —— 插槽内容由本组件编译，
+   `data-v` 属性照常带上，teleport 只搬 DOM 不改属性（`.rcanvas__sup` 就是这么生效的）。 */
+.rcanvas__id {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 230px;
+}
+
+.rcanvas__id-name {
+  flex: 0 0 auto;
+  color: var(--rw-text);
+}
+
+.rcanvas__id-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--rw-font-mono);
+  font-size: 11px;
+  color: var(--rw-text-3);
 }
 
 .rcanvas__act {

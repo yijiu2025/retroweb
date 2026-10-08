@@ -5,13 +5,12 @@
  * 「展开」只发**一次** /api/predict；采纳候选后前体各新增一行（depth+1，缩进）。
  * 折叠时子树用 v-if 彻底卸载，避免大 SVG 撑爆 DOM。
  */
-import { computed, ref, watch } from 'vue';
+import { computed } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
 import type { MolNode } from '@/types/retro';
 import { SUPPLIERS, querySupplier, resolveSupplierQuery } from '@/utils/suppliers';
-import { casState, requestCas } from '@/utils/pubchem';
-import { copyText } from '@/utils/clipboard';
+import { useMolIdents } from '@/composables/useMolIdents';
 import MolView from '@/components/mol/MolView.vue';
 import CandidatePanel from './CandidatePanel.vue';
 import JobProgress from './JobProgress.vue';
@@ -88,29 +87,17 @@ function isDefaultSupplier(supplierId: string): boolean {
 // ---------- 复制标识（SMILES / CAS / 其他 id） ----------
 
 /**
- * 可供复制的一行标识。
- * `value` 就是要写进剪贴板的原文（复制时不做任何加工，避免"看着一样、粘出来不一样"）。
+ * 标识列表的口径在 `composables/useMolIdents`（全站唯一一份）——
+ * 路线网络的卡片复制和「眼睛」预览弹窗都走它，三处不会各说各话。
+ * 🔴 CAS 只在**用户真的拉开这个菜单**时才去查（`askCas`），一挂载就查的话
+ *    一棵几十个节点的树会瞬间把 PubChem 队列塞满，而其中绝大多数行的 CAS 根本没人看。
  */
-interface IdItem {
-  key: string;
-  label: string;
-  value: string;
-}
-
-/** PubChem 查到的 CAS / CID / 名称（`undefined`=没查、`null`=查过没有，见 utils/pubchem.ts） */
-const cas = computed(() => casState(node.value?.smiles ?? ''));
-/**
- * 🔴 CAS 只在**用户真的拉开这个菜单**时才去查（`@visible-change`）。
- *    一挂载就查的话，一棵几十个节点的树会瞬间把 PubChem 队列塞满 ——
- *    而其中绝大多数行的 CAS 根本没人看（§19 的"懒枚举"同一个道理）。
- */
-const casAsked = ref(false);
-
-watch(
-  () => node.value?.smiles ?? '',
-  (s) => {
-    if (casAsked.value && s) requestCas(s);
-  }
+const { idents: idItems, casNote, askCas, copyIdent: copyId } = useMolIdents(
+  () => ({
+    smiles: node.value?.smiles ?? '',
+    formula: node.value?.formula,
+    mw: node.value?.mw
+  })
 );
 
 /**
@@ -121,39 +108,7 @@ watch(
  *    （用户刚打开菜单、CAS 其实马上就到，只是还没到）—— 那是**显示错**，不是"没查到"。
  */
 function onCopyMenu(visible: boolean): void {
-  if (!visible) return;
-  casAsked.value = true;
-  const s = node.value?.smiles;
-  if (s) requestCas(s);
-}
-
-/** 菜单项：有值的才列出来（CAS 那类"查过没有"的，下面单独给一条禁用项说明原因） */
-const idItems = computed<IdItem[]>(() => {
-  const n = node.value;
-  if (!n) return [];
-  const out: IdItem[] = [{ key: 'smiles', label: 'SMILES', value: n.smiles }];
-  if (n.formula) out.push({ key: 'formula', label: '分子式', value: n.formula });
-  if (n.mw) out.push({ key: 'mw', label: '分子量', value: String(n.mw) });
-  const c = cas.value;
-  if (c) {
-    out.push({ key: 'cas', label: 'CAS', value: c.cas });
-    if (c.name) out.push({ key: 'name', label: '名称', value: c.name });
-    if (c.cid) out.push({ key: 'cid', label: 'PubChem CID', value: String(c.cid) });
-  }
-  return out;
-});
-
-/** CAS 为什么没出现在列表里 —— 只在用户打开过菜单（真的去查了）之后才有意义 */
-const casNote = computed(() => {
-  if (!casAsked.value) return '';
-  if (cas.value === undefined) return 'CAS 查询中…';
-  if (cas.value === null) return 'CAS：PubChem 未收录';
-  return '';
-});
-
-async function copyId(key: string): Promise<void> {
-  const it = idItems.value.find((x) => x.key === key);
-  if (it) await copyText(it.value, { okMsg: `已复制 ${it.label}` });
+  if (visible) askCas();
 }
 </script>
 

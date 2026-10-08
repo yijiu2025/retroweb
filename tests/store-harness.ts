@@ -7,6 +7,8 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { effectScope } from 'vue';
 import { reactionIdFor, useWorkspaceStore } from '../src/stores/workspace';
+import { buildRouteCopy, routeCopyOkMsg } from '../src/utils/route-copy';
+import { buildMolIdents, molCasNote } from '../src/composables/useMolIdents';
 import type { MolNode, Reaction } from '../src/types/retro';
 
 // ---- localStorage shim：必须在 useWorkspaceStore() 之前装好（store 会在 setup 里读历史/会话）
@@ -335,6 +337,79 @@ scope.run(() => {
     JSON.stringify(store.schemes.find((s) => s.id === netA)?.choices) === beforeNetA
   );
   check('分叉后的当前网络不分支（单前体路线）', store.networkStats.branches === 0, String(store.networkStats.branches));
+
+  // ── 复制格式：直接调 utils/route-copy 的真实实现（不复制逻辑）──────────
+  console.log('\n=== 15) 复制路线：多格式生成（真调 utils/route-copy） ===');
+  const CAS_MAP: Record<string, { cas: string; cid: number; name: string }> = {
+    [TARGET]: { cas: '50-78-2', cid: 2244, name: 'Aspirin' },
+    [A]: { cas: '108-24-7', cid: 6507, name: 'Acetic anhydride' }
+    // B / C 故意不给 ⇒ 走"没查到"分支
+  };
+  const copyIn = {
+    route: store.route,
+    target: TARGET,
+    materials: store.startingMaterials.map((n) => ({ smiles: n.smiles, formula: n.formula })),
+    totalProbability: store.routeProbability,
+    casOf: (s: string) => CAS_MAP[s] ?? null,
+    at: '2026-10-08T00:00:00.000Z'
+  };
+
+  const rxnText = buildRouteCopy('rxn', copyIn);
+  check('rxn：一行一步且含 >>', rxnText.split('\n').length === store.route.length && rxnText.includes('>>'));
+  check('rxn：注释里带 CAS 查到的名称', rxnText.includes('Aspirin'), rxnText.split('\n')[0]);
+  check('🔴 查不到 CAS 也不能漏出 undefined/null 字面量', !/undefined|null/.test(rxnText), rxnText);
+
+  const stepsText = buildRouteCopy('steps', copyIn);
+  check('steps：有表头行', stepsText.includes('目标：') && stepsText.includes('总概率'));
+  check('steps：逐步列出前体', stepsText.includes('前体 1：'));
+  check('steps：CAS 紧跟在产物后面', /产物：.*CAS 50-78-2/.test(stepsText), stepsText.split('\n')[2]);
+
+  const smiText = buildRouteCopy('smiles', copyIn);
+  check('smiles：只列产物、每行一个', smiText.split('\n').length === store.route.length && !smiText.includes('>>'));
+
+  const tsv = buildRouteCopy('table', copyIn);
+  const tsvHead = tsv.split('\n')[0];
+  check('table：表头含 CAS 与概率列', tsvHead.includes('CAS') && tsvHead.includes('概率'), tsvHead);
+  check('table：行数 = 步数 + 表头', tsv.split('\n').length === store.route.length + 1);
+  check('🔴 table：列数一致（没被前体里的分隔符打乱）', new Set(tsv.split('\n').slice(1).map((l) => l.split('\t').length)).size === 1, tsv);
+
+  const csv = buildRouteCopy('csv', copyIn);
+  check('csv：字段带引号', csv.split('\n')[0].startsWith('"步骤"'), csv.split('\n')[0]);
+  check('csv：产物含引号时被转义成两个', !buildRouteCopy('csv', { ...copyIn, route: [{ ...store.route[0], product: 'a"b' }] }).includes('a"b'));
+
+  const routeJson = JSON.parse(buildRouteCopy('json', copyIn)) as {
+    steps: Array<{ cas: string | null; name: string | null; cid: number | null }>;
+    startingMaterials: Array<{ cas: string | null }>;
+    disclaimer: string;
+  };
+  check('json：解析得回且带免责说明', !!routeJson.disclaimer);
+  check('json：目标那步带上了 CAS/名称/CID', routeJson.steps.some((s) => s.cas === '50-78-2' && s.name === 'Aspirin' && s.cid === 2244));
+  check('🔴 json：查不到的一律 null（不是字符串 "null"）', routeJson.steps.every((s) => s.cas === null || typeof s.cas === 'string'));
+
+  const mats = buildRouteCopy('materials', copyIn);
+  check('materials：行数 = 起始物料数', mats.split('\n').length === copyIn.materials.length, mats);
+  // 断言按实际第一行取值，不写死是哪一行（换条路线起始物料就变）
+  const mrow = mats.split('\n')[0].split('\t');
+  check('materials：四列（SMILES/分子式/CAS/名称）', mrow.length === 4, JSON.stringify(mrow));
+  check('materials：第 1 列就是起始物料 SMILES', copyIn.materials.some((m) => m.smiles === mrow[0]), mrow[0]);
+  check('🔴 materials：查不到 CAS 的行留空而不是填 null', !/null|undefined/.test(mats), mats);
+
+  check('🔴 空路线返回空串（不编占位内容）', buildRouteCopy('rxn', { ...copyIn, route: [] }) === '');
+  check('每种模式的 okMsg 都量化了步数', routeCopyOkMsg('rxn', copyIn).includes(String(store.route.length)));
+
+  console.log('\n=== 16) 标识列表口径（真调 composables/useMolIdents 的纯函数） ===');
+  const plain = buildMolIdents({ smiles: TARGET, formula: 'C9H8O4', mw: 180.16 }, CAS_MAP[TARGET]);
+  check('有 CAS 时列全六项', plain.length === 6, String(plain.map((i) => i.key).join(',')));
+  check('🔴 顺序固定：SMILES 优先，CAS/名称/CID 在后', plain.map((i) => i.key).join(',') === 'smiles,formula,mw,cas,name,cid', plain.map((i) => i.key).join(','));
+  check('SMILES 标了 primary（预览弹窗靠它加粗）', plain[0].primary === true);
+  check('没有 CAS 时只剩三项，且不出现空行', buildMolIdents({ smiles: TARGET }, null).length === 1);
+  check('没有 CAS 时也不漏 undefined', !buildMolIdents({ smiles: TARGET }, undefined).some((i) => /undefined/.test(i.value)));
+  check('🔴 空 SMILES 返回空数组', buildMolIdents({ smiles: '' }, CAS_MAP[TARGET]).length === 0);
+  check('mw 为 0 时不列（0 分子量不是真值）', !buildMolIdents({ smiles: 'C', mw: 0 }, null).some((i) => i.key === 'mw'));
+  check('casNote：没要过 = 空串', molCasNote(false, null) === '');
+  check('casNote：查过没有要说清是"未收录"', molCasNote(true, null) === 'CAS：PubChem 未收录');
+  check('casNote：查询中', molCasNote(true, undefined) === 'CAS 查询中…');
+  check('casNote：查到了就不用解释', molCasNote(true, CAS_MAP[TARGET]) === '');
 
   console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
 });
