@@ -49,6 +49,27 @@ export interface ModelServiceInfo {
   source?: 'http' | 'file' | 'none' | string;
 }
 
+/**
+ * 正向模型（「可行性过滤」的判据）。
+ *
+ * 🔴 它**不是**搜索主模型，所以不在 `models` 数组里 —— 否则会被渲染成一格可选的
+ *    "预测模型"，而选中它去跑逆合成必然失败。后端把它单独放在 `forward` 字段。
+ *
+ * 状态取值与 `ModelState` 同构（unavailable / idle / loading / ready / failed）。
+ */
+export interface ForwardModelInfo {
+  key: string;
+  label: string;
+  exists: boolean;
+  state: ModelState;
+  size_bytes?: number;
+  path?: string;
+  /** 加载失败原因（`state === 'failed'` 时有意义） */
+  error?: string;
+  /** 上次加载完成耗时（秒） */
+  load_seconds?: number | null;
+}
+
 export interface ModelsResponse {
   ok: boolean;
   models: RetroModel[];
@@ -56,6 +77,11 @@ export interface ModelsResponse {
   service?: ModelServiceInfo;
   /** 模型服务当前加载的模型 key（没加载为空串） */
   current?: string;
+  /**
+   * 正向模型（可行性过滤用）。老后端 / 没配这个模型时为 `null` 或缺失。
+   * 前端必须容忍缺失 —— 升级前端后没重启后端是常态。
+   */
+  forward?: ForwardModelInfo | null;
 }
 
 /** /api/parse 成功 */
@@ -150,6 +176,22 @@ export interface SearchOk {
   required_materials: string[];
   filtered_out: number;
   value_fn: string;
+  /**
+   * 本次搜索是否开了「可行性过滤」。
+   *
+   * 🔴 必须由后端回传、不能拿「用户在界面上勾了」反推：任务可能是恢复出来的、
+   *    或在勾选被改掉之后才返回结果 —— 那时用界面当前值标注历史结果就是错的。
+   */
+  forward_filter?: boolean;
+  /** 开过滤时用的 top-k（没开为 null） */
+  forward_top_k?: number | null;
+  /**
+   * 过滤通过率：候选反应里通过正向校验的比例（没开为 null）。
+   *
+   * 它是把「过滤真的在起作用」和「过滤器把一切都放行了（等于没开）」区分开的
+   * 唯一信号 —— 只比较路线条数看不出来。
+   */
+  acceptance_rate?: number | null;
   stats: {
     or_nodes: number;
     and_nodes: number;
@@ -187,6 +229,26 @@ export interface ModelServiceActionOk {
   action?: string;
   model?: string;
   service?: ModelServiceInfo | { ok?: boolean; stopped?: boolean; forced?: boolean };
+  error?: string;
+}
+
+/**
+ * `POST /api/forward/load`（加载正向模型）的返回。
+ *
+ * 语义与 `LoadModelOk` 一致：**已受理**，不是"已就绪"。
+ * 🔴 但它**不需要重启模型服务**（正向模型是纯 transformer，构造时不 spawn 规则
+ *    子进程 ⇒ 可热挂），所以没有 `restarted` 字段，也不会把逆向模型踢掉。
+ */
+export interface LoadForwardOk {
+  ok: boolean;
+  /** 实际开始加载的正向模型 key */
+  key?: string;
+  /** true = 已受理，加载在后台进行 */
+  started?: boolean;
+  /** true = 本来就在加载 / 已就绪同一个，没有重复加载 */
+  already?: boolean;
+  /** 受理那一刻的状态 */
+  state?: ModelState;
   error?: string;
 }
 
@@ -936,6 +998,15 @@ export interface RunParams {
   startingMaterials: string[];
   /** 自动拆分的调用预算（防跑飞） */
   budgetCalls: number;
+  /**
+   * 「可行性过滤」：用正向模型当判据，把「前体 → 产物」走不通的候选反应扔掉。
+   *
+   * 🔴 **只在多步拆分（kind=search）时生效** —— 手动单步「展开」走的是 `/api/predict`，
+   *    不经过搜索，也就没有"过滤搜索分支"这回事。开启前必须先加载正向模型。
+   */
+  forwardFilter: boolean;
+  /** 正向模型保留的 top-k（越小过滤越狠；后端夹到 1~50） */
+  forwardTopK: number;
 }
 
 /**

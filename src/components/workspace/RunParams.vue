@@ -109,6 +109,58 @@ function onModelAction(): void {
   else void store.warmModel();
 }
 
+// ---------- 可行性过滤（正向模型） ----------
+// 🔴 「可行性过滤」= 拿正向模型把逆向模型给的每条候选反应复核一遍（前体 → 产物 是否
+//    命中正向 top-k）。它不是"另一个预测模型"，而是**判别器** ⇒ 只出现在这一行，
+//    不进「预测模型」下拉（那个下拉里每一行都必须能当搜索主模型，混进判别器就会出现
+//    「选中它去跑逆合成」这种必然失败的组合）。也不影响手动单步「展开」—— 那一步不
+//    经过搜索，没有"过滤搜索分支"这回事。
+const fwdStateText = computed(() => {
+  const st = store.forwardModel?.state;
+  return st ? MODEL_STATE_TEXT[st] : '不可用';
+});
+
+const fwdTagType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
+  const st = store.forwardModel?.state;
+  if (st === 'ready') return 'success';
+  if (st === 'loading') return 'warning';
+  if (st === 'failed') return 'danger';
+  return 'info';
+});
+
+const fwdDetail = computed(() => {
+  const f = store.forwardModel;
+  // 老后端不返回 forward ⇒ 说清是版本问题，别让人以为"这个功能不存在"
+  if (!f) return '后端未提供正向模型信息（可能还在跑旧版本，重启后端服务后即可）';
+  switch (f.state) {
+    case 'unavailable':
+      return '模型文件不在 models/ 目录里 —— 跑 scripts/download_model.py forward_pistachio 下载（约 835 MB）';
+    case 'loading':
+      return '正在加载正向模型（约 1 GB 内存，几十秒）· 期间多步拆分照常可用，只是不带过滤';
+    case 'failed':
+      return f.error || '正向模型加载失败，详见模型服务窗口的日志';
+    case 'ready':
+      return `已就绪${f.load_seconds ? ` · 用时 ${Math.round(f.load_seconds)} 秒` : ''} · 开启后每条候选反应都要过一遍正向校验`;
+    default:
+      return store.modelReady
+        ? '点「加载正向模型」后即可启用（约 1 GB 内存，几十秒）'
+        : '先加载预测模型，再点「加载正向模型」';
+  }
+});
+
+/** 只有当"文件在、但还没就绪"时才给加载按钮：文件缺了点了必然失败，不如直接给下载指引 */
+const showForwardLoad = computed(() => {
+  const st = store.forwardModel?.state;
+  return !!st && st !== 'ready' && st !== 'unavailable';
+});
+
+/** 「拆分约束」组的折叠摘要：把过滤开关也算进去，收起时也能看出开没开 */
+const constraintMeta = computed(
+  () =>
+    `深度 ${store.params.maxDepth} · 预算 ${store.params.budgetCalls}` +
+    (store.params.forwardFilter ? ' · 过滤开' : '')
+);
+
 // ---------- 大模型状态（区分「填了」和「真的能用」） ----------
 const llmProbe = computed(() => store.llmStatus?.probe);
 
@@ -732,9 +784,7 @@ onMounted(() => {
             拆分约束
             <span class="params__scope-tag">多步拆分</span>
           </span>
-          <span class="params__group-meta">
-            深度 {{ store.params.maxDepth }} · 预算 {{ store.params.budgetCalls }}
-          </span>
+          <span class="params__group-meta">{{ constraintMeta }}</span>
         </summary>
         <div class="params__group-body">
           <!-- 这一句是必须的：单步「展开」不受任何约束，用户很容易以为把深度调小
@@ -763,6 +813,56 @@ onMounted(() => {
           <div class="params__row">
             <label>调用预算（次）</label>
             <el-input-number v-model="store.params.budgetCalls" :min="1" :max="200" size="small" />
+          </div>
+
+          <!-- 可行性过滤：用正向模型给每条候选反应复核一遍（删掉走不通的幻觉前体） -->
+          <div class="params__row params__row--col params__fwd">
+            <div class="params__fwd-head">
+              <label>
+                可行性过滤
+                <el-tooltip
+                  content="逆向模型爱给幻觉前体（化学上根本走不通的前体组合），它们会白白吃掉调用预算。开启后每条候选反应都要用正向模型『前体 → 产物』复核一次，只有产物命中正向 top-k 的才保留。只在多步拆分时生效"
+                  placement="top"
+                >
+                  <span class="params__hint">?</span>
+                </el-tooltip>
+              </label>
+              <!-- 🔴 已开着时**不做 disabled**：否则正向模型一旦不可用，用户连关都关不掉，
+                   只能去改历史任务。`:disabled` 只拦「从关到开」。 -->
+              <el-switch
+                v-model="store.params.forwardFilter"
+                size="small"
+                :disabled="!store.canUseForwardFilter && !store.params.forwardFilter"
+              />
+            </div>
+            <div class="params__fwd-state">
+              <div class="params__fwd-line">
+                <el-tag size="small" :type="fwdTagType" effect="light">{{ fwdStateText }}</el-tag>
+                <el-button
+                  v-if="showForwardLoad"
+                  size="small"
+                  text
+                  type="primary"
+                  :loading="store.forwardLoadingKey !== null || store.forwardBusy"
+                  @click="void store.loadForward()"
+                >
+                  {{ store.forwardBusy ? '加载中' : '加载正向模型' }}
+                </el-button>
+              </div>
+              <span class="params__model-detail">{{ fwdDetail }}</span>
+            </div>
+            <div v-if="store.params.forwardFilter" class="params__row">
+              <label>
+                候选保留 Top-K
+                <el-tooltip
+                  content="正向模型只保留排名前 K 的产物。K 越小过滤越狠（误杀真反应的几率也越大）：5 是官方评测常用值，1 会砍掉大量可行路线"
+                  placement="top"
+                >
+                  <span class="params__hint">?</span>
+                </el-tooltip>
+              </label>
+              <el-input-number v-model="store.params.forwardTopK" :min="1" :max="50" size="small" />
+            </div>
           </div>
 
           <div class="params__row params__row--col">
@@ -1455,6 +1555,43 @@ onMounted(() => {
 
 .params__model-chip.is-unavailable {
   opacity: 0.65;
+}
+
+/* ---------- 可行性过滤（正向模型） ---------- */
+/* 开关跟标题同行（右对齐），状态标签与加载按钮在下一行、说明文字再下一行。
+   竖排而不是横排：320px 侧栏里「标签 + 按钮 + 一段说明」横着放会把说明压成
+   一个字一行的竖条（本项目在标题行上踩过同一个坑，见「分析模块」注释）。 */
+.params__fwd-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.params__fwd-head > label {
+  font-size: 12.5px;
+  color: var(--rw-text-2);
+  font-weight: 500;
+  white-space: nowrap;
+  letter-spacing: 0.2px;
+}
+
+.params__fwd-state {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+/* 标签 + 按钮同行；两者都不参与收缩，免得被挤压变形 */
+.params__fwd-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.params__fwd-line > * {
+  flex: 0 0 auto;
 }
 
 .params__llm {

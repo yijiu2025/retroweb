@@ -622,6 +622,16 @@ const srv: {
   elapsed: number | null;
   loadSeconds: number | null;
   models: FakeModel[];
+  /** 正向模型（可行性过滤判据）的服务端状态；`present=false` 模拟老后端（不给该字段） */
+  fwd: {
+    present: boolean;
+    key: string;
+    state: string;
+    error: string;
+    loadSeconds: number | null;
+  };
+  /** 记录最后一次 POST /jobs 的请求体（用来验开关有没有真的透传下去） */
+  lastJobBody: Record<string, unknown> | null;
   hits: string[];
   fail: boolean;
 } = {
@@ -634,6 +644,8 @@ const srv: {
     { key: 'pistachio', label: 'Pistachio（主推，性能最强）', exists: true, state: 'idle', is_current: false },
     { key: 'uspto50k', label: 'USPTO-50K（基准模型，较弱）', exists: true, state: 'idle', is_current: false }
   ],
+  fwd: { present: true, key: 'forward_pistachio', state: 'idle', error: '', loadSeconds: null },
+  lastJobBody: null,
   hits: [],
   fail: false
 };
@@ -658,7 +670,18 @@ function snapshot(): unknown {
     //    `ref.value = 同一个引用` 因 Object.is 相等而**不触发** reactivity，
     //    于是依赖它的 computed（modelReady / currentModel）永远停在旧值 ——
     //    这是夹具的假象，不是产品的 bug（第一版就是这么被骗了两条红）。
-    models: srv.models.map((m) => ({ ...m }))
+    models: srv.models.map((m) => ({ ...m })),
+    // 正向模型：**同样每次克隆**（理由同上）；老后端整个字段都没有 ⇒ 用 present 模拟。
+    forward: srv.fwd.present
+      ? {
+          key: srv.fwd.key,
+          label: 'ForwardChimera（Pistachio 预训练）',
+          exists: srv.fwd.state !== 'unavailable',
+          state: srv.fwd.state,
+          error: srv.fwd.error,
+          load_seconds: srv.fwd.loadSeconds
+        }
+      : undefined
   };
 }
 
@@ -680,6 +703,24 @@ const adapter = async (config: { url?: string; method?: string; data?: unknown }
   // GET /models
   if (url.endsWith('/models')) {
     return { data: snapshot(), status: 200, statusText: 'OK', headers: {}, config };
+  }
+  // POST /forward/load —— 立刻受理，转入 loading。**不动 service**（正向模型可热挂，
+  // 不需要重启模型服务）—— 这一点正是本组用例要盯住的差别。
+  //
+  // 🔴 这条必须排在下面 `/load` 那条**前面**：`'/forward/load'.endsWith('/load')` 为真，
+  //    顺序反了的话这条永远不执行、请求被 `/load` 那条吞掉（夹具把它当成「重载逆向模型」：
+  //    service 被切到 loading、forward 一直 idle），表现为「热挂却把服务重启了」的
+  //    一片假红 —— 是夹具的坑，不是产品的 bug。
+  if (url.endsWith('/forward/load')) {
+    srv.fwd.state = 'loading';
+    srv.fwd.error = '';
+    return {
+      data: { ok: true, started: true, key: srv.fwd.key, state: 'loading' },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config
+    };
   }
   // POST /load —— 立刻返回"已受理"，并把服务端状态切到 loading
   if (url.endsWith('/load')) {
@@ -707,11 +748,17 @@ const adapter = async (config: { url?: string; method?: string; data?: unknown }
       m.is_current = false;
       m.state = 'idle';
     }
+    // 服务停了 ⇒ 内存里那份正向模型也一并没了（真实 model_client.catalog 同口径）
+    srv.fwd.state = 'idle';
+    srv.fwd.loadSeconds = null;
     return { data: { ok: true, action: 'stop' }, status: 200, statusText: 'OK', headers: {}, config };
   }
   // POST /jobs —— 建搜索任务（立刻返回 job_id，与真实后端一致）
   if (url.endsWith('/jobs')) {
     searchJob.polls = 0;
+    srv.lastJobBody = (typeof config.data === 'string'
+      ? JSON.parse(config.data)
+      : config.data) as Record<string, unknown>;
     return { data: { ok: true, job_id: searchJob.id }, status: 200, statusText: 'OK', headers: {}, config };
   }
   // GET /jobs/<id>?since=N —— 第一次轮询就交卷：succeeded + **0 条路线**
@@ -897,6 +944,137 @@ void (async () => {
   check('autoRunning 已复位（否则停止按钮会一直挂着）', store.autoRunning === false);
   check('进度条预算仍是界面的 budgetCalls', store.autoProgress.budget === store.params.budgetCalls,
     `${store.autoProgress.budget} vs ${store.params.budgetCalls}`);
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 18.10~18.15 正向模型（「可行性过滤」的判据）
+  // ═══════════════════════════════════════════════════════════════════════
+  // 为什么值得单独一组：正向模型与逆向模型的生命周期**不同** —— 它可以在模型服务的
+  // HTTP 起来之后热挂（构造时不 spawn 规则子进程）。于是多出三类只有它会踩的坑：
+  //   ① 热挂期间 `service.state` 已经是 ready、`models` 也全是 ready，**只看这两者的
+  //      轮询会立刻停** ⇒ 按钮永远停在"加载中"；
+  //   ② 它不该被混进「预测模型」下拉（那是能当搜索主模型的清单，它是判别器）；
+  //   ③ 开关开着但没有判据时要**拦在提交之前**，不能等搜索跑完才失败。
+  console.log('\n=== 18.10) 正向模型：状态、热挂与开关 ===');
+
+  // ── 18.10a 回到「服务就绪」并把正向模型置为未加载 ─────────────────────
+  srv.fail = false;
+  srv.svcState = 'ready';
+  srv.cur = 'pistachio';
+  srv.loadSeconds = 40;
+  srv.models.forEach((m) => (m.state = m.key === 'pistachio' ? 'ready' : 'idle'));
+  srv.fwd = { present: true, key: 'forward_pistachio', state: 'idle', error: '', loadSeconds: null };
+  await store.loadModels();
+  check('正向模型被单独带上来（不在 models 里）',
+    store.forwardModel?.key === 'forward_pistachio', JSON.stringify(store.forwardModel));
+  check('🔴 正向模型**不混进**「预测模型」清单（混进去会冒出一格必然失败的选项）',
+    !store.models.some((m) => m.key === 'forward_pistachio'),
+    JSON.stringify(store.models.map((m) => m.key)));
+  check('未加载 ⇒ 不能开可行性过滤', store.canUseForwardFilter === false);
+  check('未加载 ⇒ forwardBusy = false', store.forwardBusy === false);
+
+  // ── 18.11 老后端不返回 forward：不许崩，按「没有正向模型」渲染 ──────────
+  srv.fwd.present = false;
+  await store.loadModels();
+  check('🔴 老后端缺 forward 字段 ⇒ 模型为 null（不是崩、也不是"就绪"）',
+    store.forwardModel === null, JSON.stringify(store.forwardModel));
+  check('缺字段时开关也不可用', store.canUseForwardFilter === false);
+  srv.fwd.present = true;
+  srv.fwd.state = 'ready';
+  srv.fwd.loadSeconds = 21.4;
+  await store.loadModels();
+  check('主模型 + 正向模型都就绪 ⇒ 可以开过滤',
+    store.canUseForwardFilter === true,
+    JSON.stringify({ fwd: store.forwardModel?.state, ready: store.modelReady }));
+  check('正向模型耗时能带出来', store.forwardModel?.load_seconds === 21.4);
+
+  // ── 18.12 热挂正向模型：**不能重启模型服务** ──────────────────────────
+  // 这是它与「换逆向模型」的核心差别：换逆向模型要 stop→start（那会顺带把已加载的
+  // 模型全丢一遍），正向模型只是挂上去。用 pid / service.state 两个可观测的痕迹盯住。
+  srv.fwd.state = 'idle';
+  await store.loadModels();
+  srv.hits.length = 0;
+  await store.loadForward();
+  check('POST /forward/load 发出去了', srv.hits.some((u) => u.endsWith('/forward/load')), srv.hits.join(' '));
+  check('🔴 加载正向模型**没有**停/重启模型服务（也没顺手重载逆向模型）',
+    !srv.hits.some((u) => /\/model-service\/(stop|restart)$/.test(u)) &&
+      // 🔴 这里不能写 `endsWith('/load')`：`/forward/load` 也以 `/load` 结尾，
+      //    那样写等于「请求里出现了 forward/load 就判失败」，本用例必红。
+      //    只排除**逆向模型**那条重载（loadModel → '/load'）。
+      !srv.hits.some((u) => u === '/load'),
+    srv.hits.join(' '));
+  check('受理后 forward.state = loading', store.forwardModel?.state === 'loading',
+    JSON.stringify(store.forwardModel));
+  check('受理后逆向模型**照常就绪**（没被踢掉）', store.modelReady === true);
+
+  // ── 18.13 🔴 正向模型加载中，轮询必须继续（旧口径会立刻停） ─────────────
+  // 这一刻服务端的样子：service.state=ready、models 全是 ready、只有 forward 在 loading。
+  // 只按「service + models」判忙的话，syncModelsPolling 会立刻 stopModelsPolling()，
+  // 界面就永远停在"加载中"（用户只能手动刷新页面）。
+  const fwdBefore = srv.hits.filter((u) => u.endsWith('/models')).length;
+  await sleep(3400);
+  const fwdAfter = srv.hits.filter((u) => u.endsWith('/models')).length;
+  check(
+    '🔴 正向模型热挂期间仍每 1.5 秒重读 /api/models（漏了它就永远停在"加载中"）',
+    fwdAfter - fwdBefore >= 2,
+    `${fwdBefore} → ${fwdAfter}`
+  );
+
+  // ── 18.14 挂好之后轮询自己停 ─────────────────────────────────────────
+  srv.fwd.state = 'ready';
+  srv.fwd.loadSeconds = 19.8;
+  await sleep(1800);
+  check('正向模型就绪', store.forwardModel?.state === 'ready');
+  check('就绪后可开过滤', store.canUseForwardFilter === true);
+  const fwdSettled = srv.hits.filter((u) => u.endsWith('/models')).length;
+  await sleep(3400);
+  const fwdLater = srv.hits.filter((u) => u.endsWith('/models')).length;
+  check(
+    '🔴 正向模型就绪后轮询自己停（不停 ⇒ 每秒白打后端一辈子）',
+    fwdLater === fwdSettled && fwdSettled > fwdBefore,
+    `${fwdBefore} → ${fwdSettled} → ${fwdLater}`
+  );
+
+  // ── 18.15 开关开着但没有判据 ⇒ 拦在提交之前，不发任务 ─────────────────
+  store.reset({ keepParams: true });
+  const TARGET3 = 'CCC(=O)O';
+  store.setTarget({
+    ok: true, smiles: TARGET3, kind: 'SMILES', atoms: 5, formula: 'C3H6O2', mw: 74.08, error: ''
+  } as never);
+  searchJob.target = TARGET3;
+  srv.fwd.state = 'idle';
+  await store.loadModels(); // 让 store 看到"正向模型没就绪"
+  store.params.forwardFilter = true;
+  store.clearGlobalError();
+  srv.hits.length = 0;
+  await store.autoRun();
+  check(
+    '🔴 开了过滤但正向模型未就绪 ⇒ 不发搜索任务（不能等跑完才失败）',
+    !srv.hits.some((u) => u.endsWith('/jobs')),
+    srv.hits.join(' ')
+  );
+  check('并且留下可操作的说明', /加载正向模型|download_model/.test(store.globalError ?? ''),
+    String(store.globalError));
+  check('autoRunning 已复位', store.autoRunning === false);
+
+  // ── 18.16 判据齐备 ⇒ 开关真的透传到搜索请求体 ─────────────────────────
+  srv.fwd.state = 'ready';
+  await store.loadModels();
+  store.params.forwardFilter = true;
+  store.params.forwardTopK = 7;
+  store.clearGlobalError();
+  srv.lastJobBody = null;
+  await store.autoRun();
+  check('搜索请求带上 use_forward_filter = true',
+    srv.lastJobBody?.use_forward_filter === true, JSON.stringify(srv.lastJobBody));
+  check('搜索请求带上 forward_top_k = 7',
+    srv.lastJobBody?.forward_top_k === 7, JSON.stringify(srv.lastJobBody));
+
+  // 关掉过滤再跑一次：请求体必须如实变成 false —— 不能是「界面关了、请求还开着」。
+  store.params.forwardFilter = false;
+  srv.lastJobBody = null;
+  await store.autoRun();
+  check('🔴 关掉过滤后请求体如实变为 false（否则是"界面关了、后端还开着"）',
+    srv.lastJobBody?.use_forward_filter === false, JSON.stringify(srv.lastJobBody));
 
   console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
   process.exitCode = failures === 0 ? 0 : 1;

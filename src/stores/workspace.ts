@@ -26,6 +26,7 @@ import type {
   ConditionsRequest,
   FeedbackEntry,
   FollowupRequest,
+  ForwardModelInfo,
   HistoryTask,
   JobProgress,
   LlmStatus,
@@ -135,7 +136,13 @@ const DEFAULT_PARAMS: RunParams = {
   // 6 = 苯环量级（苯 6、甲苯 7 继续拆），才是可购买起始物料的常用口径。
   heavyAtomThreshold: 6,
   startingMaterials: [],
-  budgetCalls: 40
+  budgetCalls: 40,
+  // 「可行性过滤」默认**关**：它要额外常驻一份正向模型（约 1 GB），而且要等它
+  // 加载完才用得上 —— 没打算用的人不该被迫先下 835 MB。
+  forwardFilter: false,
+  // top-5 = 官方 evaluation 里 ForwardReactionFilterModel 的常用取值：放宽到 50 几乎
+  // 不过滤（失去意义），收到 1 会误杀大量真反应。详见「拆分约束」里的说明。
+  forwardTopK: 5
 };
 
 /**
@@ -308,6 +315,17 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const modelStopping = ref(false);
   /** 模型服务（独立常驻进程 :8001）的概览；老后端不给这个字段 ⇒ null */
   const modelService = ref<ModelServiceInfo | null>(null);
+  /**
+   * 正向模型（「可行性过滤」的判据）。
+   *
+   * 🔴 与 `models` 是两个不同的东西，不能混：`models` 里每一行都能当**搜索主模型**，
+   *    而正向模型只是个附件 —— 混进去就会冒出一格"可选的预测模型"，选中它跑逆合成
+   *    必然失败。所以它单独一个 ref，界面上也只出现在「可行性过滤」那一行。
+   *    老后端不返回这个字段 ⇒ null，界面按「没有正向模型」渲染。
+   */
+  const forwardModel = ref<ForwardModelInfo | null>(null);
+  /** 正向模型的「加载」按钮在转圈（null = 没有进行中的操作） */
+  const forwardLoadingKey = ref<string | null>(null);
   /** 模型状态轮询定时器（null = 没在轮询） */
   let modelsPollTimer: ReturnType<typeof setInterval> | null = null;
   /** 轮询连续失败次数 */
@@ -757,6 +775,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const res = await retroApi.models();
     models.value = res.models ?? [];
     modelService.value = res.service ?? null;
+    // 老后端不返回 forward ⇒ 保持 null（界面按「没有正向模型」渲染，开关禁用）。
+    forwardModel.value = res.forward ?? null;
     if (models.value.length && !models.value.some((m) => m.key === params.value.model)) {
       // 换过默认模型时优先落到「已经就绪」的那一个，其次才是文件存在的第一个
       const pick =
@@ -777,6 +797,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       setGlobalError((e as Error).message, () => void loadModels());
       models.value = [];
       modelService.value = null;
+      forwardModel.value = null;
       stopModelsPolling();
     } finally {
       modelsLoading.value = false;
@@ -795,8 +816,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    *    没有任何长连接可挂。只能轮询。
    */
   function syncModelsPolling(): void {
+    // 🔴 正向模型也要算进去：它在 HTTP 起来之后热挂，加载期间 `service.state` 是
+    //    ready（逆向模型早就绪了）、`models` 里也没有任何 loading 行 —— 只看这两者
+    //    的话轮询会立刻停掉，按钮就永远停在「加载中」，用户只能手动刷新页面。
     const busy =
-      modelService.value?.state === 'loading' || models.value.some((m) => m.state === 'loading');
+      modelService.value?.state === 'loading' ||
+      forwardModel.value?.state === 'loading' ||
+      models.value.some((m) => m.state === 'loading');
     if (!busy) {
       stopModelsPolling();
       return;
@@ -863,6 +889,40 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       modelStopping.value = false;
     }
   }
+
+  /**
+   * 加载正向模型（「可行性过滤」的判据）。
+   *
+   * 🔴 与 `warmModel` 的差别必须说清：它**不会**重启模型服务，所以
+   *    ① 已加载的逆向模型照常在；② 不需要等"停旧起新"那几秒；
+   *    ③ 但**必须模型服务在跑**（正向模型挂在它下面，另起一份会多一个进程）。
+   */
+  async function loadForward(): Promise<void> {
+    if (!forwardModel.value) return;
+    forwardLoadingKey.value = params.value.model; // 非 null 即「按钮转圈中」
+    try {
+      const res = await retroApi.loadForward(forwardModel.value.key);
+      if (res && res.ok === false) {
+        setGlobalError(res.error || '加载正向模型失败', () => void loadForward());
+        return;
+      }
+      await fetchModels();
+    } catch (e) {
+      setGlobalError((e as Error).message, () => void loadForward());
+    } finally {
+      forwardLoadingKey.value = null;
+    }
+  }
+
+  /** 正向模型是否已就绪 —— 「可行性过滤」开关的**唯一**可用性判据 */
+  const forwardReady = computed(() => forwardModel.value?.state === 'ready');
+  /** 正向模型正在加载（按钮转圈 + 开关禁用，并说明"等它一下"） */
+  const forwardBusy = computed(() => forwardModel.value?.state === 'loading');
+  /**
+   * 能不能打开「可行性过滤」。
+   * 两条都要：正向模型就绪 **且** 主模型也跑在同一个模型服务里（搜索得通过它转接）。
+   */
+  const canUseForwardFilter = computed(() => forwardReady.value && modelReady.value);
 
   /** 当前下拉里选中的那一行（拿它的 state 决定按钮长什么样） */
   const currentModel = computed<RetroModel | null>(
@@ -1517,6 +1577,18 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const target = nodes.value[root];
     if (!target) return;
 
+    // 🔴 开了「可行性过滤」但正向模型没就绪 ⇒ 当场拦下，别提交任务。
+    //    不拦的话要等搜索整趟跑完才失败（后端也会拦，但那是兜底），白等一场。
+    //    界面本来就把开关禁掉了，这里只是防"参数从历史任务里带进来"这类旁路。
+    if (params.value.forwardFilter && !forwardReady.value) {
+      setGlobalError(
+        '「可行性过滤」需要先加载正向模型 —— 在「运行参数 → 拆分约束」里点「加载正向模型」，' +
+          '或先跑 scripts/download_model.py forward_pistachio 把 checkpoint 放好。',
+        () => void autoRun()
+      );
+      return;
+    }
+
     autoRunning.value = true;
     autoStopFlag = false;
     autoProgress.value = { done: 0, budget: params.value.budgetCalls, label: '正在创建搜索任务…' };
@@ -1531,7 +1603,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         maxHeavyAtoms: params.value.heavyAtomThreshold,
         valueFn: 'complexity',
         purchasable: params.value.startingMaterials,
-        requiredMaterials: []
+        requiredMaterials: [],
+        useForwardFilter: params.value.forwardFilter,
+        forwardTopK: params.value.forwardTopK
       });
       if (!created.ok || !created.job_id) {
         throw new Error(created.error || '创建路线搜索任务失败');
@@ -1560,8 +1634,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
               //    为真时可见（见 RouteStats 的 stateText），`autoRunning` 一落回
               //    false，状态条就变回「还没有展开任何一步」。用户看到的因此是
               //    「点了没反应 / 不运行」—— 必须留下一条**不会自己消失**的说明。
+              // 开了可行性过滤时先提过滤器：通过率低说明候选被正向判据砍光了，
+              // 那时再让用户去调预算/深度是南辕北辙。
+              const filterHint =
+                result.forward_filter === true
+                  ? `本次开着「可行性过滤」${
+                      typeof result.acceptance_rate === 'number'
+                        ? `（通过率 ${(result.acceptance_rate * 100).toFixed(1)}%）`
+                        : ''
+                    }，可先把 top-k 放宽（当前 ${result.forward_top_k ?? params.value.forwardTopK}）或关掉它再试。`
+                  : '';
               setGlobalError(
                 `搜索跑完了，但预算内没有找到完整路线：「${target.smiles}」。` +
+                  filterHint +
                   '可提高「拆分约束 → 调用预算 / 最大深度」，或放宽「起始物料重原子上限」，' +
                   '或改用 Pistachio（模板库 146,256 条，是 USPTO-50K 的 15 倍）。',
                 () => void autoRun()
@@ -1645,7 +1730,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     reset({ keepParams: true });
     nodes.value = JSON.parse(JSON.stringify(task.nodes)) as Record<string, MolNode>;
     rootId.value = task.rootId;
-    params.value = { ...task.params };
+    // 🔴 必须用 DEFAULT_PARAMS 兜底：老历史任务里没有新加的字段（如 forwardFilter /
+    //    forwardTopK），直接 `{...task.params}` 会让它们变成 undefined ⇒ 开关状态与
+    //    数字框都是空的（数字框甚至是"空"而不是 0），看着像界面坏了。
+    params.value = { ...DEFAULT_PARAMS, ...task.params };
     activeNodeId.value = null;
   }
 
@@ -1731,6 +1819,10 @@ function sessionSignature(snap: WorkspaceSnapshot): string {
     p.maxDepth,
     p.heavyAtomThreshold,
     p.budgetCalls,
+    // 🔴 可行性过滤也算「工作台内容」。漏了它 ⇒ 只切开关时指纹不变 ⇒
+    //    不落盘、侧栏时间不刷新，切回任务时开关又弹回旧值（"改了没生效"）。
+    p.forwardFilter ? 1 : 0,
+    p.forwardTopK,
     p.startingMaterials.join(','),
     Object.keys(snap.jobIds ?? {}).sort().join(','),
     schemes,
@@ -2847,6 +2939,13 @@ function persistSession(): void {
     modelBusy,
     modelPhase,
     stopModelService,
+    // 正向模型（可行性过滤的判据）—— 与 models 是两个不同的东西，别混
+    forwardModel,
+    forwardLoadingKey,
+    forwardReady,
+    forwardBusy,
+    canUseForwardFilter,
+    loadForward,
     activeNodeId,
     jobProgress,
     autoRunning,

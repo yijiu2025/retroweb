@@ -27,6 +27,7 @@ import type {
   LlmSettings,
   LlmSettingsPayload,
   LlmStatus,
+  LoadForwardOk,
   LoadModelOk,
   ModelServiceActionOk,
   ModelsResponse,
@@ -133,6 +134,27 @@ export const retroApi = {
   },
 
   /**
+   * 加载正向模型（「可行性过滤」的判据）。
+   *
+   * 🔴 与 `loadModel` 的关键区别：**不需要重启模型服务** —— 正向模型构造时不 spawn
+   *    规则子进程，可以在模型服务的 HTTP 起来之后热挂。所以它不会把已加载的逆向模型
+   *    踢掉，也就不用等"停旧起新"那几秒。
+   *
+   * 语义同 `loadModel`：返回「**已受理**」，进度看 `/api/models` 的 `forward.state`。
+   */
+  async loadForward(forward?: string): Promise<LoadForwardOk> {
+    try {
+      const { data } = await retroClient.post<LoadForwardOk>(
+        '/forward/load',
+        forward ? { forward } : {}
+      );
+      return data;
+    } catch (e) {
+      fail(e, '加载正向模型失败');
+    }
+  },
+
+  /**
    * 解析结构输入：CDXML / MOL / SDF / 反应式 SMILES / 纯 SMILES → canonical SMILES
    * 失败时返回 ok:false + reasons + suggestions（人话诊断 + 一键修复候选）
    *
@@ -217,6 +239,10 @@ export const retroApi = {
       valueFn: string;
       purchasable: string[];
       requiredMaterials: string[];
+      /** 「可行性过滤」：需模型服务里已加载正向模型，否则后端会先拦下来说清原因 */
+      useForwardFilter?: boolean;
+      /** 正向模型保留的 top-k */
+      forwardTopK?: number;
     }
   ): Promise<JobCreateResponse> {
     try {
@@ -231,7 +257,9 @@ export const retroApi = {
         max_heavy_atoms: params.maxHeavyAtoms,
         value_fn: params.valueFn,
         purchasable: params.purchasable,
-        required_materials: params.requiredMaterials
+        required_materials: params.requiredMaterials,
+        use_forward_filter: !!params.useForwardFilter,
+        forward_top_k: params.forwardTopK ?? 5
       });
       return data;
     } catch (e) {
