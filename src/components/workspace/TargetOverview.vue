@@ -27,6 +27,7 @@ import MolChip from '@/components/mol/MolChip.vue';
 import CasTag from '@/components/mol/CasTag.vue';
 import { casState, requestCasMany } from '@/utils/pubchem';
 import { copyText } from '@/utils/clipboard';
+import { routePct } from '@/utils/probability';
 
 const store = useWorkspaceStore();
 const settings = useSettingsStore();
@@ -42,7 +43,7 @@ const steps = computed(() => store.route);
 const cur = computed(() => store.networkStats);
 /** 一步都还没有时别显示 100.00%（各步连乘的空积就是 1，看起来像"整条路线成立"） */
 const totalPct = computed(() =>
-  cur.value.steps ? `${(cur.value.probability * 100).toFixed(2)}%` : '—'
+  cur.value.steps ? routePct(cur.value.probability, cur.value.manualSteps) : '—'
 );
 /** 同一目标下的多条路线网络（已确认的在前） */
 const networks = computed(() => store.routeNetworks);
@@ -87,9 +88,13 @@ function switchNet(id: string): void {
   ElMessage.success('已切到这条路线网络');
 }
 
-function pctText(p: number): string {
-  if (!Number.isFinite(p)) return '—';
-  return `${(p * 100).toFixed(1)}%`;
+/**
+ * 一条路线的总概率。
+ * 🔴 含手动步时必须带上「含 N 步手动」：连乘对手动步按 1 计，
+ *    这个数字与纯模型路线的总概率**不可比**。口径统一在 utils/probability。
+ */
+function pctText(p: number, manualSteps = 0): string {
+  return routePct(p, manualSteps, 1);
 }
 
 /** 复制目标分子的 SMILES（走全站唯一入口，见 utils/clipboard.ts） */
@@ -159,7 +164,7 @@ async function copySmiles(): Promise<void> {
               type="button"
               class="ov__net"
               :class="{ 'is-current': n.schemeId === store.currentSchemeId, 'is-confirmed': n.confirmed }"
-              :title="`切到「${n.name}」：${n.steps} 步 · ${n.branches} 分支 · 总概率 ${pctText(n.probability)}`"
+              :title="`切到「${n.name}」：${n.steps} 步 · ${n.branches} 分支 · 总概率 ${pctText(n.probability, n.manualSteps)}`"
               @click="switchNet(n.schemeId)"
             >
               <span class="ov__net-name">{{ n.name }}</span>
@@ -169,7 +174,7 @@ async function copySmiles(): Promise<void> {
                    顶部 `SchemeBar` 在「目标分析」页签已整条收起（见 WorkspaceView），
                    这一页只剩这排 chip 可比 —— 少了概率就只剩名字，等于没法选优。
                    口径与侧栏 `.tan__net-meta`（同一步数 / 分支 / 概率）保持一致。 -->
-              <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支 · {{ pctText(n.probability) }}</span>
+              <span class="ov__net-meta">{{ n.steps }} 步 · {{ n.branches }} 分支 · {{ pctText(n.probability, n.manualSteps) }}</span>
             </button>
           </div>
 
@@ -225,7 +230,9 @@ async function copySmiles(): Promise<void> {
                     />
                   </div>
                 </td>
-                <td class="ov__p">{{ pctText(s.probability) }}</td>
+                <!-- 这一行是**一步**（RouteStep）：手动步没有模型概率 ⇒ 写「手动」，
+                     别拿连乘里的 1 显示成 100% -->
+                <td class="ov__p">{{ s.manual ? '手动' : pctText(s.probability) }}</td>
               </tr>
             </tbody>
           </table>

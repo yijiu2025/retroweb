@@ -113,6 +113,13 @@ export interface SchemeStat {
   /** 已确认为采用中的路线网络（未确认的只是备选草稿） */
   confirmed: boolean;
   confirmedAt?: number;
+  /**
+   * 这条路线里**用户手工指定**的步数。
+   *
+   * 🔴 有它就必须在界面标出来：`probability`（各步连乘）对手动步记为 1 ⇒
+   *    含手动步的"总概率"与纯模型路线**不可比**，不标注就等于拿一个假数字去比。
+   */
+  manualSteps: number;
 }
 
 const DEFAULT_PARAMS: RunParams = {
@@ -360,6 +367,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   /** 工艺分析面板要聚焦的节点（从路线树点「工艺分析」跳转过来） */
   const analysisFocus = ref<string | null>(null);
+
+  /**
+   * 「编辑这一步」弹窗正在编辑哪个节点（null = 关着）。
+   *
+   * 🔴 状态放 store、而不是各入口组件自己 `ref` + 层层 emit：入口有两条
+   *    （路线网络里双击卡片 / 候选面板的按钮），而弹窗里挂着 Ketcher 画板
+   *    （首次要拉约 16MB 内核）。每个入口各挂一份弹窗 = 两个 React root +
+   *    两份 WASM 常驻内存。收到 store 里 ⇒ 全应用只有一个弹窗实例。
+   */
+  const stepEditNodeId = ref<string | null>(null);
   /**
    * 主区当前页签。
    *
@@ -437,7 +454,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         product: node.smiles,
         productFormula: node.formula,
         precursors: rxn.precursorList,
-        probability: rxn.probability,
+        // 手动步没有模型概率：RouteStep 层面记为 1（连乘里不惩罚），另用 manual 标记，
+        // 由界面说清「含手动步骤、概率不可比」—— 不要拿 1 当"100% 可信"。
+        probability: rxn.probability ?? 1,
+        manual: rxn.probability === null,
         model: params.value.model
       });
       // ⚠️ 必须写成箭头：直接 forEach(walk) 会把 index 当作第二个实参传进去
@@ -542,6 +562,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     //    把它并回来 —— 否则用户手滑点一次「重新分析」，已建的整棵子树就变成
     //    「选了个不存在的反应」而被判无效。
     const merged = [...run.candidates];
+    // 🔴 手动指定的候选（origin='manual'）**不随「重新分析」消失**：它下面可能挂着
+    //    用户自己建的整棵子树，被新一批模型候选挤掉就变成"选了个不存在的反应"，
+    //    手工编辑连同子树一起悬空。所以先把它们原样留下，再补「当年采纳的那一条」。
+    for (const old of node.candidates || []) {
+      if (old.origin === 'manual' && !merged.some((r) => r.id === old.id)) merged.push(old);
+    }
     const chosen = node.chosenReactionId;
     if (chosen && !merged.some((r) => r.id === chosen)) {
       const old = (node.candidates || []).find((r) => r.id === chosen);
@@ -558,6 +584,10 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (!run) return;
     node.activeRunId = runId;
     const merged = [...run.candidates];
+    // 同 pushRun：手动候选不随「切回某一次分析」消失
+    for (const old of node.candidates || []) {
+      if (old.origin === 'manual' && !merged.some((r) => r.id === old.id)) merged.push(old);
+    }
     const keep = node.chosenReactionId;
     if (keep && !merged.some((r) => r.id === keep)) {
       const old = (node.candidates || []).find((r) => r.id === keep);
@@ -1024,7 +1054,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       if (existing) {
         used.add(existing.id);
         attachSubtree(existing.id);
-        existing.probabilityChain = parent.probabilityChain * reaction.probability;
+        existing.probabilityChain = parent.probabilityChain * (reaction.probability ?? 1);
         if (seen.includes(smi)) {
           existing.duplicateOf = parent.id;
           existing.status = 'terminated';
@@ -1039,7 +1069,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         smiles: smi,
         depth: parent.depth + 1,
         parentReactionId: reaction.id,
-        probabilityChain: parent.probabilityChain * reaction.probability,
+        probabilityChain: parent.probabilityChain * (reaction.probability ?? 1),
         atoms: countHeavyAtoms(smi)
       });
       used.add(child.id);
@@ -1067,6 +1097,114 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     const node = nodes.value[nodeId];
     if (!node) return;
     detachChildren(node);
+  }
+
+  /**
+   * 手动指定某一步的前体 —— 「自己改一条路线」的唯一入口。
+   *
+   * 做什么：把 `precursors` 变成一条**手工候选反应**（`origin: 'manual'`、概率 `null`），
+   * 塞进该节点的 `candidates` 然后走现成的 `adopt()`。于是建子节点、防环、相同分子
+   * 复用分析、方案记录、落盘、导出**全部沿用原有机制** —— 手工步与模型步在数据结构上
+   * 完全同构（这正是 `reactionIdFor` 用确定性哈希换来的）。
+   *
+   * 「插入一个中间体」也是它的一个用例：把某个前体换成一个自己画的新分子，
+   * 新分子照常成为一个可继续展开/继续手改的普通节点。
+   *
+   * 🔴 为什么 id 走 `reactionIdFor`：它是「节点 + 前体组合」的确定性哈希 ⇒ 同一次
+   *    手改永远得到同一个 id，存进方案（`RouteScheme.choices`）之后切走再切回来，
+   *    `chosenReactionId` 仍能对上。若用随机 id，方案一恢复就成了"选了个不存在的反应"，
+   *    整棵手工子树会被判无效而收起。
+   * 🔴 为什么概率是 `null` 而不是 0：0 会让这条路线总概率归零（界面显示 0%，
+   *    用户以为此路不通），而事实是"模型没表态"，两者必须分开（详见 `Reaction.probability`）。
+   *
+   * @returns 生成的 reactionId；参数不合法（空前体 / 会把产物写进自己的前体 / 成环 /
+   *          节点不存在）时返回 null，由调用方给出提示
+   */
+  /**
+   * 手工指定前体的**准入校验** —— `setPrecursors` 与编辑弹窗共用这一份判据。
+   *
+   * 单独抽出来是为了让界面能在用户点「应用」之前就说清哪里不行，而不是点了没反应；
+   * 🔴 界面**不要**再另写一份判断 —— 两处判据一旦分叉，就会出现「界面说行、点了没反应」。
+   *
+   * @returns 不能通过的原因（人话）；通过时为 `null`
+   */
+  function manualPrecursorIssue(nodeId: string, precursors: string[]): string | null {
+    const node = nodes.value[nodeId];
+    if (!node) return '这个节点已经不在当前路线上了';
+    const list = [...new Set(precursors.map((s) => s.trim()).filter(Boolean))];
+    if (!list.length) return '至少要填一个前体';
+    if (list.includes(node.smiles)) return '前体不能是产物自己';
+    // 与 adopt 里的 duplicateOf 同源判据：上游出现过的分子再当自己的前体 ⇒ 死循环
+    const anc = ancestorSmiles(nodeId);
+    if (list.some((s) => anc.includes(s))) {
+      return '前体里有这一步上游已经出现过的分子，拆下去会形成死循环';
+    }
+    return null;
+  }
+
+  function setPrecursors(nodeId: string, precursors: string[]): string | null {
+    const node = nodes.value[nodeId];
+    if (!node) return null;
+    if (manualPrecursorIssue(nodeId, precursors)) return null;
+
+    // 规范化：去空、去重、**排序**。排序是必需的 —— 否则「A.B」与「B.A」会各得一个
+    // id，方案里就会出现两条看起来一模一样、却互不相同的步骤。
+    const list = [...new Set(precursors.map((s) => s.trim()).filter(Boolean))].sort();
+
+    const joined = list.join('.');
+    const id = reactionIdFor(nodeId, joined);
+    const existing = node.candidates.find((r) => r.id === id);
+
+    if (existing) {
+      // 同一个前体组合又被指了一次（例如它本来是模型候选，用户手动确认了同样的组合）
+      // ⇒ 不新建，只把来源与概率口径改成手动
+      existing.origin = 'manual';
+      existing.probability = null;
+      existing.level = 'mid';
+    } else {
+      node.candidates = [
+        ...node.candidates,
+        {
+          id,
+          productNodeId: nodeId,
+          // 手工步没有名次与置信分级 —— 界面按 origin 渲染「手动」，不读这两个字段
+          rank: 0,
+          probability: null,
+          level: 'mid',
+          precursors: joined,
+          precursorList: list,
+          numMolecules: list.length,
+          childNodeIds: [],
+          origin: 'manual'
+        }
+      ];
+    }
+    adopt(id);
+    return id;
+  }
+
+  /**
+   * 删掉一条**手工**候选（模型候选一律不动 —— 那是模型给的，要禁用就用 `unadopt`）。
+   * 若它正被采纳，先撤销采纳再移除，免得 `chosenReactionId` 指向一条不存在的反应。
+   */
+  function removeManualReaction(nodeId: string, reactionId: string): void {
+    const node = nodes.value[nodeId];
+    if (!node) return;
+    const rxn = node.candidates.find((r) => r.id === reactionId);
+    if (!rxn || rxn.origin !== 'manual') return;
+    if (node.chosenReactionId === reactionId) detachChildren(node);
+    node.candidates = node.candidates.filter((r) => r.id !== reactionId);
+    syncCurrentScheme();
+  }
+
+  /** 打开「编辑这一步」弹窗（入口有两条，见 stepEditNodeId 注释） */
+  function openStepEditor(nodeId: string): void {
+    if (!nodes.value[nodeId]) return;
+    stepEditNodeId.value = nodeId;
+  }
+
+  function closeStepEditor(): void {
+    stepEditNodeId.value = null;
   }
 
   function toggleCollapse(nodeId: string): void {
@@ -1579,7 +1717,10 @@ function persistSession(): void {
     // 候选反应自身也要补：rank/precursorList 等被直接读
     node.candidates = node.candidates.map((r) => ({
       ...r,
-      probability: typeof r.probability === 'number' ? r.probability : 0,
+      // 🔴 不能把非 number 兜成 0：手动步的 probability 是 null（"模型没表态"），
+      //    兜成 0 等于一落盘再读回来就变成"概率 0%"，总概率连乘直接归零。
+      probability: typeof r.probability === 'number' ? r.probability : null,
+      origin: r.origin === 'manual' ? 'manual' : 'model',
       precursorList: Array.isArray(r.precursorList)
         ? r.precursorList
         : String(r.precursors ?? '').split('.').filter(Boolean),
@@ -1870,6 +2011,7 @@ function persistSession(): void {
       depth: 0,
       complete: false,
       branches: 0,
+      manualSteps: 0,
       ...confirmed
     };
     if (!root) return empty;
@@ -1879,6 +2021,8 @@ function persistSession(): void {
     let terminals = 0;
     let leaves = 0;
     let depth = 0;
+    /** 手工指定的步数 —— 有它就说明"总概率"不是纯模型口径，界面必须标出来 */
+    let manualSteps = 0;
     const seen = new Set<string>();
     const queue: string[] = [root];
     while (queue.length) {
@@ -1897,7 +2041,9 @@ function persistSession(): void {
       steps += 1;
       // 一步拆成 ≥2 个前体 = 这里分叉 ⇒ 路线从「一条链」变成「一张网」
       if ((rxn.precursorList?.length ?? 0) > 1) branches += 1;
-      prob *= rxn.probability;
+      // 手动步没有模型概率 ⇒ 连乘时跳过（按 1 计），并单独计数让界面能说清
+      if (rxn.origin === 'manual') manualSteps += 1;
+      prob *= rxn.probability ?? 1;
       depth = Math.max(depth, node.depth + 1);
       for (const child of childrenOfReaction(rxn.id)) queue.push(child.id);
     }
@@ -1911,6 +2057,7 @@ function persistSession(): void {
       depth,
       complete: leaves > 0 && terminals === leaves,
       branches,
+      manualSteps,
       ...confirmed
     };
   }
@@ -2144,7 +2291,7 @@ function persistSession(): void {
     const req: AnalyzeRequest = {
       product: node.smiles,
       precursors: rxn.precursorList,
-      probability: rxn.probability,
+      probability: rxn.probability ?? undefined,
       model: params.value.model,
       context: routeContext(nodeId),
       // 勾选的模块；空数组 = 全量（后端据此裁剪 prompt，只输出勾选字段）
@@ -2264,7 +2411,7 @@ function persistSession(): void {
     const req: ConditionsRequest = {
       product: node.smiles,
       precursors: rxn.precursorList,
-      probability: rxn.probability,
+      probability: rxn.probability ?? undefined,
       model: params.value.model,
       context: routeContext(nodeId),
       count: condOptionCount.value
@@ -2392,7 +2539,7 @@ function persistSession(): void {
     const req: FollowupRequest = {
       product: node.smiles,
       precursors: rxn.precursorList,
-      probability: rxn.probability,
+      probability: rxn.probability ?? undefined,
       model: params.value.model,
       context: routeContext(nodeId),
       analysis: rec.data ?? null,
@@ -2487,8 +2634,11 @@ function persistSession(): void {
         disclaimer: '模型预测结果可能包含错误，实验前须经专业人员验证。',
         params: params.value,
         target: rootId.value ? nodes.value[rootId.value]?.smiles : null,
-        route: route.value,
+        // 🔴 手动步的概率要导出成 null（而不是连乘里折的那个 1）：导给别人看的时候，
+        //    1 会被读成"100% 可信"。下面是纯 JSON，不受 RouteStep 的类型约束。
+        route: route.value.map((s) => ({ ...s, probability: s.manual ? null : s.probability })),
         routeProbability: routeProbability.value,
+        manualSteps: networkStats.value.manualSteps,
         startingMaterials: startingMaterials.value.map((n) => ({
           smiles: n.smiles,
           formula: n.formula
@@ -2521,7 +2671,8 @@ function persistSession(): void {
         s.product,
         s.productFormula ?? '',
         s.precursors.join(' + '),
-        s.probability.toFixed(4),
+        // 手动步没有模型概率 ⇒ 写「手动」（同 exportJson 的理由：1 会被读成 100%）
+        s.manual ? '手动' : s.probability.toFixed(4),
         s.model
       ]
         .map((v) => `"${String(v).replace(/"/g, '""')}"`)
@@ -2593,6 +2744,7 @@ function persistSession(): void {
     // —— 大模型工艺分析 ——
     llmStatus,
     analysisFocus,
+    stepEditNodeId,
     mainTab,
     loadLlmStatus,
     analysisOf,
@@ -2620,6 +2772,11 @@ function persistSession(): void {
     cancelNode,
     adopt,
     unadopt,
+    setPrecursors,
+    removeManualReaction,
+    manualPrecursorIssue,
+    openStepEditor,
+    closeStepEditor,
     toggleCollapse,
     markPurchased,
     removeBranch,

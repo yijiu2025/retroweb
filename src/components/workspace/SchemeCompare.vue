@@ -14,14 +14,19 @@
 import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { routePct } from '@/utils/probability';
 
 const store = useWorkspaceStore();
 
 const stats = computed(() => store.schemeStats ?? []);
 
-function pct(p: number): string {
-  if (!Number.isFinite(p)) return '—';
-  return `${(p * 100).toFixed(2)}%`;
+/**
+ * 一条路线的总概率。
+ * 🔴 含手动步时必须带上「含 N 步手动」：连乘对手动步按 1 计，
+ *    这个数字与纯模型路线的总概率**不可比**。口径统一在 utils/probability。
+ */
+function pct(p: number, manualSteps = 0): string {
+  return routePct(p, manualSteps, 2);
 }
 
 function onApply(id: string): void {
@@ -123,7 +128,7 @@ function onUnconfirm(id: string): void {
         <dl class="sch__metrics">
           <div><dt>步数</dt><dd>{{ s.steps }}</dd></div>
           <div><dt>分支</dt><dd>{{ s.branches }}</dd></div>
-          <div><dt>总概率</dt><dd>{{ pct(s.probability) }}</dd></div>
+          <div><dt>总概率</dt><dd>{{ pct(s.probability, s.manualSteps) }}</dd></div>
           <div><dt>起始物料</dt><dd>{{ s.terminals }}/{{ s.leaves }}</dd></div>
           <div><dt>最深</dt><dd>第 {{ s.depth }} 层</dd></div>
         </dl>

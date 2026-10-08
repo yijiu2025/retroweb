@@ -55,6 +55,7 @@ declare module 'vue' {
     SessionPanel: typeof import('./components/workspace/SessionPanel.vue')['default']
     SsoLoginModal: typeof import('./components/sso/SsoLoginModal.vue')['default']
     StepAnalysis: typeof import('./components/workspace/StepAnalysis.vue')['default']
+    StepEditDialog: typeof import('./components/workspace/StepEditDialog.vue')['default']
     StepRow: typeof import('./components/workspace/StepRow.vue')['default']
     StepTree: typeof import('./components/workspace/StepTree.vue')['default']
     StructureEditor: typeof import('./components/mol/StructureEditor.vue')['default']

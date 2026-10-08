@@ -46,6 +46,7 @@ import {
 } from '@/utils/route-copy';
 import { buildMolIdents, molCasNote, type MolIdent } from '@/composables/useMolIdents';
 import MolView from '@/components/mol/MolView.vue';
+import { routePct } from '@/utils/probability';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
 
@@ -108,6 +109,8 @@ interface RChip {
   y: number;
   stepNo: number;
   probability: number;
+  /** 这一步是用户手工指定的 ⇒ chip 上显示「手动」而不是百分比 */
+  manual: boolean;
 }
 
 /** 贴合在图上的一组标注（虚线框 / 虚线圈） */
@@ -150,8 +153,10 @@ const schemeName = computed(
 
 /** nodeId → 该步的编号/概率（`store.route` 已经算好啦，直接用，别自己重推） */
 const stepInfo = computed(() => {
-  const m = new Map<string, { step: number; probability: number }>();
-  for (const s of route.value) m.set(s.nodeId, { step: s.step, probability: s.probability });
+  const m = new Map<string, { step: number; probability: number; manual: boolean }>();
+  for (const s of route.value) {
+    m.set(s.nodeId, { step: s.step, probability: s.probability, manual: !!s.manual });
+  }
   return m;
 });
 
@@ -255,7 +260,8 @@ function build(): void {
       x: busX,
       y: parentCy,
       stepNo: info.step,
-      probability: info.probability
+      probability: info.probability,
+      manual: info.manual
     });
 
     for (const kid of kids) {
@@ -471,6 +477,10 @@ function onWheel(e: WheelEvent): void {
       原生滚动条、滚轮（未命中缩放时）走的是同一套坐标，不会出现两套偏移互相打架。 */
 const panning = ref(false);
 let panFrom: { x: number; y: number; left: number; top: number } | null = null;
+/** 这一次按下落在哪张卡片上（给「双击改这一步」用） */
+let downCard: HTMLElement | null = null;
+/** 上一次「点」的卡片与时刻 */
+let lastTap: { id: string; at: number } | null = null;
 
 function onPointerDown(e: PointerEvent): void {
   const el = wrap.value;
@@ -480,6 +490,11 @@ function onPointerDown(e: PointerEvent): void {
   // 卡片底部图标这类交互元素有自己的点击，不能被拖动抢走
   if ((e.target as HTMLElement | null)?.closest('button, a, input, textarea, select')) return;
   e.preventDefault(); // 免得拖动时把卡片里的文字选中
+  // 🔴 「双击卡片改这一步」**不能**用 `@dblclick`：上面这句 `preventDefault()` 加上
+  //    后面的 `setPointerCapture()` 之后，浏览器就不再合成 dblclick —— 实测在卡片上
+  //    以捕获阶段监听都收不到事件，`@dblclick` 自然不会触发。改成在 pointerup 里自己判
+  //    「没有位移的两次快速按下」（见 onPointerUp）。
+  downCard = (e.target as HTMLElement | null)?.closest('.rcanvas__card') as HTMLElement | null;
   panFrom = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
   panning.value = true;
   el.setPointerCapture(e.pointerId);
@@ -495,9 +510,23 @@ function onPointerMove(e: PointerEvent): void {
 function onPointerUp(e: PointerEvent): void {
   const el = wrap.value;
   if (!panFrom) return;
+  // 拖过就不算「点」—— 否则平移画布时会一路弹编辑窗
+  const moved = Math.abs(e.clientX - panFrom.x) + Math.abs(e.clientY - panFrom.y);
+  const card = downCard;
   panFrom = null;
+  downCard = null;
   panning.value = false;
   if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+  if (!card || moved > 4) return;
+  const id = card.dataset.nodeId ?? '';
+  if (!id) return;
+  const now = Date.now();
+  if (lastTap && lastTap.id === id && now - lastTap.at < 400) {
+    lastTap = null;
+    store.openStepEditor(id);
+  } else {
+    lastTap = { id, at: now };
+  }
 }
 
 /**
@@ -582,6 +611,7 @@ function copyInput(): RouteCopyInput {
     targetName: casState(root?.smiles ?? '')?.name,
     materials: store.startingMaterials.map((n) => ({ smiles: n.smiles, formula: n.formula })),
     totalProbability: store.routeProbability,
+    manualSteps: store.networkStats.manualSteps,
     casOf: (smiles) => casState(smiles)
   };
 }
@@ -873,7 +903,7 @@ const dirHint = computed(() =>
           </div>
           <div title="各步概率连乘">
             <span class="rcanvas__score-label">总概率</span>
-            <b>{{ route.length ? (totalProb * 100).toFixed(2) + '%' : '—' }}</b>
+            <b>{{ route.length ? routePct(totalProb, store.networkStats.manualSteps) : '—' }}</b>
           </div>
           <div>
             <span class="rcanvas__score-label">起始物料</span>
@@ -984,7 +1014,14 @@ const dirHint = computed(() =>
               :style="{ left: ch.x + 'px', top: ch.y + 'px' }"
             >
               <span class="rcanvas__chip-step">第 {{ ch.stepNo }} 步</span>
-              <span class="rcanvas__chip-prob">{{ (ch.probability * 100).toFixed(1) }}%</span>
+              <!-- 🔴 手动步没有模型概率：显示「手动」。写成 100.0% 会被读成"模型很有把握" -->
+              <span
+                class="rcanvas__chip-prob"
+                :class="{ 'is-manual': ch.manual }"
+                :title="ch.manual ? '这一步是你手动指定的，没有模型概率' : ''"
+              >
+                {{ ch.manual ? '手动' : (ch.probability * 100).toFixed(1) + '%' }}
+              </span>
             </div>
 
             <!-- 状态标注（虚线框 / 虚线圈）—— 学 Reaxys 贴在图上。
@@ -1009,7 +1046,9 @@ const dirHint = computed(() =>
               :class="[`is-${c.kind}`, { 'is-active': store.activeNodeId === c.id }]"
               :data-smiles="c.smiles"
               :data-kind="c.kind"
+              :data-node-id="c.id"
               :style="{ left: c.x + 'px', top: c.y + 'px', width: CARD_W + 'px', height: CARD_H + 'px' }"
+              title="双击可手动改这一步的前体"
             >
               <!-- 目标产物自己带个牌子：蓝色高亮框说明"这是重点"，牌子说明"这是目标"。
                    未知化合物 / 同分支重复同理 —— 🔴 说明文字必须长在卡片上，
@@ -1128,7 +1167,7 @@ const dirHint = computed(() =>
               但它是可关闭的，两处都留着才不会一关就一处不剩。 -->
       <p v-if="hasRoute" class="rcanvas__hint">
         <span class="rcanvas__hint-warn">模型预测结果，实验前须经专业人员验证。</span>
-        {{ dirHint }} · 拖动平移 · 滚轮缩放
+        {{ dirHint }} · 拖动平移 · 滚轮缩放 · 双击卡片可手动改这一步
       </p>
     </div>
   </section>
@@ -1379,6 +1418,12 @@ const dirHint = computed(() =>
   font-size: 10px;
   color: var(--rw-text-3);
   font-variant-numeric: tabular-nums;
+}
+
+/* 手动步：与「模型给了个很低的概率」区分开 —— 品牌色 + 加粗，一眼看出不是模型意见 */
+.rcanvas__chip-prob.is-manual {
+  color: var(--rw-brand);
+  font-weight: 600;
 }
 
 /* ---------- 状态标注 ---------- */

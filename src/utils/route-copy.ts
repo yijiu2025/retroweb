@@ -13,6 +13,7 @@
  */
 import type { RouteStep } from '@/types/retro';
 import type { CasInfo } from '@/utils/pubchem';
+import { stepPct, routePct } from '@/utils/probability';
 
 /** 一次复制所需的全部原料（都由调用方从 store / PubChem 缓存取好传进来） */
 export interface RouteCopyInput {
@@ -26,6 +27,12 @@ export interface RouteCopyInput {
   materials: Array<{ smiles: string; formula?: string }>;
   /** 各步概率连乘（`store.routeProbability`） */
   totalProbability: number;
+  /**
+   * 这条路线里有几步是用户手工指定的（`store.networkStats.manualSteps`）。
+   * 🔴 有它就必须在文本里标出来：连乘对手动步按 1 计，
+   *    含手动步的总概率与纯模型路线**不可比**（口径见 utils/probability）。
+   */
+  manualSteps?: number;
   /** 产物 SMILES → PubChem 结果。**查不到就当没传**（别把 undefined 写成 "undefined"） */
   casOf?: (smiles: string) => CasInfo | null | undefined;
   /** 生成时间戳（ISO 字符串），便于测试注入固定值 */
@@ -68,7 +75,7 @@ function casOf(input: RouteCopyInput, smiles: string): CasInfo | null {
 
 /** 产物的一行注释：`# 第 2 步 · 87.5% · 阿司匹林` */
 function stepNote(input: RouteCopyInput, s: RouteStep): string {
-  const bits = [`第 ${s.step} 步`, `${(s.probability * 100).toFixed(1)}%`];
+  const bits = [`第 ${s.step} 步`, stepPct(s.probability, s.manual)];
   const name = casOf(input, s.product)?.name;
   if (name) bits.push(name);
   return bits.join(' · ');
@@ -133,12 +140,12 @@ export function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): stri
 
     case 'steps': {
       const head = input.target
-        ? `目标：${input.target}${input.targetName ? `（${input.targetName}）` : ''}    总概率 ${(input.totalProbability * 100).toFixed(2)}%    共 ${steps.length} 步`
-        : `共 ${steps.length} 步    总概率 ${(input.totalProbability * 100).toFixed(2)}%`;
+        ? `目标：${input.target}${input.targetName ? `（${input.targetName}）` : ''}    总概率 ${routePct(input.totalProbability, input.manualSteps)}    共 ${steps.length} 步`
+        : `共 ${steps.length} 步    总概率 ${routePct(input.totalProbability, input.manualSteps)}`;
       const body = steps.map((s) => {
         const c = casOf(input, s.product);
         const lines = [
-          `第 ${s.step} 步  概率 ${(s.probability * 100).toFixed(1)}%`,
+          `第 ${s.step} 步  ${s.manual ? '手动指定（无模型概率）' : `概率 ${stepPct(s.probability)}`}`,
           `  产物：${s.product}${s.productFormula ? `（${s.productFormula}）` : ''}${c?.cas ? `  CAS ${c.cas}` : ''}${c?.name ? `  ${c.name}` : ''}`
         ];
         s.precursors.forEach((p, i) => {
@@ -166,7 +173,7 @@ export function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): stri
           c?.cas ?? '',
           c?.name ?? '',
           s.precursors.join(' + '),
-          (s.probability * 100).toFixed(1) + '%'
+          stepPct(s.probability, s.manual)
         ]
           .map(tsvCell)
           .join('\t');
@@ -186,7 +193,7 @@ export function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): stri
           c?.cas ?? '',
           c?.name ?? '',
           s.precursors.join(' + '),
-          s.probability.toFixed(4),
+          s.manual ? '手动' : s.probability.toFixed(4),
           s.model
         ]
           .map(csvCell)
@@ -204,6 +211,7 @@ export function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): stri
           target: input.target ?? null,
           targetName: input.targetName ?? null,
           routeProbability: input.totalProbability,
+          manualSteps: input.manualSteps ?? 0,
           steps: steps.map((s) => {
             const c = casOf(input, s.product);
             return {
@@ -217,7 +225,10 @@ export function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): stri
                 const pc = casOf(input, p);
                 return { smiles: p, cas: pc?.cas ?? null, name: pc?.name ?? null, cid: pc?.cid ?? null };
               }),
-              probability: s.probability,
+              // 手动步没有模型概率 ⇒ 写 null 并带 manual 标记。
+              // 别写 1：下游会把它当成"100% 可信"。
+              probability: s.manual ? null : s.probability,
+              manual: !!s.manual,
               model: s.model
             };
           }),

@@ -37,6 +37,7 @@ import { useWorkspaceStore } from '@/stores/workspace';
 import { promptSaveScheme } from '@/utils/scheme-save';
 import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
+import { routePct } from '@/utils/probability';
 
 const store = useWorkspaceStore();
 const emit = defineEmits<{ preview: [smiles: string] }>();
@@ -54,12 +55,16 @@ const steps = computed(() => store.route);
 
 /** 一步都还没有时别显示 100.00%（各步连乘的空积就是 1，看起来像"整条路线成立"） */
 const totalPct = computed(() =>
-  cur.value.steps ? `${(cur.value.probability * 100).toFixed(2)}%` : '—'
+  cur.value.steps ? routePct(cur.value.probability, cur.value.manualSteps) : '—'
 );
 
-function pct(p: number): string {
-  if (!Number.isFinite(p)) return '—';
-  return `${(p * 100).toFixed(1)}%`;
+/**
+ * 一条路线的总概率。
+ * 🔴 含手动步时必须带上「含 N 步手动」：连乘对手动步按 1 计，
+ *    这个数字与纯模型路线的总概率**不可比**。口径统一在 utils/probability。
+ */
+function pct(p: number, manualSteps = 0): string {
+  return routePct(p, manualSteps, 1);
 }
 
 /** 切换当前查看的是哪一条网络（不删任何节点，见 store.applyScheme） */
@@ -140,7 +145,7 @@ async function copySmiles(): Promise<void> {
               <span v-else class="tan__net-tag tan__net-tag--draft">备选</span>
             </span>
             <span class="tan__net-meta">
-              {{ n.steps }} 步 · {{ n.branches }} 分支 · {{ pct(n.probability) }}
+              {{ n.steps }} 步 · {{ n.branches }} 分支 · {{ pct(n.probability, n.manualSteps) }}
             </span>
           </button>
         </li>
@@ -171,7 +176,7 @@ async function copySmiles(): Promise<void> {
                不给宽度的话「⑂ 90%」比「80%」宽，同一列里盒子的右边界会参差。 -->
           <span class="tan__step-tail">
             <span v-if="s.precursors.length > 1" class="tan__step-branch" title="该步分叉（多组分）">⑂</span>
-            <span class="tan__step-p">{{ (s.probability * 100).toFixed(0) }}%</span>
+            <span class="tan__step-p">{{ s.manual ? '手动' : (s.probability * 100).toFixed(0) + '%' }}</span>
           </span>
         </li>
       </ol>

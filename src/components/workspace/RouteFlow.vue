@@ -11,6 +11,7 @@ import { ElMessage } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import MolView from '@/components/mol/MolView.vue';
 import StepAnalysis from './StepAnalysis.vue';
+import { stepPct } from '@/utils/probability';
 
 const store = useWorkspaceStore();
 
@@ -153,7 +154,14 @@ watch(
             </div>
 
             <div class="flow__foot">
-              <span class="flow__prob">概率 {{ (step.probability * 100).toFixed(1) }}%</span>
+              <!-- 手动步没有模型概率 ⇒ 说「手动指定」，别写 0.0% 或 100.0% -->
+              <span class="flow__prob" :class="{ 'is-manual': step.manual }">
+                {{
+                  step.manual
+                    ? '手动指定（无模型概率）'
+                    : '概率 ' + stepPct(step.probability)
+                }}
+              </span>
               <el-tag size="small" effect="plain" type="info">模型 {{ step.model }}</el-tag>
               <el-tag
                 v-if="statusOf(step.nodeId) === 'done'"

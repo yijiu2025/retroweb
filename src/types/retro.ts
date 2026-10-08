@@ -815,18 +815,42 @@ export interface RouteScheme {
   confirmedAt?: number;
 }
 
+/**
+ * 一条候选反应的**来源**。
+ *
+ * - `model`（缺省） = 单步预测模型给出的；
+ * - `manual` = 用户在「编辑这一步」里手工指定的前体组合。
+ */
+export type ReactionOrigin = 'model' | 'manual';
+
 /** 一次单步预测的一个候选反应 */
 export interface Reaction {
   id: string;
   productNodeId: string;
   rank: number;
-  probability: number;
+  /**
+   * 这一步的模型置信概率。
+   *
+   * 🔴 `null` = **用户手动指定的这一步**（见 `origin`），不是"概率为 0"。
+   *    手动步没有模型意见：塞 0 会让整条路线的概率连乘归零（界面显示"总概率 0%"），
+   *    塞 1 又是在撒谎。所以类型放宽成 union，由展示层显式说明
+   *    「含手动步骤、概率不可比」（`stores/workspace.ts` 的 `manualSteps`）。
+   */
+  probability: number | null;
   level: ProbLevel;
   /** "A.B" */
   precursors: string;
   precursorList: string[];
   numMolecules: number;
   childNodeIds: string[];
+  /**
+   * 这条候选是谁给的。
+   *
+   * 🔴 必须显式区分，不能靠「概率是不是 null」反推：后端 search 路径
+   *    （`applySearchRoutes`）也会给出 `probability: 0`，那是**模型给了但很低**，
+   *    与「用户手写、模型根本没表态」是两件事。
+   */
+  origin?: ReactionOrigin;
 }
 
 /** 运行参数 */
@@ -860,7 +884,17 @@ export interface RouteStep {
   product: string;
   productFormula?: string;
   precursors: string[];
+  /**
+   * 这一步的概率。
+   *
+   * 🔴 手动步（`manual: true`）在这里记为 **1** —— `RouteStep` 是给展示/导出用的派生
+   *    结构，连乘时把"没有模型意见"当作不惩罚；否则一个与模型无关的 0 会把整条路线的
+   *    总概率拉平。要判断「这条路线含手工步骤」请读 `manual`（统计口径见
+   *    `SchemeStat.manualSteps`），**不要**拿 `probability` 反推。
+   */
   probability: number;
+  /** 用户手工指定的步骤（源 `Reaction.probability === null`）⇒ 展示层显示「手动」而非百分比 */
+  manual?: boolean;
   model: string;
 }
 

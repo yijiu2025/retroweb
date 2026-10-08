@@ -411,6 +411,183 @@ scope.run(() => {
   check('casNote：查询中', molCasNote(true, undefined) === 'CAS 查询中…');
   check('casNote：查到了就不用解释', molCasNote(true, CAS_MAP[TARGET]) === '');
 
+  console.log('\n=== 17) 手动指定前体（自己改一条路线） ===');
+  // 全部走 store 的公开动作，不复制任何被测逻辑
+  store.applyScheme(schA);
+  const T2 = store.rootId as string;
+  check('起点：当前是方案 A（2 步）', store.networkStats.steps === 2, String(store.networkStats.steps));
+  check('起点：没有手动步', store.networkStats.manualSteps === 0, String(store.networkStats.manualSteps));
+
+  // ── 17.1 准入校验：空 / 自己 / 成环，一律拒绝且**不动树** ──────────────
+  const schemesBeforeReject = JSON.stringify(store.schemes.map((s) => s.choices));
+  check('空前体被拒', store.setPrecursors(T2, ['  ', '']) === null);
+  check('🔴 前体不能是产物自己', store.setPrecursors(T2, [TARGET]) === null);
+  check('自环的不同写法也拒（按规范 SMILES 判）', store.setPrecursors(T2, [TARGET]) === null);
+  check(
+    '🔴 三次被拒之后方案选择一个字都没变',
+    JSON.stringify(store.schemes.map((s) => s.choices)) === schemesBeforeReject
+  );
+  check(
+    'manualPrecursorIssue 与 setPrecursors 同口径（界面用它提前提示）',
+    !!store.manualPrecursorIssue(T2, []) && store.setPrecursors(T2, []) === null
+  );
+  check('准入判据对不存在的节点也返回原因', !!store.manualPrecursorIssue('nope', [C]));
+
+  // ── 17.2 合法手改：T ← C（单前体）顶掉模型给的 T ← A + B ───────────────
+  const schemesBeforeManual = store.schemes.length;
+  const schAChoicesBefore = JSON.stringify(store.schemes.find((s) => s.id === schA)?.choices);
+  const rid = store.setPrecursors(T2, [C]);
+  check('手改成功并返回 reactionId', !!rid);
+  const manualRxn = store.nodes[T2].candidates.find((r) => r.id === rid);
+  check('🔴 手工候选 origin = manual', manualRxn?.origin === 'manual');
+  check(
+    '🔴 概率是 null 而不是 0（0 会被读成"此路不通"）',
+    manualRxn?.probability === null,
+    String(manualRxn?.probability)
+  );
+  check('id 就是 reactionIdFor(节点, 前体)', rid === reactionIdFor(T2, C), String(rid));
+  check('已采纳这一步', store.nodes[T2].chosenReactionId === rid);
+  const nodeC = store.nodes[T2].children[0] as string;
+  check(
+    '子节点建出来了，就是 C',
+    store.nodes[T2].children.length === 1 && store.nodes[nodeC].smiles === C,
+    JSON.stringify(store.nodes[T2].children.map((id) => store.nodes[id].smiles))
+  );
+  check(
+    '🔴 改掉已定的一步 ⇒ 自动分叉（不得就地改写方案 A）',
+    store.schemes.length === schemesBeforeManual + 1,
+    `${schemesBeforeManual} → ${store.schemes.length}`
+  );
+  check(
+    '🔴 方案 A 的选择原封不动',
+    JSON.stringify(store.schemes.find((s) => s.id === schA)?.choices) === schAChoicesBefore
+  );
+  check('当前指向新分叉出来的那条', store.currentSchemeId !== schA);
+
+  // ── 17.3 确定性：同一次手改再来一遍 ⇒ 同 id、不新增候选 ────────────────
+  const candCount = store.nodes[T2].candidates.length;
+  check('🔴 同一前体组合 ⇒ 同一 id（方案恢复才认得回来）', store.setPrecursors(T2, [C]) === rid);
+  check(
+    '🔴 不重复塞候选',
+    store.nodes[T2].candidates.length === candCount,
+    `${candCount} → ${store.nodes[T2].candidates.length}`
+  );
+
+  // ── 17.4 统计口径：手动步按 1 计入连乘，且单独计数 ─────────────────────
+  check('网络步数 = 1', store.networkStats.steps === 1, String(store.networkStats.steps));
+  check('manualSteps = 1', store.networkStats.manualSteps === 1, String(store.networkStats.manualSteps));
+  check(
+    '🔴 只有手动步时总概率 = 1（既不归零也不虚高）',
+    store.networkStats.probability === 1,
+    String(store.networkStats.probability)
+  );
+  check('route 里那一步带 manual 标记', store.route[0]?.manual === true);
+  check(
+    'route 里的概率折成 1（不是 null —— 下游展示层用的是 number）',
+    store.route[0]?.probability === 1,
+    String(store.route[0]?.probability)
+  );
+
+  // ── 17.5 手动步与模型步混合：连乘只吃模型那一半 ────────────────────────
+  const E = 'CCO';
+  const r5 = rxn(nodeC, [E], 0.5);
+  store.nodes[nodeC].candidates = [r5];
+  store.adopt(r5.id);
+  check(
+    '🔴 混合路线总概率 = 1 × 0.5（手动步不参与惩罚）',
+    Math.abs(store.networkStats.probability - 0.5) < 1e-9,
+    String(store.networkStats.probability)
+  );
+  check('manualSteps 仍是 1（模型步不算手动）', store.networkStats.manualSteps === 1, String(store.networkStats.manualSteps));
+
+  // ── 17.6 存方案 → 切走 → 切回来：手动步必须原样回来 ────────────────────
+  store.saveScheme('手改网络');
+  const schManual = store.currentSchemeId as string;
+  store.applyScheme(schA);
+  check('切回方案 A：手动步不在了', store.networkStats.manualSteps === 0, String(store.networkStats.manualSteps));
+  store.applyScheme(schManual);
+  check(
+    '🔴 切回手改方案：那一步还在（确定性 reactionId 换来的）',
+    store.nodes[T2].chosenReactionId === rid,
+    String(store.nodes[T2].chosenReactionId)
+  );
+  check(
+    '🔴 切回来之后 manualSteps 仍是 1',
+    store.networkStats.manualSteps === 1,
+    String(store.networkStats.manualSteps)
+  );
+
+  // ── 17.7 切到另一次分析：**未采纳**的手动候选也不许被冲掉 ───────────────
+  store.unadopt(T2);
+  const otherRun = {
+    id: 'run_manual_other',
+    at: Date.now(),
+    model: 'pistachio',
+    numResults: 1,
+    candidates: [rxn(T2, [A, B], 0.9)],
+    chosenReactionId: null
+  };
+  store.nodes[T2].runs = [...(store.nodes[T2].runs ?? []), otherRun];
+  store.switchRun(T2, otherRun.id);
+  check(
+    '🔴 换过一次分析后，手动候选仍在列表里（否则它的子树会悬空）',
+    store.nodes[T2].candidates.some((r) => r.id === rid),
+    store.nodes[T2].candidates.map((r) => r.id).join(',')
+  );
+  store.adopt(rid);
+  check('重新采纳手动步：子树接回来了', store.nodes[T2].children.length === 1);
+
+  // ── 17.8 落盘 → 恢复：概率不能从 null 变成 0 ──────────────────────────
+  store.persistSession();
+  const sid = store.currentSessionId as string;
+  store.loadSession(sid);
+  const restoredRxn = store.nodes[T2]?.candidates.find((r) => r.id === rid);
+  check('恢复后手动候选还在', !!restoredRxn);
+  check(
+    '🔴 恢复后概率仍是 null（写成 0 会让总概率连乘归零）',
+    restoredRxn?.probability === null,
+    String(restoredRxn?.probability)
+  );
+  check('恢复后 origin 仍是 manual', restoredRxn?.origin === 'manual');
+  check(
+    '🔴 模型候选恢复后被标成 model（老数据没有 origin 字段，不能漏判成手动）',
+    store.nodes[T2]?.candidates.filter((r) => r.id !== rid).every((r) => r.origin === 'model')
+  );
+
+  // ── 17.9 复制 / 导出的口径：手动步不能被写成 0% 或 100% ────────────────
+  store.adopt(rid);
+  const manualCopyIn = {
+    ...copyIn,
+    route: store.route,
+    totalProbability: store.routeProbability,
+    manualSteps: store.networkStats.manualSteps
+  };
+  const mSteps = buildRouteCopy('steps', manualCopyIn);
+  check('🔴 复制清单里把手动步写明白了', mSteps.includes('手动指定'), mSteps.split('\n').slice(0, 3).join(' | '));
+  check('🔴 总概率带上「含 N 步手动」', mSteps.includes('含 1 步手动'), mSteps.split('\n')[0]);
+  const mTable = buildRouteCopy('table', manualCopyIn);
+  check('表格里那一格不是 100.0%', mTable.includes('手动') && !mTable.includes('100.0%'), mTable.split('\n')[1]);
+  const mCsv = buildRouteCopy('csv', manualCopyIn);
+  check('CSV 概率列写「手动」（不是 1.0000）', mCsv.includes('"手动"'), mCsv);
+  const mJson = JSON.parse(buildRouteCopy('json', manualCopyIn)) as {
+    manualSteps: number;
+    steps: Array<{ probability: number | null; manual: boolean }>;
+  };
+  check('JSON 手动步 probability = null 且 manual = true', mJson.steps.some((s) => s.probability === null && s.manual === true));
+  check('JSON 带 manualSteps 字段', mJson.manualSteps === 1, String(mJson.manualSteps));
+  check(
+    '🔴 没有手动步时，总概率文案与旧实现逐字相同（不引入格式回归）',
+    buildRouteCopy('steps', { ...manualCopyIn, manualSteps: 0 }).split('\n')[0].includes('总概率') &&
+      !buildRouteCopy('steps', { ...manualCopyIn, manualSteps: 0 }).includes('含 1 步手动')
+  );
+
+  // ── 17.10 前体顺序不影响 id（否则方案里会出现两条"一模一样"的步骤）─────
+  check(
+    '🔴 A.B 与 B.A 得到同一个 id',
+    store.setPrecursors(T2, [A, B]) === store.setPrecursors(T2, [B, A]),
+    String(store.setPrecursors(T2, [A, B]))
+  );
+
   console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
 });
 

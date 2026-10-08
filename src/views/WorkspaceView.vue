@@ -38,6 +38,7 @@ import RouteCanvas from '@/components/workspace/RouteCanvas.vue';
 import RouteFlow from '@/components/workspace/RouteFlow.vue';
 import SchemeBar from '@/components/workspace/SchemeBar.vue';
 import MolPreviewDialog from '@/components/mol/MolPreviewDialog.vue';
+import StepEditDialog from '@/components/workspace/StepEditDialog.vue';
 
 const store = useWorkspaceStore();
 const settings = useSettingsStore();
@@ -197,6 +198,11 @@ onMounted(() => {
     </el-tabs>
 
     <MolPreviewDialog v-model="previewVisible" :smiles="previewSmiles" />
+
+    <!-- 「编辑这一步」（手改前体）：入口有两条 —— 路线网络里双击卡片、候选面板的按钮，
+         而弹窗里装着 Ketcher 画板（首次要拉约 16MB 内核）。全应用只挂这一份，
+         挂两份就是两个 React root + 两份 WASM 常驻内存。开关状态在 store 里。 -->
+    <StepEditDialog />
   </div>
 </template>
 

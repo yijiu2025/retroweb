@@ -68,6 +68,16 @@ function onUnadopt(): void {
   store.unadopt(props.nodeId);
 }
 
+/** 移除一条**手工**候选（模型候选动不了 —— 那是模型给的，要禁用请用「撤销这一步」） */
+function onRemoveManual(reactionId: string): void {
+  store.removeManualReaction(props.nodeId, reactionId);
+}
+
+/** 打开「编辑这一步」（手改前体）—— 弹窗全应用只有一份，状态在 store 里 */
+function onEditStep(): void {
+  store.openStepEditor(props.nodeId);
+}
+
 /** 切换查看/采纳「之前某一次」的分析结果 */
 function onSwitchRun(value: unknown): void {
   const runId = String(value ?? '');
@@ -140,6 +150,8 @@ function isDefaultSupplier(supplierId: string): boolean {
             :value="r.id"
           />
         </el-select>
+        <!-- 手改这一步：模型没给出想要的走法时，用户自己指定原料 -->
+        <el-button size="small" @click="onEditStep">手动指定前体</el-button>
         <el-button size="small" :disabled="node?.status === 'loading'" @click="onReanalyze">
           重新分析
         </el-button>
@@ -178,12 +190,18 @@ function isDefaultSupplier(supplierId: string): boolean {
         class="rxn"
         :class="{ 'is-adopted': adoptedId === rxn.id }"
       >
-        <!-- 名次 + 置信分级 -->
+        <!-- 名次 + 置信分级。手动候选既没有名次也没有置信分级 ⇒ 直接标「手动」，
+             否则会渲染成「#0 · 中等」，看着像模型给了一条名次很低的候选 -->
         <div class="rxn__rank">
-          <b>#{{ rxn.rank }}</b>
-          <el-tag :type="levelTag[rxn.level]" size="small" effect="light">
-            {{ levelText[rxn.level] }}
-          </el-tag>
+          <template v-if="rxn.origin === 'manual'">
+            <el-tag type="warning" size="small" effect="dark">手动</el-tag>
+          </template>
+          <template v-else>
+            <b>#{{ rxn.rank }}</b>
+            <el-tag :type="levelTag[rxn.level]" size="small" effect="light">
+              {{ levelText[rxn.level] }}
+            </el-tag>
+          </template>
         </div>
 
         <!-- 方程式：前体（左）→ 箭头（带概率）→ 产物（右） -->
@@ -236,8 +254,19 @@ function isDefaultSupplier(supplierId: string): boolean {
             </div>
           </template>
 
-          <div class="rxn__arrow" :title="`该步概率 ${(rxn.probability * 100).toFixed(1)}%`">
-            <span class="rxn__arrow-prob">{{ (rxn.probability * 100).toFixed(1) }}%</span>
+          <!-- 手动步没有模型概率：显示「手动」。写成 0.0% 会被读成"模型认为不可行" -->
+          <div
+            class="rxn__arrow"
+            :class="{ 'is-manual': rxn.origin === 'manual' }"
+            :title="
+              rxn.origin === 'manual'
+                ? '这一步是你手动指定的，没有模型概率'
+                : `该步概率 ${((rxn.probability ?? 0) * 100).toFixed(1)}%`
+            "
+          >
+            <span class="rxn__arrow-prob">
+              {{ rxn.origin === 'manual' ? '手动' : ((rxn.probability ?? 0) * 100).toFixed(1) + '%' }}
+            </span>
             <span class="rxn__arrow-line" aria-hidden="true"></span>
           </div>
 
@@ -262,6 +291,16 @@ function isDefaultSupplier(supplierId: string): boolean {
             采纳
           </el-button>
           <el-tag v-else type="success" size="small" effect="dark">已采纳</el-tag>
+          <!-- 只给手工候选「移除」：模型候选是模型给的，要停用它是「撤销这一步」 -->
+          <el-button
+            v-if="rxn.origin === 'manual'"
+            link
+            type="danger"
+            size="small"
+            @click="onRemoveManual(rxn.id)"
+          >
+            移除
+          </el-button>
           <span class="rxn__count">{{ rxn.numMolecules }} 个前体</span>
         </div>
       </div>
@@ -596,5 +635,11 @@ function isDefaultSupplier(supplierId: string): boolean {
     width: 100%;
     justify-content: flex-end;
   }
+}
+
+/* 手动步：与「模型给了个很低的概率」区分开 —— 品牌色 + 加粗，一眼看出不是模型意见 */
+.rxn__arrow.is-manual .rxn__arrow-prob {
+  color: var(--rw-brand);
+  font-weight: 600;
 }
 </style>
