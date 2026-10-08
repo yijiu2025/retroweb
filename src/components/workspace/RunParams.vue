@@ -346,7 +346,9 @@ function addProfile(): void {
     name: '新配置',
     base_url: '',
     model: '',
-    max_tokens: 32768,
+    // 0 = 无限制（不传 max_tokens，交给模型/网关默认）。默认给「无限制」：
+    // 额度太小会让推理模型的思考 token 吃光额度、正文 0 字符（finish_reason=length）。
+    max_tokens: 0,
     temperature: 0.3,
     timeout: 300,
     json_mode: true,
@@ -355,6 +357,13 @@ function addProfile(): void {
   });
   editingId.value = id;
   resetModelOptions();
+}
+
+/** 「无限制」勾选：勾上写 0（后端 `_max_tokens_in` 认 0 = 不设上限），取消则给个够用的默认额度 */
+const DEFAULT_TOKENS = 32768;
+function onUnlimitedTokens(val: unknown): void {
+  if (!cur.value) return;
+  cur.value.max_tokens = val ? 0 : DEFAULT_TOKENS;
 }
 
 /** 复制当前配置（keys 跟着走；脱敏串由后端在**原配置的池**里还原成真实 key） */
@@ -807,18 +816,29 @@ onMounted(() => {
                   <div class="params__api-field">
                     <span class="params__api-label">
                       输出上限
-                      <el-tooltip content="max_tokens。推理模型的思考 token 也计入输出额度，太小会被截断（正文 0 字符）" placement="top">
+                      <el-tooltip content="max_tokens（发给模型的输出额度）。推理模型的思考 token 也计入这个额度，太小会被截断（正文 0 字符）。勾「无限制」= 不传该字段，交给模型/网关默认值" placement="top">
                         <span class="params__hint">?</span>
                       </el-tooltip>
                     </span>
-                    <el-input-number
-                      v-model="cur.max_tokens"
-                      size="small"
-                      :min="1024"
-                      :max="131072"
-                      :step="1024"
-                      :controls="false"
-                    />
+                    <div class="params__tokens">
+                      <el-checkbox
+                        :model-value="!cur.max_tokens"
+                        size="small"
+                        @change="onUnlimitedTokens"
+                      >
+                        无限制
+                      </el-checkbox>
+                      <el-input-number
+                        v-model="cur.max_tokens"
+                        size="small"
+                        :min="0"
+                        :max="1000000"
+                        :step="1024"
+                        :controls="false"
+                        :disabled="!cur.max_tokens"
+                        placeholder="无限制"
+                      />
+                    </div>
                   </div>
                   <div class="params__api-field">
                     <span class="params__api-label">温度</span>
@@ -1312,6 +1332,17 @@ onMounted(() => {
 }
 
 .params__api-grid :deep(.el-input-number) {
+  width: 100%;
+}
+
+/* 输出上限：勾选「无限制」在上、数字框在下，两行不挤同一条横向空间 */
+.params__tokens {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.params__tokens :deep(.el-input-number) {
   width: 100%;
 }
 

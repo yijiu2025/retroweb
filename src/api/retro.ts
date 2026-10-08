@@ -296,7 +296,8 @@ export const llmApi = {
         profiles: [],
         base_url: '',
         model: '',
-        max_tokens: 8192,
+        // 0 = 无限制（与后端 `_max_tokens_in` / 前端新建配置一致）
+        max_tokens: 0,
         temperature: 0.3,
         timeout: 180,
         json_mode: true,
