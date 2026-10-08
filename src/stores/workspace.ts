@@ -24,6 +24,7 @@ import type {
   AnalyzeRequest,
   ConditionOption,
   ConditionsRequest,
+  FeedbackEntry,
   FollowupRequest,
   HistoryTask,
   JobProgress,
@@ -139,6 +140,7 @@ export const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
   'byproducts',
   'lcms',
   'nmr',
+  'tlc',
   'safety'
 ];
 
@@ -153,6 +155,7 @@ export const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
   byproducts: '可能的副产物',
   lcms: 'LCMS 解读',
   nmr: 'NMR 谱图归属',
+  tlc: '点板与过柱极性',
   safety: '安全与放大提示'
 };
 
@@ -2441,6 +2444,29 @@ function persistSession(): void {
     analysisAborts.delete(ak);
   }
 
+  /**
+   * 提交一条「预测 vs 实测」错误反馈：用户做实验后发现预测与实际偏差较大，
+   * 把差异记录下来。后端落盘到 feedback.jsonl，供后续微调/蒸馏训练。
+   *
+   * 🔴 与 AI 分析解耦：反馈只是「记录」，不触发新的模型调用，也不影响已生成的分析。
+   *    即使后端大模型没配置，反馈也能提交（后端 /api/feedback 不依赖 llm 模块）。
+   */
+  async function submitFeedback(nodeId: string, entry: Omit<FeedbackEntry, 'product' | 'precursors' | 'reaction_id' | 'model'>): Promise<boolean> {
+    const node = nodes.value[nodeId];
+    if (!node) return false;
+    const rid = node.chosenReactionId;
+    const rxn = rid ? node.candidates.find((r) => r.id === rid) : undefined;
+    const payload: FeedbackEntry = {
+      ...entry,
+      product: node.smiles,
+      precursors: rxn?.precursorList ?? [],
+      reaction_id: rid ?? undefined,
+      model: llmStatus.value?.model
+    };
+    const res = await llmApi.submitFeedback(payload);
+    return !!res?.ok;
+  }
+
   /** 把所有节点的 AI 分析一次性生成（沿当前路线的每一步） */
   async function analyzeRoute(): Promise<void> {    const steps = route.value;
     for (const step of steps) {
@@ -2581,6 +2607,7 @@ function persistSession(): void {
     cancelConditions,
     askFollowup,
     cancelFollowup,
+    submitFeedback,
     loadModels,
     warmModel,
     setTarget,

@@ -17,6 +17,8 @@ import type {
   AnalyzeStreamEvent,
   ConditionsRequest,
   ConditionsStreamEvent,
+  FeedbackEntry,
+  FeedbackList,
   FollowupRequest,
   JobCreateResponse,
   JobSnapshot,
@@ -343,6 +345,35 @@ export const llmApi = {
       return data;
     } catch (e) {
       fail(e, '工艺分析失败');
+    }
+  },
+
+  /**
+   * 记录一条「预测 vs 实测」错误反馈（供后续训练）。
+   * 🔴 独立于 llmApi 之外的 feedback 能力，但走同一个 baseURL / client。
+   */
+  async submitFeedback(entry: FeedbackEntry): Promise<{ ok: boolean; saved?: string; error?: string }> {
+    try {
+      const { data } = await retroLlmClient.post<{ ok: boolean; saved?: string; error?: string }>(
+        '/feedback',
+        entry
+      );
+      return data;
+    } catch (e) {
+      fail(e, '反馈提交失败');
+    }
+  },
+
+  /** 读回已收集的反馈（供导出/查看） */
+  async listFeedback(limit = 200): Promise<FeedbackList> {
+    try {
+      const { data } = await retroLlmClient.get<FeedbackList>('/feedback', {
+        params: { limit },
+        timeout: 15000
+      });
+      return data;
+    } catch {
+      return { ok: false, count: 0, items: [], error: '无法连接后端的反馈接口' };
     }
   }
 };

@@ -82,6 +82,26 @@ const workupEntries = computed(() => {
 
 const workupNotes = computed(() => analysis.value?.data?.workup?.notes ?? []);
 
+/** 点板/过柱极性预测：从「产物 + 前体」估 Rf 与洗脱剂。字段顺序即展示顺序 */
+const TLC_LABELS: Record<string, string> = {
+  rf_est: '估算 Rf',
+  eluent: '洗脱剂',
+  polarity_order: '极性排序',
+  spotting: '点板判据',
+  note: '过柱注意'
+};
+
+const tlcEntries = computed(() => {
+  const t = analysis.value?.data?.tlc;
+  if (!t) return [] as { key: string; label: string; value: string }[];
+  return Object.entries(t)
+    .filter(([, v]) => String(v || '').trim())
+    .map(([k, v]) => ({ key: k, label: TLC_LABELS[k] ?? k, value: String(v) }));
+});
+
+/** 极性确定性数值（RDKit 算的 logP/TPSA 等）—— 点板模块的「可核对」那一侧 */
+const polarityRows = computed(() => massRows.value.filter((r) => r.ok));
+
 /** 产物 + 各前体的确定性质量（LCMS 数值来源） */
 const massRows = computed<MassRow[]>(() => analysis.value?.computed?.rows ?? []);
 
@@ -111,6 +131,51 @@ function ask(): void {
   // 先清空输入框：提问内容已经交给 store，留着反而让人以为没发出去
   question.value = '';
   void store.askFollowup(props.nodeId, q);
+}
+
+/* ---------- 错误反馈：预测 vs 实测偏差，记录下来供后续训练 ---------- */
+const fbOpen = ref(false);
+const fbKind = ref<'tlc' | 'yield' | 'condition' | 'other'>('tlc');
+const fbPredicted = ref('');
+const fbObserved = ref('');
+const fbDelta = ref('');
+const fbSubmitting = ref(false);
+const fbDone = ref(false);
+
+const FB_KIND_LABELS: Record<string, string> = {
+  tlc: '点板 / 过柱',
+  yield: '收率',
+  condition: '反应条件',
+  other: '其他'
+};
+
+function openFeedback(): void {
+  // 预填「预测」：点板模块给 Rf/洗脱剂；否则给预期结果
+  const t = analysis.value?.data?.tlc;
+  fbPredicted.value = t?.rf_est ? `Rf ${t.rf_est}` : '';
+  if (!fbPredicted.value) fbPredicted.value = analysis.value?.data?.outcome?.yield_range ?? '';
+  fbObserved.value = '';
+  fbDelta.value = '';
+  fbDone.value = false;
+  fbOpen.value = true;
+}
+
+async function submitFeedback(): Promise<void> {
+  if (fbSubmitting.value) return;
+  if (!fbObserved.value.trim()) return; // 实测是必须项
+  fbSubmitting.value = true;
+  try {
+    const ok = await store.submitFeedback(props.nodeId, {
+      kind: fbKind.value,
+      module: fbKind.value === 'tlc' ? 'tlc' : fbKind.value === 'yield' ? 'outcome' : 'conditions',
+      predicted: fbPredicted.value.trim(),
+      observed: fbObserved.value.trim(),
+      delta_note: fbDelta.value.trim()
+    });
+    fbDone.value = ok;
+  } finally {
+    fbSubmitting.value = false;
+  }
 }
 
 /* ---------- 候选反应条件（先枚举多套 → 选一套 → 锁定它深入分析） ---------- */
@@ -602,6 +667,52 @@ function clearChosen(): void {
         <p class="ana__warn">谱图预测为经验性估计，仅用于设计验证实验，不能替代实测谱图。</p>
       </div>
 
+      <!-- 点板 / 过柱极性预测：Rf 与洗脱剂是模型解读，logP/TPSA 是 RDKit 的确定性数值 -->
+      <div v-if="tlcEntries.length" class="ana__block">
+        <div class="ana__h">
+          点板 / 过柱极性预测
+          <span class="ana__tag-done">logP · TPSA 由 RDKit 计算</span>
+        </div>
+
+        <table v-if="polarityRows.length" class="ana__table ana__table--lcms">
+          <thead>
+            <tr>
+              <th>分子</th>
+              <th>logP</th>
+              <th>TPSA</th>
+              <th>HBD</th>
+              <th>HBA</th>
+              <th>可旋转键</th>
+              <th>芳环</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="r in polarityRows" :key="r.smiles">
+              <td class="ana__smiles">
+                <span v-if="r.smiles === node?.smiles" class="ana__role">产物</span>
+                <span v-else class="ana__role ana__role--pre">前体</span>
+              </td>
+              <td class="ana__equiv">{{ r.logp ?? '—' }}</td>
+              <td>{{ r.tpsa ?? '—' }}</td>
+              <td>{{ r.hbd ?? '—' }}</td>
+              <td>{{ r.hba ?? '—' }}</td>
+              <td>{{ r.rotatable ?? '—' }}</td>
+              <td>{{ r.aromatic_rings ?? '—' }}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <dl class="ana__cond">
+          <template v-for="t in tlcEntries" :key="t.key">
+            <dt>{{ t.label }}</dt>
+            <dd>{{ t.value }}</dd>
+          </template>
+        </dl>
+        <p class="ana__warn">
+          Rf 与洗脱剂为经验估计，受展开剂、硅胶批次、湿度等影响，点板前请以实测为准；发现偏差可在下方「反馈实测结果」。
+        </p>
+      </div>
+
       <div v-if="analysis.data.safety?.length" class="ana__block">
         <div class="ana__h">安全与放大提示</div>
         <ul class="ana__safety">
@@ -664,6 +775,83 @@ function clearChosen(): void {
           </el-button>
         </div>
       </div>
+    </div>
+
+    <!-- 错误反馈学习：预测 vs 实测。用户做完实验发现偏差大，把差异记下来，
+         后端落盘 feedback.jsonl，供后续微调/蒸馏训练，让预测越用越准。 -->
+    <div v-if="status === 'done' && analysis?.data" class="ana__fb">
+      <div class="ana__h">
+        反馈实测结果
+        <span class="ana__tag-flow">记录预测与实测的偏差，用于后续训练</span>
+      </div>
+
+      <template v-if="!fbOpen">
+        <p class="ana__fb-intro">
+          做完实验后，如果实际点板 / 收率 / 条件与上面的预测差得较多，把实测结果记下来。
+          这些「预测 vs 实测」成对数据会沉淀下来，用来持续改进模型的判断。
+        </p>
+        <div>
+          <el-button size="small" type="primary" plain @click="openFeedback">反馈实测结果</el-button>
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="ana__fb-form">
+          <div class="ana__fb-row">
+            <span class="ana__fb-label">反馈类型</span>
+            <el-radio-group v-model="fbKind" size="small">
+              <el-radio-button v-for="(label, k) in FB_KIND_LABELS" :key="k" :value="k">
+                {{ label }}
+              </el-radio-button>
+            </el-radio-group>
+          </div>
+          <div class="ana__fb-row">
+            <span class="ana__fb-label">预测值</span>
+            <el-input
+              v-model="fbPredicted"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 3 }"
+              resize="none"
+              placeholder="系统预测的内容（已预填，可修改）"
+            />
+          </div>
+          <div class="ana__fb-row">
+            <span class="ana__fb-label">实测结果 <b class="ana__fb-req">*</b></span>
+            <el-input
+              v-model="fbObserved"
+              type="textarea"
+              :autosize="{ minRows: 2, maxRows: 5 }"
+              resize="none"
+              placeholder="实际做出来的结果，例：PE:EA=4:1 时产物 Rf ≈ 0.15，拖尾严重"
+            />
+          </div>
+          <div class="ana__fb-row">
+            <span class="ana__fb-label">差异说明</span>
+            <el-input
+              v-model="fbDelta"
+              type="textarea"
+              :autosize="{ minRows: 1, maxRows: 3 }"
+              resize="none"
+              placeholder="可选：差了多少、可能因为什么（供训练时理解偏差来源）"
+            />
+          </div>
+        </div>
+
+        <div class="ana__fb-ops">
+          <el-button
+            type="primary"
+            size="small"
+            :disabled="!fbObserved.trim()"
+            :loading="fbSubmitting"
+            @click="submitFeedback"
+          >
+            提交反馈
+          </el-button>
+          <el-button size="small" text @click="fbOpen = false">取消</el-button>
+          <span v-if="fbDone" class="ana__fb-ok">✓ 已记录，谢谢反馈</span>
+          <span v-else-if="fbDone === false" class="ana__fb-fail">提交失败，请稍后重试</span>
+        </div>
+      </template>
     </div>
   </div>
 </template>
@@ -1354,5 +1542,67 @@ function clearChosen(): void {
   flex-direction: column;
   gap: 4px;
   flex: 0 0 auto;
+}
+
+/* 错误反馈：预测 vs 实测 */
+.ana__fb {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--rw-border);
+}
+
+.ana__fb-intro {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--rw-text-muted, #6b7280);
+}
+
+.ana__fb-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ana__fb-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.ana__fb-label {
+  flex: 0 0 64px;
+  padding-top: 6px;
+  font-size: 12px;
+  color: var(--rw-text);
+  white-space: nowrap;
+}
+
+.ana__fb-req {
+  color: var(--rw-danger, #dc2626);
+}
+
+.ana__fb-row :deep(.el-textarea),
+.ana__fb-row :deep(.el-input) {
+  flex: 1;
+  min-width: 0;
+}
+
+.ana__fb-ops {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ana__fb-ok {
+  font-size: 12px;
+  color: var(--rw-success, #059669);
+}
+
+.ana__fb-fail {
+  font-size: 12px;
+  color: var(--rw-danger, #dc2626);
 }
 </style>

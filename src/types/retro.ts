@@ -201,6 +201,13 @@ export interface MassRow {
   mz_neg?: number;
   mz_na?: number;
   heavy_atoms?: number;
+  /** 极性相关确定性数值（点板/过柱模块的输入，后端 RDKit 算） */
+  logp?: number | null;
+  tpsa?: number | null;
+  hbd?: number;
+  hba?: number;
+  rotatable?: number;
+  aromatic_rings?: number;
 }
 
 export interface MassInfo {
@@ -282,6 +289,25 @@ export interface StepWorkup {
   notes?: string[];
 }
 
+/**
+ * 点板 / 过柱极性预测 —— TLC 点板的 Rf 估算与柱层析洗脱剂系统建议。
+ *
+ * 🔴 logP / TPSA / 氢键供受体等**确定性数值**由后端 RDKit 算好（见 `computed`），
+ *    模型只做解读（估 Rf、给洗脱剂梯度），不在 JSON 里另造数值。
+ */
+export interface StepTlc {
+  /** 产物在硅胶板上的估算 Rf 范围 + 展开剂，如 "0.3~0.5（PE:EA=4:1）" */
+  rf_est?: string;
+  /** 柱层析洗脱剂系统与梯度（体积比），如 "PE 冲低极性杂质 → PE:EA=10:1→4:1" */
+  eluent?: string;
+  /** 产物与各前体/杂质的极性从低到高排序及依据 */
+  polarity_order?: string;
+  /** 点板判据：怎么判断反应完成、怎么区分产物点与前体残留 */
+  spotting?: string;
+  /** 过柱注意点（拖尾 / 是否加酸加碱改性 / 吸附损失 / Rf 过高过低处理） */
+  note?: string;
+}
+
 /** 大模型返回的结构化工艺分析（字段全部可选 —— 模型可能缺项，缺了就不渲染） */
 export interface StepAnalysisData {
   summary?: string;
@@ -291,6 +317,8 @@ export interface StepAnalysisData {
   conditions?: Record<string, string>;
   /** 后处理分析（勾选该模块时才有） */
   workup?: StepWorkup;
+  /** 点板 / 过柱极性预测（勾选该模块时才有） */
+  tlc?: StepTlc;
   outcome?: { expected?: string; yield_range?: string; purity?: string; risk?: string };
   byproducts?: SideProduct[];
   lcms?: { mz_theoretical?: string; adduct?: string; note?: string };
@@ -453,6 +481,40 @@ export interface FollowupRequest {
   question: string;
 }
 
+/**
+ * 一条「错误反馈」—— 用户做实验后发现预测与实际偏差较大，把「预测值 vs 实测值」记下来。
+ * 后端落盘到 feedback.jsonl，后续可用来微调 / 蒸馏，让模型的点板、收率、条件等预测越用越准。
+ */
+export interface FeedbackEntry {
+  /** 反馈类型：tlc（点板/过柱）/ yield（收率）/ condition（条件）… */
+  kind?: string;
+  /** 目标分子（整条路线上下文，可选） */
+  target?: string;
+  /** 这一步产物 SMILES */
+  product?: string;
+  /** 前体 SMILES */
+  precursors?: string[];
+  /** 这一步反应 id（前端确定性 reactionId） */
+  reaction_id?: string;
+  /** 预测用的模型名 */
+  model?: string;
+  /** 预测内容（Rf 范围 / 洗脱剂 / 收率…） */
+  predicted?: string;
+  /** 实测结果（用户实验后填的） */
+  observed?: string;
+  /** 用户对「差异多大、为什么差」的自由描述 */
+  delta_note?: string;
+  /** 对应哪个分析模块（tlc/outcome/conditions…） */
+  module?: string;
+}
+
+export interface FeedbackList {
+  ok: boolean;
+  count: number;
+  items: FeedbackEntry[];
+  error?: string;
+}
+
 /** 可勾选的分析模块 key（与后端 _MODULE_FIELDS 对齐） */
 export type AnalysisModuleKey =
   | 'summary'
@@ -464,6 +526,7 @@ export type AnalysisModuleKey =
   | 'byproducts'
   | 'lcms'
   | 'nmr'
+  | 'tlc'
   | 'safety';
 
 export interface LlmStatus {
