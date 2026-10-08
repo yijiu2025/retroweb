@@ -52,6 +52,7 @@ declare module 'vue' {
     RunParams: typeof import('./components/workspace/RunParams.vue')['default']
     SchemeBar: typeof import('./components/workspace/SchemeBar.vue')['default']
     SchemeCompare: typeof import('./components/workspace/SchemeCompare.vue')['default']
+    SearchProgress: typeof import('./components/workspace/SearchProgress.vue')['default']
     SessionPanel: typeof import('./components/workspace/SessionPanel.vue')['default']
     SsoLoginModal: typeof import('./components/sso/SsoLoginModal.vue')['default']
     StepAnalysis: typeof import('./components/workspace/StepAnalysis.vue')['default']

@@ -4,6 +4,7 @@ import { computed } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import StepRow from './StepRow.vue';
+import SearchProgress from './SearchProgress.vue';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
 const store = useWorkspaceStore();
@@ -91,6 +92,11 @@ async function onReset(): Promise<void> {
     <div class="rw-card__body tree__body rw-scroll">
       <StepRow v-if="store.rootId" :node-id="store.rootId" @preview="(s) => emit('preview', s)" />
       <el-empty v-else description="先设定目标分子并拆解，路线会在这里逐层长出来" :image-size="80" />
+      <!-- 多步搜索的动画面板：跑的时候树体本来只有根节点、其余全是留白，
+           用户从主区完全看不出"在跑"（进度只在右栏底部那行小字里）。
+           放在根节点**之后** ⇒ 它正好落在留白的中央偏上，不遮挡根卡片。
+           显示与否由组件内部判 `store.autoRunning`，这里不做条件渲染。 -->
+      <SearchProgress />
     </div>
   </section>
 </template>

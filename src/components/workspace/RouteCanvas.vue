@@ -46,6 +46,7 @@ import {
 } from '@/utils/route-copy';
 import { buildMolIdents, molCasNote, type MolIdent } from '@/composables/useMolIdents';
 import MolView from '@/components/mol/MolView.vue';
+import SearchProgress from '@/components/workspace/SearchProgress.vue';
 import { routePct } from '@/utils/probability';
 
 const emit = defineEmits<{ preview: [smiles: string] }>();
@@ -1021,6 +1022,20 @@ const dirHint = computed(() =>
         </ul>
       </div>
 
+      <!-- ── 多步搜索进行中：把动画面板钉在画布**上方**的一条 ──────────────
+           为什么不盖在画布正中央：中央会压住目标卡片，而那张卡正是此刻唯一的
+           上下文，留在下面看得见更好。
+           🔴 判据是「在跑 **且** 还没采纳任何一步」——
+              **不能**用 `hasRoute`：它判的是"有没有根节点卡片"，
+              有目标之后就恒为 true（画布里始终画着那张目标卡），
+              拿它当"画布是不是空的"会用错（这么写面板会永远不显示）。
+           🔴 位置必须在下面那个 `v-if="!hasRoute"` 的 div **之前**：
+              `.rcanvas__empty` 与 `.rcanvas__wrap` 是一对 v-if / v-else，
+              中间插任何元素都会让 `v-else` 失效（Vue 只认紧邻的 v-if）。 -->
+      <div v-if="store.autoRunning && !route.length" class="rcanvas__searching">
+        <SearchProgress />
+      </div>
+
       <div v-if="!hasRoute" class="rcanvas__empty">
         <p>还没有采纳任何一步，画不出路线图。</p>
         <p class="rcanvas__empty-hint">
@@ -1743,6 +1758,15 @@ const dirHint = computed(() =>
 .rcanvas__act.is-danger:hover {
   background: var(--rw-bad-l);
   color: var(--rw-bad);
+}
+
+/* ---------- 搜索进行中的占位（画布上方的一条，不遮挡目标卡片） ----------
+   只在 `autoRunning && 还没有采纳任何一步` 时渲染，属于"填空"，不参与路线布局。 */
+.rcanvas__searching {
+  flex: 0 0 auto;
+  display: flex;
+  justify-content: center;
+  padding: 2px 12px 0;
 }
 
 /* ---------- 空态 / 免责 ---------- */

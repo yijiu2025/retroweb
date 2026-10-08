@@ -335,6 +335,16 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const activeNodeId = ref<string | null>(null);
   const autoRunning = ref(false);
   const autoProgress = ref({ done: 0, budget: 0, label: '' });
+  /**
+   * 本次多步搜索的**开始时刻**（ms 时间戳），没在跑时为 null。
+   *
+   * 🔴 为什么不放在组件里自己计时：搜索动画面板是**挂在页签上的** ——
+   *    用户可以在搜索进行中来回切页签、甚至刷新页面后恢复会话。
+   *    组件本地记的起点会被"挂载晚于开跑"这件事骗到（显示的用时比真实短），
+   *    所以起点必须由**发起搜索的那一方**（store.autoRun）落下，
+   *    组件只负责拿它减去 Date.now()。
+   */
+  const autoStartedAt = ref<number | null>(null);
   const globalError = ref<string | null>(null);
   /**
    * 最近一次失败动作的「重试」入口 —— 顶部错误条上的重试按钮用。
@@ -1591,6 +1601,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
     autoRunning.value = true;
     autoStopFlag = false;
+    // 计时起点落在**发起方**（见 autoStartedAt 的注释）—— 必须在自动开跑之前/那一刻记
+    autoStartedAt.value = Date.now();
     autoProgress.value = { done: 0, budget: params.value.budgetCalls, label: '正在创建搜索任务…' };
 
     try {
@@ -1681,6 +1693,9 @@ export const useWorkspaceStore = defineStore('workspace', () => {
       }
     } finally {
       autoRunning.value = false;
+      // 搜索结束（成功 / 失败 / 取消 / 停止都算）⇒ 计时一并归零，
+      // 免得多步动画面板的「已用」在下次开跑前残留一个上一次的读数。
+      autoStartedAt.value = null;
     }
   }
 
@@ -2950,6 +2965,7 @@ function persistSession(): void {
     jobProgress,
     autoRunning,
     autoProgress,
+    autoStartedAt,
     globalError,
     errorRetry,
     retryError,

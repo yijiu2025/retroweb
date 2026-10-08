@@ -693,7 +693,18 @@ function snapshot(): unknown {
  *    为真时可见（RouteStats.stateText）⇒ autoRunning 一落回 false，状态条就变回
  *    「还没有展开任何一步」。用户看到的因此是「点了没反应 / 不运行」。
  */
-const searchJob = { id: 'job-empty', polls: 0, target: '' };
+const searchJob = {
+  id: 'job-empty',
+  polls: 0,
+  target: '',
+  /**
+   * 任务状态。默认 `succeeded`（18.9 要的正是"跑完了、但 0 条路线"）；
+   * 18.17 要验「搜索进行中」的中间态，所以做成**可切**。
+   */
+  state: 'succeeded' as string,
+  /** running 时上报的总进度（0~1）—— 用来验进度条口径 */
+  progress: 1
+};
 
 const adapter = async (config: { url?: string; method?: string; data?: unknown }) => {
   const url = String(config.url || '');
@@ -761,7 +772,8 @@ const adapter = async (config: { url?: string; method?: string; data?: unknown }
       : config.data) as Record<string, unknown>;
     return { data: { ok: true, job_id: searchJob.id }, status: 200, statusText: 'OK', headers: {}, config };
   }
-  // GET /jobs/<id>?since=N —— 第一次轮询就交卷：succeeded + **0 条路线**
+  // GET /jobs/<id>?since=N —— 状态由 `searchJob.state` 决定。
+  // 默认 'succeeded' + **0 条路线**（18.9 那条分支）；18.17 会把它切成 running。
   if (/\/jobs\/[^/?]+/.test(url)) {
     searchJob.polls += 1;
     return {
@@ -769,13 +781,13 @@ const adapter = async (config: { url?: string; method?: string; data?: unknown }
         ok: true,
         job_id: searchJob.id,
         kind: 'search',
-        state: 'succeeded',
-        progress: 1,
-        current: '',
+        state: searchJob.state,
+        progress: searchJob.progress,
+        current: searchJob.state === 'running' ? 'Retro* 扩展第 12 层' : '',
         current_detail: '',
         elapsed: 187.5,
         queued_for: 0,
-        cancelable: false,
+        cancelable: searchJob.state === 'running',
         stages: [],
         logs: [],
         log_seq: 0,
@@ -1075,6 +1087,59 @@ void (async () => {
   await store.autoRun();
   check('🔴 关掉过滤后请求体如实变为 false（否则是"界面关了、后端还开着"）',
     srv.lastJobBody?.use_forward_filter === false, JSON.stringify(srv.lastJobBody));
+
+  // ═══════════════════════════════════════════════════════════════════════
+  // 18.17 多步搜索的**计时起点**（「搜索进行中」动画面板「已用 N 秒」的数据源）
+  // ═══════════════════════════════════════════════════════════════════════
+  // 为什么放在 store 里而不是组件里：面板挂在页签上，用户可以在搜索跑到一半
+  // 才切过来（甚至可以刷新页面后恢复会话）。组件自己在 onMounted 起表的话，
+  // 「已用」永远从 0 开始 —— 比真实时长**少一截**，而这个数字正是"到底跑了多久"
+  // 的唯一依据（预算和百分比都不反映时间）。所以起点必须由发起方落下。
+  //
+  // 🔴 反过来的坑同样要防：跑完忘记归零 ⇒ 下一次开跑前残留上一次的读数。
+  console.log('\n=== 18.17) 多步搜索计时：起点由 store 落下、跑完归零 ===');
+  store.reset({ keepParams: true });
+  const TARGET4 = 'CCCCCCC(=O)O';
+  store.setTarget({
+    ok: true,
+    smiles: TARGET4,
+    kind: 'SMILES',
+    atoms: 8,
+    formula: 'C7H14O2',
+    mw: 130.18,
+    error: ''
+  } as never);
+  searchJob.target = TARGET4;
+  store.params.forwardFilter = false;
+
+  check('开跑前 autoStartedAt 为 null', store.autoStartedAt === null, String(store.autoStartedAt));
+
+  // 让任务**停在 running**：不切的话第一次轮询就 succeeded，量不到中间态
+  searchJob.state = 'running';
+  searchJob.progress = 0.35;
+  // 🔴 故意**不 await**：await 的话 autoRun 一口气跑完，中间态根本没机会被观察
+  const runningPromise = store.autoRun();
+  await sleep(150);
+
+  check('搜索进行中 autoRunning = true', store.autoRunning === true);
+  check('🔴 进行中 autoStartedAt 已落下（组件只负责减去 Date.now，不许自己起表）',
+    typeof store.autoStartedAt === 'number' && store.autoStartedAt > 0,
+    String(store.autoStartedAt));
+
+  // 轮询周期是 1s ⇒ 等过一轮才拿得到后端快照
+  await sleep(1250);
+  check('进度取自后端快照（0.35 × 40 次预算 = 14）',
+    store.autoProgress.done === 14, `${store.autoProgress.done}/${store.autoProgress.budget}`);
+  check('running 期间阶段文案带后端 current', /搜索中/.test(store.autoProgress.label),
+    store.autoProgress.label);
+  check('running 期间依然 autoRunning（面板据此显示）', store.autoRunning === true);
+
+  searchJob.state = 'succeeded';
+  await runningPromise;
+
+  check('跑完 autoRunning 复位', store.autoRunning === false);
+  check('🔴 跑完 autoStartedAt 归零（否则下次开跑前会显示上一次的用时）',
+    store.autoStartedAt === null, String(store.autoStartedAt));
 
   console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
   process.exitCode = failures === 0 ? 0 : 1;
