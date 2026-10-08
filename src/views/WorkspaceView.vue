@@ -201,8 +201,9 @@ onMounted(() => {
 
     <!-- 「编辑这一步」（手改前体）：入口有两条 —— 路线网络里双击卡片、候选面板的按钮，
          而弹窗里装着 Ketcher 画板（首次要拉约 16MB 内核）。全应用只挂这一份，
-         挂两份就是两个 React root + 两份 WASM 常驻内存。开关状态在 store 里。 -->
-    <StepEditDialog />
+         挂两份就是两个 React root + 两份 WASM 常驻内存。开关状态在 store 里。
+         @preview：弹窗里每一行的结构式缩略图点开放大 —— 复用上面这个预览弹窗实例。 -->
+    <StepEditDialog @preview="openPreview" />
   </div>
 </template>
 

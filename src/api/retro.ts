@@ -28,6 +28,7 @@ import type {
   LlmSettingsPayload,
   LlmStatus,
   LoadModelOk,
+  ModelServiceActionOk,
   ModelsResponse,
   ParseResult,
   PredictResult,
@@ -71,23 +72,63 @@ function fail(err: unknown, fallback: string): never {
 }
 
 export const retroApi = {
-  /** 模型列表 + 是否已加载 */
+  /**
+   * 模型状态矩阵 —— 前端只认这一个入口。
+   *
+   * 每行给出：文件在不在、此刻什么状态（`idle / loading / ready / failed /
+   * unavailable`）、多大、是不是当前加载的那一个；外加一份 `service` 概览
+   * （模型服务在不在跑、加载到哪一步、错误是什么）。
+   *
+   * 🔴 用 `retroJobClient`（20s 超时）而不是默认的 10 分钟客户端：
+   *    这是**状态查询**，会被 1.5 秒一轮地轮询 —— 用 10 分钟超时的客户端，
+   *    后端一卡就会把请求堆成山。状态查询必须「快失败」。
+   */
   async models(): Promise<ModelsResponse> {
     try {
-      const { data } = await retroClient.get<ModelsResponse>('/models');
+      const { data } = await retroJobClient.get<ModelsResponse>('/models');
       return data;
     } catch (e) {
       fail(e, '获取模型列表失败');
     }
   },
 
-  /** 预加载模型（避免首次预测等待过久） */
+  /**
+   * 加载 / 切换模型。
+   *
+   * 🔴 返回的是「**已经开始加载**」，立刻返回（不是等 40~90 秒加载完）。
+   *    末尾不发 `/models` 轮询的话，前端就只能一直转圈。
+   *
+   * 语义：模型服务没跑 ⇒ 拉起它；跑着但加载的是别的 ⇒ 停旧起新
+   * （一次只留一个模型 —— 实测每个约 18 GB，两个并存有崩机风险）。
+   */
   async loadModel(model: string): Promise<LoadModelOk> {
     try {
       const { data } = await retroClient.post<LoadModelOk>('/load', { model });
       return data;
     } catch (e) {
       fail(e, '模型加载失败');
+    }
+  },
+
+  /**
+   * 模型服务的启停（`start` / `stop` / `restart`）。
+   *
+   * 🔴 单独一个口子，是为了让「模型服务」和「其他后端」真的能分开操作：
+   *    改完代码重启 API 时模型服务不受影响；反过来想省内存时，可以只停模型服务，
+   *    API 照常提供解析 / 绘制 / AI 分析等能力。
+   */
+  async modelService(
+    action: 'start' | 'stop' | 'restart',
+    model?: string
+  ): Promise<ModelServiceActionOk> {
+    try {
+      const { data } = await retroClient.post<ModelServiceActionOk>(
+        `/model-service/${action}`,
+        model ? { model } : {}
+      );
+      return data;
+    } catch (e) {
+      fail(e, action === 'stop' ? '停止模型服务失败' : '启动模型服务失败');
     }
   },
 

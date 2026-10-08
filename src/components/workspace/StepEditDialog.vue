@@ -5,8 +5,11 @@
  * 两个入口都只是把 store 的 `stepEditNodeId` 设上：
  *   · 路线网络里**双击卡片**；
  *   · 候选面板的「手动指定前体」。
- * 所以本组件不接 props / 不 emit，自己读 store —— 全应用**只挂一份**
- * （弹窗里挂着 Ketcher 画板，一份就是一份 WASM 常驻内存，见 store 里 `stepEditNodeId` 注释）。
+ * 所以本组件不接 props；唯一向上抛的事件是 `preview`（点行内结构式缩略图看大图）——
+ * 放大预览弹窗在 `WorkspaceView` 里**已经有一个实例**（与 StepTree / RouteCanvas 共用），
+ * 这里再挂一份平白多一个 el-dialog，所以按既有链路往上抛，不自己造。
+ * 本组件仍**只挂一份**（弹窗里挂着 Ketcher 画板，一份就是一份 WASM 常驻内存，
+ * 见 store 里 `stepEditNodeId` 注释）。
  *
  * 语义：改的是**"这一步用什么原料"**，不是"改产物"。产物由它所在的节点定死；
  * 这里换前体组合，生成一条 `origin: 'manual'` 的候选反应并采纳。
@@ -26,6 +29,8 @@ import MolView from '@/components/mol/MolView.vue';
 import StructureEditor from '@/components/mol/StructureEditor.vue';
 
 const store = useWorkspaceStore();
+
+const emit = defineEmits<{ preview: [smiles: string] }>();
 
 /** 弹窗开关直接绑 store（单向状态：接口只暴露 open/close，别在别处改这个 ref） */
 const open = computed({
@@ -67,6 +72,20 @@ function rowClean(r: DraftRow): boolean {
   return r.state === 'ok' && !!r.canonical && r.srcText === r.text.trim();
 }
 
+/**
+ * 这一行现在该画哪个结构（空串 = 没得画，显示虚线空盒）。
+ *
+ * 以 `canonical` 为准，且**必须与当前输入对得上**才算数 —— 输入被改写后那张图
+ * 已经描述不了框里的东西了，继续画就是在骗人。
+ * 唯一例外：`checking` 途中先留着上一张（RDKit 校验是一次异步往返，
+ * 这期间把图抽空会闪一下白盒）。
+ */
+function rowMol(r: DraftRow): string {
+  if (!r.canonical) return '';
+  if (r.state === 'checking') return r.canonical;
+  return rowClean(r) ? r.canonical : '';
+}
+
 let rowSeq = 0;
 function blankRow(text = ''): DraftRow {
   rowSeq += 1;
@@ -97,11 +116,33 @@ watch(
       }
       return r;
     });
+    // 分子式另开一趟补（不阻塞开窗，也不改准入判据）
+    void fillFormulas();
   },
   { immediate: true }
 );
 
 /* ---------- 校验 ---------- */
+
+/**
+ * 给「带出来的那几行」补上分子式。
+ *
+ * 开弹窗时初值是我们自己存过的规范 SMILES，直接标 ok（不闪「校验中」，也不白等一次往返）。
+ * 但这样它们的 `formula` 是空的，而用户自己敲/改过的行有 —— 同一个弹窗里一半带分子式
+ * 一半不带，看着像漏了。
+ *
+ * 🔴 只写 `formula`，**不碰** `state` / `canonical` / `srcText`：
+ *    那三个是准入判据的一部分（`rowClean`），在这儿顺手改会把
+ *    「这一行按当前输入校验过没有」的语义搅乱。
+ * 🔴 写回前再确认一次 `rowClean(r)`：这次 await 期间用户可能已经改了输入框。
+ */
+async function fillFormulas(): Promise<void> {
+  for (const r of rows.value) {
+    if (r.formula || !r.canonical || r.state !== 'ok') continue;
+    const res = await parseStructure(r.canonical);
+    if (res.ok && res.formula && rowClean(r)) r.formula = res.formula;
+  }
+}
 
 async function verifyRow(row: DraftRow): Promise<boolean> {
   const text = row.text.trim();
@@ -169,6 +210,7 @@ function loadFrom(list: string[]): void {
     r.state = 'ok';
     return r;
   });
+  void fillFormulas();
 }
 
 /** 「载入」下拉的可选项：这个节点上其它候选给出的前体组合 */
@@ -383,6 +425,26 @@ async function apply(): Promise<void> {
       <div class="sed__rows">
         <div v-for="(row, i) in rows" :key="row.key" class="sed__row">
           <span class="sed__idx">{{ i + 1 }}</span>
+          <!-- 结构式缩略图：只画「与当前输入对得上」的那个结构，点一下放大看大图。
+               🔴 盒子**恒占位**（没结构时是虚线空盒）—— 否则一行由"坏"变"好"
+                  会整行横向跳一下，鼠标跟着乱跑。 -->
+          <button
+            type="button"
+            class="sed__mol"
+            :class="{ 'is-empty': !rowMol(row) }"
+            :disabled="!rowMol(row)"
+            :title="rowMol(row) ? '点击放大查看结构式' : '这一行还没有识别出结构'"
+            @click="emit('preview', rowMol(row))"
+          >
+            <MolView
+              v-if="rowMol(row)"
+              :smiles="rowMol(row)"
+              fit
+              :bond-px="17"
+              :min-px="30"
+              :max-px="140"
+            />
+          </button>
           <el-input
             v-model="row.text"
             class="sed__input"
@@ -517,13 +579,47 @@ async function apply(): Promise<void> {
   gap: 8px;
 }
 
-/* 🔴 行内用 grid 定列：输入框吃掉剩余宽度，右侧三个控件宽度固定 ——
+/* 🔴 行内用 grid 定列：序号 / 结构式缩略图 / 输入框 / 画 / 删除 ——
+   输入框吃掉剩余宽度，其余每列宽固定（结构式那列也固定，没结构时盒子照样占位）——
    用 flex + 输入框 flex:1 在窄屏上会把「画」按钮挤到第二行去 */
 .sed__row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  grid-template-columns: 18px auto minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 8px;
+}
+
+/* 结构式缩略图：恒占位的小方盒，点开看大图（尺寸/圆角/悬停与 MolChip 一致） */
+.sed__mol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 80px;
+  height: 56px;
+  padding: 2px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+  overflow: hidden;
+  cursor: zoom-in;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.sed__mol:hover:not(:disabled) {
+  border-color: var(--rw-brand);
+}
+
+/* 还没有结构：虚线空盒 —— 保留占位，整行宽度不随校验结果跳动 */
+.sed__mol.is-empty,
+.sed__mol:disabled {
+  border-style: dashed;
+  background: var(--rw-surface-2);
+  cursor: default;
+}
+
+.sed__mol .mol-view {
+  width: 100%;
+  height: 100%;
 }
 
 .sed__idx {
@@ -532,8 +628,9 @@ async function apply(): Promise<void> {
   text-align: center;
 }
 
+/* 状态行与输入框左缘对齐（跳过序号 + 缩略图两列） */
 .sed__row-state {
-  grid-column: 2 / -1;
+  grid-column: 3 / -1;
 }
 
 .sed__state {

@@ -29,6 +29,7 @@ import type {
   HistoryTask,
   JobProgress,
   LlmStatus,
+  ModelServiceInfo,
   MolNode,
   ParseSuccess,
   PredictOk,
@@ -59,6 +60,10 @@ const MAX_ANALYSES = 6;
 const MAX_FOLLOWUPS = 10;
 /** 候选反应条件枚举的偏好（跨会话保留，属"用户习惯"而非任务数据） */
 const COND_PREF_KEY = 'retroweb_cond_pref';
+/** 模型加载期间的状态轮询间隔（毫秒） */
+const MODELS_POLL_MS = 1500;
+/** 轮询连续失败几次就收手（后端都没了还每秒打一次没有意义） */
+const MODELS_POLL_MAX_FAILS = 3;
 
 /**
  * 候选反应的**确定性 id**：由「节点 + 前体组合」推出。
@@ -294,7 +299,19 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   });
   const models = ref<RetroModel[]>([]);
   const modelsLoading = ref(false);
+  /**
+   * 正在「加载 / 切换」的那个模型 key（null = 没有进行中的操作）。
+   * 它是**按钮的 loading 态**，不是模型状态 —— 模型状态看每行的 `state`。
+   */
   const modelLoadingKey = ref<string | null>(null);
+  /** 正在停止模型服务（回收规则子进程要几秒） */
+  const modelStopping = ref(false);
+  /** 模型服务（独立常驻进程 :8001）的概览；老后端不给这个字段 ⇒ null */
+  const modelService = ref<ModelServiceInfo | null>(null);
+  /** 模型状态轮询定时器（null = 没在轮询） */
+  let modelsPollTimer: ReturnType<typeof setInterval> | null = null;
+  /** 轮询连续失败次数 */
+  let modelsPollFails = 0;
 
   /** 当前展开候选面板的节点 */
   const activeNodeId = ref<string | null>(null);
@@ -729,35 +746,139 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // ---------- 动作 ----------
+  /**
+   * 真拉一次模型状态矩阵（内部件，不负责 loading 态与错误提示）。
+   *
+   * 🔴 单独抽出来是为了让**轮询**和**用户点刷新**共用同一条取数路径：
+   *    轮询每 1.5 秒跑一次，若它去动 `modelsLoading`，下拉框就会一直闪转圈；
+   *    若它去 `setGlobalError`，网络抖一下就弹出错误条。所以取数与"怎么呈现"分开。
+   */
+  async function fetchModels(): Promise<void> {
+    const res = await retroApi.models();
+    models.value = res.models ?? [];
+    modelService.value = res.service ?? null;
+    if (models.value.length && !models.value.some((m) => m.key === params.value.model)) {
+      // 换过默认模型时优先落到「已经就绪」的那一个，其次才是文件存在的第一个
+      const pick =
+        models.value.find((m) => m.state === 'ready') ??
+        models.value.find((m) => m.exists !== false) ??
+        models.value[0];
+      params.value.model = pick.key;
+    }
+    syncModelsPolling();
+  }
+
+  /** 拉模型列表（用户可见的入口：首次挂载 / 加载失败后的重试） */
   async function loadModels(): Promise<void> {
     modelsLoading.value = true;
     try {
-      const res = await retroApi.models();
-      models.value = res.models ?? [];
-      if (models.value.length && !models.value.some((m) => m.key === params.value.model)) {
-        params.value.model = models.value[0].key;
-      }
+      await fetchModels();
     } catch (e) {
       setGlobalError((e as Error).message, () => void loadModels());
       models.value = [];
+      modelService.value = null;
+      stopModelsPolling();
     } finally {
       modelsLoading.value = false;
     }
   }
 
-  /** 预热模型（首次预测要加载模型 + 起规则子进程，可达数十秒） */
-  async function warmModel(): Promise<void> {
-    modelLoadingKey.value = params.value.model;
+  /**
+   * 模型只要还在加载，就每 1.5 秒重读一次 `/api/models`，直到它落到终态。
+   *
+   * 🔴 为什么必须轮询：`/api/load` 是**立刻返回**的（只表示"已受理"），
+   *    模型要 40~90 秒才真的能用。没有轮询，界面就永远停在"加载中"，
+   *    用户分不清是在正常加载还是卡死了 —— 也就谈不上"什么时候加载好显示就绪"。
+   *
+   * 🔴 为什么不能依赖 WebSocket / SSE：模型服务在加载期间**连 HTTP 都还没起**
+   *    （它必须先在单线程阶段把模型加载完，见 web/model_server.py），
+   *    没有任何长连接可挂。只能轮询。
+   */
+  function syncModelsPolling(): void {
+    const busy =
+      modelService.value?.state === 'loading' || models.value.some((m) => m.state === 'loading');
+    if (!busy) {
+      stopModelsPolling();
+      return;
+    }
+    if (modelsPollTimer !== null) return;
+    modelsPollFails = 0;
+    modelsPollTimer = setInterval(() => {
+      void fetchModels()
+        .then(() => {
+          modelsPollFails = 0;
+        })
+        .catch(() => {
+          // 轮询失败**静默**（不弹错误条）：网络抖一下不该刷屏。
+          // 但连续失败到上限就停 —— 后端都没了还每秒打一次毫无意义。
+          if (++modelsPollFails >= MODELS_POLL_MAX_FAILS) stopModelsPolling();
+        });
+    }, MODELS_POLL_MS);
+  }
+
+  function stopModelsPolling(): void {
+    if (modelsPollTimer !== null) {
+      clearInterval(modelsPollTimer);
+      modelsPollTimer = null;
+    }
+    modelsPollFails = 0;
+  }
+
+  /**
+   * 加载 / 切换模型（「模型后启动」的用户入口）。
+   *
+   * 后端立刻返回「已受理」，随后由 `syncModelsPolling` 接手，直到就绪。
+   * 换模型 = 重启模型服务进程（加载必须在单线程阶段完成），所以这里会等几秒。
+   */
+  async function warmModel(key?: string): Promise<void> {
+    const target = key || params.value.model;
+    modelLoadingKey.value = target;
     try {
-      const res = await retroApi.loadModel(params.value.model);
-      await loadModels();
-      if (res && res.ok === false) setGlobalError(res.error || '模型加载失败', () => void warmModel());
+      const res = await retroApi.loadModel(target);
+      if (res && res.ok === false) {
+        setGlobalError(res.error || '模型加载失败', () => void warmModel(target));
+        return;
+      }
+      await fetchModels();
     } catch (e) {
-      setGlobalError((e as Error).message, () => void warmModel());
+      setGlobalError((e as Error).message, () => void warmModel(target));
     } finally {
       modelLoadingKey.value = null;
     }
   }
+
+  /** 停止模型服务（省内存）。API 不受影响 —— 解析 / 绘制 / AI 分析照常可用。 */
+  async function stopModelService(): Promise<void> {
+    modelStopping.value = true;
+    try {
+      const res = await retroApi.modelService('stop');
+      if (res && res.ok === false) {
+        setGlobalError(res.error || '停止模型服务失败', () => void stopModelService());
+        return;
+      }
+      await fetchModels();
+    } catch (e) {
+      setGlobalError((e as Error).message, () => void stopModelService());
+    } finally {
+      modelStopping.value = false;
+    }
+  }
+
+  /** 当前下拉里选中的那一行（拿它的 state 决定按钮长什么样） */
+  const currentModel = computed<RetroModel | null>(
+    () => models.value.find((m) => m.key === params.value.model) ?? null
+  );
+
+  /** 选中的模型是不是已就绪、可以立刻推理 */
+  const modelReady = computed(() => currentModel.value?.state === 'ready');
+
+  /** 有任何一个模型/服务在加载中（含"选的那个不是加载的那个"这种情形） */
+  const modelBusy = computed(
+    () => modelService.value?.state === 'loading' || models.value.some((m) => m.state === 'loading')
+  );
+
+  /** 模型服务写的人话阶段文案，直接可展示 */
+  const modelPhase = computed(() => modelService.value?.phase || '');
 
   /** 设置目标分子：重置整棵树，并（按上下文）编辑现有会话或开一个新会话 */
   function setTarget(parsed: ParseSuccess): void {
@@ -1426,12 +1547,26 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         if (snap.state === 'succeeded') {
           const result = snap.result as SearchOk | undefined;
           if (result && result.ok) {
+            const nRoutes = result.routes?.length ?? 0;
             applySearchRoutes(result);
             autoProgress.value = {
               done: params.value.budgetCalls,
               budget: params.value.budgetCalls,
-              label: `完成 · ${result.routes?.length ?? 0} 条路线`
+              label: `完成 · ${nRoutes} 条路线`
             };
+            if (!nRoutes) {
+              // 🔴 0 条路线时 `applySearchRoutes` 第一行就 `return` —— 树、页签、
+              //    统计一个都不动；而上面那句「完成 · 0 条路线」只在 `autoRunning`
+              //    为真时可见（见 RouteStats 的 stateText），`autoRunning` 一落回
+              //    false，状态条就变回「还没有展开任何一步」。用户看到的因此是
+              //    「点了没反应 / 不运行」—— 必须留下一条**不会自己消失**的说明。
+              setGlobalError(
+                `搜索跑完了，但预算内没有找到完整路线：「${target.smiles}」。` +
+                  '可提高「拆分约束 → 调用预算 / 最大深度」，或放宽「起始物料重原子上限」，' +
+                  '或改用 Pistachio（模板库 146,256 条，是 USPTO-50K 的 15 倍）。',
+                () => void autoRun()
+              );
+            }
           } else {
             throw new Error((result as { error?: string } | undefined)?.error || '搜索无结果');
           }
@@ -2705,6 +2840,13 @@ function persistSession(): void {
     models,
     modelsLoading,
     modelLoadingKey,
+    modelStopping,
+    modelService,
+    currentModel,
+    modelReady,
+    modelBusy,
+    modelPhase,
+    stopModelService,
     activeNodeId,
     jobProgress,
     autoRunning,

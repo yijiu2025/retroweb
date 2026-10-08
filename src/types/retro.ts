@@ -2,15 +2,60 @@
 
 // ---------- 服务接口 ----------
 
+/**
+ * 单个模型的可用状态。
+ *
+ * 🔴 后端 `/api/models` 现在**按模型**报状态，不再是「一个全局布尔」：
+ *    从前所有模型共用 `loaded`，两个模型都显示「已加载」，实际只有一个真的加载了，
+ *    另一个一预测就失败。现在没加载的就是 `idle`，点一下才后启动。
+ */
+export type ModelState = 'ready' | 'loading' | 'failed' | 'idle' | 'unavailable';
+
 export interface RetroModel {
   key: string;
   label: string;
-  loaded: boolean;
+  /** 模型文件在不在（`false` ⇒ state 必为 `unavailable`） */
+  exists: boolean;
+  /** 该模型此刻的真实状态 */
+  state: ModelState;
+  /** 是不是模型服务当前加载的那一个 */
+  is_current: boolean;
+  /** 模型目录体积（字节；`exists=false` 时为 0） */
+  size_bytes?: number;
+  path?: string;
+}
+
+/**
+ * 模型服务（独立常驻进程 :8001）的概览。
+ *
+ * 🔴 它和 API 服务（:8000）是**两个进程**：API 秒起，模型在它后面慢慢加载。
+ *    所以「API 起来了」不等于「模型能用了」—— 这个对象就是那道区分。
+ */
+export interface ModelServiceInfo {
+  /** HTTP 通 = true。只读 state 文件时为 false（加载早期就是这种） */
+  running: boolean;
+  /** `stopped | idle | loading | ready | failed` */
+  state: string;
+  pid?: number | null;
+  port?: number;
+  /** 人话，直接可展示：「导入推理依赖…」 */
+  phase?: string;
+  error?: string;
+  /** 加载已耗时（秒） */
+  elapsed?: number | null;
+  /** 上次加载完成耗时（秒） */
+  load_seconds?: number | null;
+  /** 状态是怎么读到的：http（权威）/ file（加载早期）/ none */
+  source?: 'http' | 'file' | 'none' | string;
 }
 
 export interface ModelsResponse {
   ok: boolean;
   models: RetroModel[];
+  /** 模型服务概览（老后端没有这个字段 ⇒ 可选） */
+  service?: ModelServiceInfo;
+  /** 模型服务当前加载的模型 key（没加载为空串） */
+  current?: string;
 }
 
 /** /api/parse 成功 */
@@ -114,9 +159,34 @@ export interface SearchOk {
   search_seconds: number;
 }
 
+/**
+ * `POST /api/load`（加载 / 切换模型）的返回。
+ *
+ * 🔴 它表示「**已经开始加载**」，不是「已经就绪」——加载要 40~90 秒，
+ *    让 HTTP 挂在那儿等，前端只看到一个转圈，也分不清是卡死还是在正常加载。
+ *    拿到这个返回后应当继续轮询 `/api/models`，直到该模型 `state === 'ready'`。
+ */
 export interface LoadModelOk {
   ok: boolean;
-  seconds?: number;
+  /** 实际开始加载的模型 key（不传时由后端按 RETRO_PRELOAD / 第一个可用的补上） */
+  model?: string;
+  /** true = 已受理，加载在后台进行 */
+  started?: boolean;
+  /** true = 本来就是这个模型，没有重启进程 */
+  already?: boolean;
+  /** true = 停掉了旧模型、拉起了新进程（换模型 = 重启模型服务） */
+  restarted?: boolean;
+  /** 受理后的模型服务状态快照 */
+  service?: ModelServiceInfo;
+  error?: string;
+}
+
+/** `POST /api/model-service/<action>` 的返回（start / stop / restart） */
+export interface ModelServiceActionOk {
+  ok: boolean;
+  action?: string;
+  model?: string;
+  service?: ModelServiceInfo | { ok?: boolean; stopped?: boolean; forced?: boolean };
   error?: string;
 }
 

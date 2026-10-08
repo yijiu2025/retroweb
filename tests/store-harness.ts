@@ -7,6 +7,7 @@
 import { createPinia, setActivePinia } from 'pinia';
 import { effectScope } from 'vue';
 import { reactionIdFor, useWorkspaceStore } from '../src/stores/workspace';
+import { retroClient, retroJobClient } from '../src/api/retro';
 import { buildRouteCopy, routeCopyOkMsg } from '../src/utils/route-copy';
 import { buildMolIdents, molCasNote } from '../src/composables/useMolIdents';
 import type { MolNode, Reaction } from '../src/types/retro';
@@ -50,9 +51,14 @@ function rxn(nodeId: string, precursors: string[], prob: number): Reaction {
 }
 
 const scope = effectScope();
+/**
+ * scope 里建好的 store —— 第 18 节要用它，但那一节是 **异步** 的（等轮询），
+ * 而 `scope.run` 的回调是同步的 ⇒ 需要从这里带出来。
+ */
+let store!: ReturnType<typeof useWorkspaceStore>;
 scope.run(() => {
   setActivePinia(createPinia());
-  const store = useWorkspaceStore();
+  store = useWorkspaceStore();
 
   const TARGET = 'CC(=O)Oc1ccccc1C(=O)O'; // 阿司匹林
   const A = 'CC(=O)OC(C)=O'; // 乙酸酐
@@ -588,7 +594,310 @@ scope.run(() => {
     String(store.setPrecursors(T2, [A, B]))
   );
 
-  console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
 });
 
-process.exitCode = failures === 0 ? 0 : 1;
+// ═══════════════════════════════════════════════════════════════════════════
+// 18) 模型状态矩阵 + 就绪轮询
+// ═══════════════════════════════════════════════════════════════════════════
+// 只换 **传输层**（axios 适配器），store 的动作、状态机、轮询都是真的。
+// 起一个真后端来测是不现实的：模型加载要 40~90 秒、18 GB 内存。
+//
+// 契约来自 web/model_client.py 的 catalog()：
+//   { ok, service:{running,state,pid,port,phase,error,elapsed,load_seconds,source},
+//     current, models:[{key,label,exists,state,is_current,...}] }
+
+interface FakeModel {
+  key: string;
+  label: string;
+  exists: boolean;
+  state: string;
+  is_current: boolean;
+}
+
+/** 服务端"当下"的状态：用例改写它，适配器按它作答 —— 这样才验得出轮询真的在重读 */
+const srv: {
+  svcState: string;
+  cur: string;
+  phase: string;
+  elapsed: number | null;
+  loadSeconds: number | null;
+  models: FakeModel[];
+  hits: string[];
+  fail: boolean;
+} = {
+  svcState: 'stopped',
+  cur: '',
+  phase: '',
+  elapsed: null,
+  loadSeconds: null,
+  models: [
+    { key: 'pistachio', label: 'Pistachio（主推，性能最强）', exists: true, state: 'idle', is_current: false },
+    { key: 'uspto50k', label: 'USPTO-50K（基准模型，较弱）', exists: true, state: 'idle', is_current: false }
+  ],
+  hits: [],
+  fail: false
+};
+
+function snapshot(): unknown {
+  return {
+    ok: true,
+    service: {
+      running: srv.svcState === 'ready' || srv.svcState === 'loading',
+      state: srv.svcState,
+      pid: srv.svcState === 'stopped' ? null : 4321,
+      port: 8001,
+      phase: srv.phase,
+      error: srv.svcState === 'failed' ? 'ValueError: 模型文件损坏' : '',
+      elapsed: srv.elapsed,
+      load_seconds: srv.loadSeconds,
+      source: srv.svcState === 'ready' ? 'http' : 'file'
+    },
+    current: srv.cur,
+    // 🔴 必须**每次克隆**。真实后端每次响应都是刚 parse 出来的新对象；
+    //    这里若把 srv.models 原样交出去，store 拿到的是同一个数组引用，
+    //    `ref.value = 同一个引用` 因 Object.is 相等而**不触发** reactivity，
+    //    于是依赖它的 computed（modelReady / currentModel）永远停在旧值 ——
+    //    这是夹具的假象，不是产品的 bug（第一版就是这么被骗了两条红）。
+    models: srv.models.map((m) => ({ ...m }))
+  };
+}
+
+/**
+ * 搜索任务夹具（只覆盖一条最坑的分支：**跑完但 0 条路线**）。
+ *
+ * 🔴 为什么要专门测它：`applySearchRoutes` 在 routes 为空时**第一行就 return**，
+ *    树 / 页签 / 统计一个都不动；而「完成 · 0 条路线」这句只在 `autoRunning`
+ *    为真时可见（RouteStats.stateText）⇒ autoRunning 一落回 false，状态条就变回
+ *    「还没有展开任何一步」。用户看到的因此是「点了没反应 / 不运行」。
+ */
+const searchJob = { id: 'job-empty', polls: 0, target: '' };
+
+const adapter = async (config: { url?: string; method?: string; data?: unknown }) => {
+  const url = String(config.url || '');
+  srv.hits.push(url);
+  if (srv.fail) throw new Error('boom');
+
+  // GET /models
+  if (url.endsWith('/models')) {
+    return { data: snapshot(), status: 200, statusText: 'OK', headers: {}, config };
+  }
+  // POST /load —— 立刻返回"已受理"，并把服务端状态切到 loading
+  if (url.endsWith('/load')) {
+    const body = (typeof config.data === 'string' ? JSON.parse(config.data) : config.data) as {
+      model?: string;
+    };
+    const key = String(body?.model || '');
+    srv.cur = key;
+    srv.svcState = 'loading';
+    srv.phase = '准备加载';
+    srv.elapsed = 0;
+    for (const m of srv.models) {
+      m.is_current = m.key === key;
+      m.state = m.key === key ? 'loading' : 'idle';
+    }
+    return { data: { ok: true, model: key, started: true }, status: 200, statusText: 'OK', headers: {}, config };
+  }
+  // POST /model-service/stop
+  if (/\/model-service\/stop$/.test(url)) {
+    srv.svcState = 'stopped';
+    srv.cur = '';
+    srv.phase = '';
+    srv.elapsed = null;
+    for (const m of srv.models) {
+      m.is_current = false;
+      m.state = 'idle';
+    }
+    return { data: { ok: true, action: 'stop' }, status: 200, statusText: 'OK', headers: {}, config };
+  }
+  // POST /jobs —— 建搜索任务（立刻返回 job_id，与真实后端一致）
+  if (url.endsWith('/jobs')) {
+    searchJob.polls = 0;
+    return { data: { ok: true, job_id: searchJob.id }, status: 200, statusText: 'OK', headers: {}, config };
+  }
+  // GET /jobs/<id>?since=N —— 第一次轮询就交卷：succeeded + **0 条路线**
+  if (/\/jobs\/[^/?]+/.test(url)) {
+    searchJob.polls += 1;
+    return {
+      data: {
+        ok: true,
+        job_id: searchJob.id,
+        kind: 'search',
+        state: 'succeeded',
+        progress: 1,
+        current: '',
+        current_detail: '',
+        elapsed: 187.5,
+        queued_for: 0,
+        cancelable: false,
+        stages: [],
+        logs: [],
+        log_seq: 0,
+        result: {
+          ok: true,
+          target: searchJob.target,
+          routes: [],
+          starting_materials: [],
+          stats: { or_nodes: 12, and_nodes: 4, expansions: 4 }
+        }
+      },
+      status: 200,
+      statusText: 'OK',
+      headers: {},
+      config
+    };
+  }
+  return { data: { ok: true }, status: 200, statusText: 'OK', headers: {}, config };
+};
+(retroClient.defaults as unknown as { adapter: unknown }).adapter = adapter;
+(retroJobClient.defaults as unknown as { adapter: unknown }).adapter = adapter;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+void (async () => {
+  console.log('\n=== 18) 模型状态矩阵 + 就绪轮询 ===');
+
+  // ── 18.1 服务没跑：两个模型都该是 idle，且界面不该说"已加载" ──────────
+  await store.loadModels();
+  check('服务未运行时，两份模型都在列表里', store.models.length === 2, String(store.models.length));
+  check(
+    '🔴 没加载的模型 state = idle（旧实现共用全局 loaded ⇒ 两个都显示「已加载」）',
+    store.models.every((m) => m.state === 'idle'),
+    JSON.stringify(store.models.map((m) => [m.key, m.state]))
+  );
+  check('默认选中的是文件存在的那个', store.params.model === 'pistachio', store.params.model);
+  check('服务概览被带上来了', store.modelService?.port === 8001, JSON.stringify(store.modelService));
+  check('服务 state = stopped', store.modelService?.state === 'stopped');
+  check('此时没有"就绪"', store.modelReady === false);
+  check('此时也没有"在忙"', store.modelBusy === false);
+  check('未在加载 ⇒ 不轮询', srv.hits.filter((u) => u.endsWith('/models')).length === 1,
+    `models 请求数 ${srv.hits.filter((u) => u.endsWith('/models')).length}`);
+
+  // ── 18.2 点「加载」：立刻受理，随即进入轮询 ───────────────────────────
+  srv.hits.length = 0;
+  const loadP = store.warmModel();
+  await loadP;
+  check('POST /load 发出去了', srv.hits.some((u) => u.endsWith('/load')), srv.hits.join(' '));
+  check(
+    '🔴 受理后该模型变 loading（不是"已就绪"—— 后端只保证"已开始"）',
+    store.models.find((m) => m.key === 'pistachio')?.state === 'loading',
+    JSON.stringify(store.models.map((m) => [m.key, m.state]))
+  );
+  check('modelBusy = true', store.modelBusy === true);
+  check('modelReady 仍是 false', store.modelReady === false);
+
+  // ── 18.3 轮询真的在重读：等 ~3.4 秒应至少多打 2 次 ────────────────────
+  const before = srv.hits.filter((u) => u.endsWith('/models')).length;
+  await sleep(3600);
+  const after = srv.hits.filter((u) => u.endsWith('/models')).length;
+  check(
+    '🔴 加载期间每 1.5 秒重读一次 /api/models（不轮询 ⇒ 界面永远停在"加载中"）',
+    after - before >= 2,
+    `${before} → ${after}`
+  );
+
+  // ── 18.4 服务端就绪 ⇒ 轮询必须自己停 ─────────────────────────────────
+  srv.svcState = 'ready';
+  srv.phase = '';
+  srv.elapsed = 12.3;
+  srv.loadSeconds = 12.3;
+  for (const m of srv.models) m.state = m.key === srv.cur ? 'ready' : 'idle';
+  await sleep(1800); // 让下一次轮询抓到 ready
+  check('抓到 ready', store.modelReady === true, JSON.stringify(store.models.map((m) => [m.key, m.state])));
+  // 🔴 这一条是下一条的**前提**：轮询根本没启动时，「就绪后自己停」会假绿。
+  //    必须证明"停之前确实在轮"。
+  check('🔴 就绪之前确实轮询过（否则下一条是空断言）', after >= 2, `轮询次数 ${after}`);
+  check('modelBusy 归 false', store.modelBusy === false);
+  const settled = srv.hits.filter((u) => u.endsWith('/models')).length;
+  await sleep(3600);
+  const later = srv.hits.filter((u) => u.endsWith('/models')).length;
+  check(
+    '🔴 就绪后**自己停**轮询（不停 ⇒ 每秒白打后端一辈子）',
+    later === settled && settled > after,
+    `${after} → ${settled} → ${later}`
+  );
+  check('load_seconds 带得出来', store.modelService?.load_seconds === 12.3);
+
+  // ── 18.5 加载失败：状态如实呈现，且不谎报就绪 ────────────────────────
+  srv.svcState = 'failed';
+  srv.models.forEach((m) => (m.state = m.key === srv.cur ? 'failed' : 'idle'));
+  await store.loadModels();
+  check('失败如实报 failed', store.currentModel?.state === 'failed');
+  check('失败不是"就绪"', store.modelReady === false);
+  check('错误原因透出来了', (store.modelService?.error || '').includes('损坏'), store.modelService?.error);
+
+  // ── 18.6 轮询期间连续失败要收手（后端都没了不该每秒打一辈子）─────────
+  // 先让服务回到 loading 并把轮询**正常跑起来**，再让传输开始失败 ——
+  // 一上来就失败的话轮询根本不会启动，那条断言就是空的（假绿）。
+  srv.fail = false;
+  srv.svcState = 'loading';
+  srv.models.forEach((m) => (m.state = m.key === srv.cur ? 'loading' : 'idle'));
+  await store.loadModels();
+  store.clearGlobalError();
+  srv.hits.length = 0;
+  srv.fail = true;
+  await sleep(6000); // 1.5s 一次 ⇒ 大约 4 次尝试，上限 3 次后应该停
+  const failedHits = srv.hits.filter((u) => u.endsWith('/models')).length;
+  await sleep(3600);
+  const failedLater = srv.hits.filter((u) => u.endsWith('/models')).length;
+  check(
+    '🔴 连续失败到上限就停止轮询（不无限重试）',
+    failedLater === failedHits && failedHits >= 2 && failedHits <= 4,
+    `${failedHits} → ${failedLater}`
+  );
+  check(
+    '🔴 轮询失败不刷错误条（网络抖一下不该给用户弹报错）',
+    store.globalError === null,
+    String(store.globalError)
+  );
+
+  // ── 18.7 单发失败（用户手动点刷新）仍要如实报错 + 清空残留状态 ────────
+  await store.loadModels();
+  check('手动的失败照旧弹错（不是静默）', !!store.globalError, String(store.globalError));
+  check('失败后不留半截模型列表', store.models.length === 0, String(store.models.length));
+  check('失败后不留服务概览', store.modelService === null);
+
+  // ── 18.8 停止模型服务：状态归 idle，且不谎报"仍在就绪" ───────────────
+  srv.fail = false;
+  srv.svcState = 'ready';
+  srv.loadSeconds = 40;
+  srv.models.forEach((m) => (m.state = m.key === srv.cur ? 'ready' : 'idle'));
+  await store.loadModels();
+  check('先回到就绪', store.modelReady === true);
+  await store.stopModelService();
+  check('停止后 service.state = stopped', store.modelService?.state === 'stopped', store.modelService?.state);
+  check('停止后模型全归 idle（不留"已就绪"）', store.models.every((m) => m.state === 'idle'));
+  check('停止后 modelReady = false', store.modelReady === false);
+  check('停止后 modelBusy = false', store.modelBusy === false);
+
+  // ── 18.9 搜索跑完但 0 条路线：**不许静默**（用户报的「点了没反应」） ──────
+  //  真实链路：applySearchRoutes 在 routes 为空时第一行就 return（树一个节点都不动），
+  //  而「完成 · 0 条路线」只在 autoRunning 期间可见 ⇒ 状态条随后变回「还没有展开
+  //  任何一步」。这条断言的是「必须留下一条不会自己消失的说明」。
+  console.log('\n=== 18.9) 搜索 0 条路线：不许静默 ===');
+  store.reset({ keepParams: true });
+  const TARGET2 = 'CCCCCCCC(=O)O';
+  store.setTarget({
+    ok: true,
+    smiles: TARGET2,
+    kind: 'SMILES',
+    atoms: 9,
+    formula: 'C8H16O2',
+    mw: 144.21,
+    error: ''
+  } as never);
+  searchJob.target = TARGET2;
+  const nodesBefore = Object.keys(store.nodes).length;
+  await store.autoRun();
+  check('0 条路线 ⇒ 树不变（applySearchRoutes 直接 return）',
+    Object.keys(store.nodes).length === nodesBefore);
+  check('🔴 0 条路线必须留下说明（静默 = 用户以为没运行）', !!store.globalError,
+    String(store.globalError));
+  check('说明里给可操作项（调用预算 / 最大深度）',
+    /调用预算|最大深度/.test(store.globalError ?? ''), String(store.globalError));
+  check('autoRunning 已复位（否则停止按钮会一直挂着）', store.autoRunning === false);
+  check('进度条预算仍是界面的 budgetCalls', store.autoProgress.budget === store.params.budgetCalls,
+    `${store.autoProgress.budget} vs ${store.params.budgetCalls}`);
+
+  console.log(`\n========== 总结: ${failures === 0 ? 'ALL PASS' : failures + ' FAILED'} ==========`);
+  process.exitCode = failures === 0 ? 0 : 1;
+})();

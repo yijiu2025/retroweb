@@ -482,6 +482,26 @@ let downCard: HTMLElement | null = null;
 /** 上一次「点」的卡片与时刻 */
 let lastTap: { id: string; at: number } | null = null;
 
+/** 「点选」的位移容差（**欧氏**距离，px）——
+ *  🔴 真人点击手会抖几 px。这里曾经是 `|dx|+|dy| > 4`，实测手抖 3px（曼哈顿 6）就被
+ *     当成拖拽丢掉，于是两次单击各记半个、永远配不成对 = 「双击没用」。
+ *     真实平移是几十 px 起步，10px 不会把平移误判成点选。 */
+const TAP_SLOP = 10;
+/** 连击窗口（ms）—— 🔴 要比系统**宽**一档：Windows 双击间隔默认 500ms，而且这里量的是
+ *  「两次 pointerup」之差，比人感知的"两次点击间隔"还多一次点击的耗时（~70ms）。
+ *  曾经写 400ms ⇒ 实测感知间隔 350ms 就失效，比操作系统还严 = 「双击没用」。 */
+const TAP_GAP = 800;
+/**
+ * 拖动**死区**（px，欧氏）—— 🔴 按下时**不立刻**进平移态，先等指针真的走过这么远。
+ *
+ * 曾经是"一按下就 `panning = true`"，于是**在卡片上单击也变成「抓住只能拖」**：
+ *   · 光标瞬间由 grab 变 grabbing —— 用户看到的就是"点一下就被抓住"；
+ *   · `.is-panning` 会让 `.rcanvas__plane { pointer-events: none }`，
+ *     卡片自己的悬停态与底部图标行当场被抹掉，这张卡等于"按不住"。
+ * 过了死区才真平移；而"点选"最多 10px（TAP_SLOP），两者互不干扰。
+ */
+const PAN_SLOP = 6;
+
 function onPointerDown(e: PointerEvent): void {
   const el = wrap.value;
   if (!el || e.button !== 0) return;
@@ -496,32 +516,44 @@ function onPointerDown(e: PointerEvent): void {
   //    「没有位移的两次快速按下」（见 onPointerUp）。
   downCard = (e.target as HTMLElement | null)?.closest('.rcanvas__card') as HTMLElement | null;
   panFrom = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
-  panning.value = true;
+  // 🔴 **不在这里进平移态**（原因见 PAN_SLOP）：单击不该把画布"抓"起来
+  panning.value = false;
   el.setPointerCapture(e.pointerId);
 }
 
 function onPointerMove(e: PointerEvent): void {
   const el = wrap.value;
   if (!panFrom || !el) return;
-  el.scrollLeft = panFrom.left - (e.clientX - panFrom.x);
-  el.scrollTop = panFrom.top - (e.clientY - panFrom.y);
+  const dx = e.clientX - panFrom.x;
+  const dy = e.clientY - panFrom.y;
+  // 死区：没过之前一个字都不动 —— 画布不动、光标也不变（见 PAN_SLOP）
+  if (!panning.value && Math.hypot(dx, dy) <= PAN_SLOP) return;
+  panning.value = true;
+  // 🔴 偏移始终**从最初按下点**算，不是从死区边界算（否则吞掉的 6px 会让整段拖动"越拖越偏"，
+  //    `verify-canvas-panzoom` 的"滚动位移 = −鼠标位移（≤1px）"就是照这个判的）。
+  el.scrollLeft = panFrom.left - dx;
+  el.scrollTop = panFrom.top - dy;
 }
 
 function onPointerUp(e: PointerEvent): void {
   const el = wrap.value;
   if (!panFrom) return;
-  // 拖过就不算「点」—— 否则平移画布时会一路弹编辑窗
-  const moved = Math.abs(e.clientX - panFrom.x) + Math.abs(e.clientY - panFrom.y);
+  // 拖过就不算「点」—— 否则平移画布时会一路弹编辑窗。
+  // 🔴 用欧氏距离而不是 `|dx|+|dy|`：后者对斜向抖动惩罚翻倍（3px+3px 就成了 6）。
+  const moved = Math.hypot(e.clientX - panFrom.x, e.clientY - panFrom.y);
   const card = downCard;
+  const wasPanning = panning.value;
   panFrom = null;
   downCard = null;
   panning.value = false;
   if (el?.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
-  if (!card || moved > 4) return;
+  // 真平移过就不算「点」——上面 `moved > TAP_SLOP` 已能挡住绝大多数情况，
+  // 但"拖出去又拖回来"这种总位移很小的手势只能靠 `wasPanning` 兜住。
+  if (!card || wasPanning || moved > TAP_SLOP) return;
   const id = card.dataset.nodeId ?? '';
   if (!id) return;
   const now = Date.now();
-  if (lastTap && lastTap.id === id && now - lastTap.at < 400) {
+  if (lastTap && lastTap.id === id && now - lastTap.at < TAP_GAP) {
     lastTap = null;
     store.openStepEditor(id);
   } else {
@@ -674,11 +706,22 @@ function onPrint(): void {
 }
 
 /* ---------- 卡片上的动作图标 ---------- */
-type ActionKey = 'expand' | 'analysis' | 'buy' | 'unbuy' | 'copy' | 'preview' | 'remove' | 'query';
+type ActionKey =
+  | 'expand'
+  | 'analysis'
+  | 'edit'
+  | 'buy'
+  | 'unbuy'
+  | 'copy'
+  | 'preview'
+  | 'remove'
+  | 'query';
 
 /** 单色线性图标（24 格 viewBox，一条或多条 path）—— 图标行要装得下 4 个，所以不写文字 */
 const ICONS: Record<ActionKey, string[]> = {
   expand: ['M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z', 'M12 8.5v7', 'M8.5 12h7'],
+  // 铅笔 —— 卡片上的「改这一步」入口
+  edit: ['M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3Z', 'M13.6 6.4l3 3'],
   analysis: [
     'M6 3h12',
     'M9 3v6.6L4.7 18A2 2 0 0 0 6.5 21h11a2 2 0 0 0 1.8-3L15 9.6V3',
@@ -714,6 +757,7 @@ const ICONS: Record<ActionKey, string[]> = {
 const ICON_TITLE: Record<ActionKey, string> = {
   expand: '展开：再走一步单步预测',
   analysis: '查看这一步的工艺分析',
+  edit: '改这一步：手动指定它的前体（也可以直接双击卡片）',
   buy: '标记为可购买原料',
   unbuy: '取消「可购买」标记',
   copy: '复制标识：SMILES / CAS / 名称 / 分子式 / 分子量 / PubChem CID',
@@ -750,6 +794,12 @@ function actionsFor(card: RCard): ActionKey[] {
   if (card.kind === 'unknown' && !node.fetched && !node.duplicateOf) out.push('expand');
   if (card.kind === 'target' && node.chosenReactionId === null && !node.fetched) out.push('expand');
   if (node.chosenReactionId) out.push('analysis');
+  // 🔴 「改这一步」必须要有一个**看得见**的入口。
+  //    原先只有"双击卡片"这一个手势入口：点慢一点、点在底部图标行上（那行是 button，
+  //    pointerdown 被过滤）、用触屏（pointerType 不是 mouse）、或者页面还是旧 bundle，
+  //    任何一种都会让人以为"这功能没做"（用户原话：「双击无效」「是我打开的方式不对吗」）。
+  //    判据与「工艺分析」同源 —— **有这一步**才谈得上改它的前体。
+  if (node.chosenReactionId) out.push('edit');
   out.push(node.purchased ? 'unbuy' : 'buy');
   // 可购买（或起始物料）才给「询价」入口 —— 中间体/目标还没走到采购这一步
   if (node.purchased || card.kind === 'starting') out.push('query');
@@ -763,6 +813,9 @@ function onAction(key: ActionKey, card: RCard): void {
   switch (key) {
     case 'expand':
       void store.predictNode(card.id);
+      break;
+    case 'edit':
+      store.openStepEditor(card.id);
       break;
     case 'analysis':
       store.analysisFocus = card.id;
@@ -1048,7 +1101,7 @@ const dirHint = computed(() =>
               :data-kind="c.kind"
               :data-node-id="c.id"
               :style="{ left: c.x + 'px', top: c.y + 'px', width: CARD_W + 'px', height: CARD_H + 'px' }"
-              title="双击可手动改这一步的前体"
+              title="双击卡片，或点卡片底部的「改这一步」图标，可手动改这一步的前体"
             >
               <!-- 目标产物自己带个牌子：蓝色高亮框说明"这是重点"，牌子说明"这是目标"。
                    未知化合物 / 同分支重复同理 —— 🔴 说明文字必须长在卡片上，
@@ -1167,7 +1220,7 @@ const dirHint = computed(() =>
               但它是可关闭的，两处都留着才不会一关就一处不剩。 -->
       <p v-if="hasRoute" class="rcanvas__hint">
         <span class="rcanvas__hint-warn">模型预测结果，实验前须经专业人员验证。</span>
-        {{ dirHint }} · 拖动平移 · 滚轮缩放 · 双击卡片可手动改这一步
+        {{ dirHint }} · 拖动平移 · 滚轮缩放 · 双击卡片（或点卡片底部图标）可手动改这一步
       </p>
     </div>
   </section>
@@ -1458,6 +1511,10 @@ const dirHint = computed(() =>
 .rcanvas__card {
   position: absolute;
   z-index: 3;
+  /* 🔴 卡片上**不要** grab：整块画布能拖，但"手"落在卡片上会被读成"这张卡可以拖走"，
+     于是单击也被理解成"抓住只能拖"。卡片其实是可点的（双击改这一步 / 点结构放大），
+     给普通箭头；背景那份 grab 保留，平移的可发现性不丢。 */
+  cursor: default;
   display: flex;
   flex-direction: column;
   padding: 6px;
@@ -1530,7 +1587,10 @@ const dirHint = computed(() =>
   justify-content: center;
   overflow: hidden;
   border-radius: 5px;
-  cursor: zoom-in;
+  /* 🔴 这里原来是 `cursor: zoom-in`，但结构图上**没有任何 click 处理器** ——
+     放大镜是个谎：点上去什么都不发生，用户只会以为自己点错了地方。
+     真正能点的是卡片底部的动作图标行（其中就有「改这一步」）。 */
+  cursor: default;
 }
 
 .rcanvas__meta {

@@ -235,6 +235,10 @@ function onCopyMenu(visible: boolean): void {
             >
               工艺分析
             </el-button>
+            <!-- 与卡片底部那个铅笔图标同一个入口：列表里也能到（口径见 RouteCanvas 的 actionsFor） -->
+            <el-button v-if="node.chosenReactionId" size="small" link @click="store.openStepEditor(nodeId)">
+              改前体
+            </el-button>
             <!-- 🔴 两态**同权重**（都是描边按钮）：原来「取消可购买」是纯绿实心
                  （`type="success"` 不带 plain），在一行里比主操作「查看候选」还抢眼，
                  而同一个「可购买」状态右边的标签已经用绿色表示过一次了。

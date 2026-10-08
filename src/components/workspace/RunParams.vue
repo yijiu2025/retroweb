@@ -23,7 +23,7 @@ import { useSettingsStore } from '@/stores/settings';
 import { SUPPLIERS, supplierById, type Supplier } from '@/utils/suppliers';
 import { countHeavyAtoms } from '@/utils/smiles';
 import { isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
-import type { LlmKeyState, LlmProfile, LlmSettings } from '@/types/retro';
+import type { LlmKeyState, LlmProfile, LlmSettings, ModelState } from '@/types/retro';
 
 /** true = 已被外层容器（右辅助面板）接管标题与外框，本组件只出内容 */
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
@@ -33,6 +33,81 @@ const settings = useSettingsStore();
 const materialInput = ref('');
 const addingMaterial = ref(false);
 const probing = ref(false);
+
+// ---------- 预测模型：状态矩阵 / 后启动 / 就绪检测 ----------
+// 🔴 「API 起来了」≠「模型能用了」。API 秒起，模型 40~90 秒；这一组状态就是那道区分。
+//    后端契约见 web/model_client.py 的 catalog()：每行一个 state，外加一份 service 概览。
+//
+// 状态文案只有这一份：下拉项、状态标签、矩阵 chip **共用同一个表**。
+// 分头写两套字面量是这类界面最常见的坏味道 —— 改一处漏一处，两处口径当场不一致。
+const MODEL_STATE_TEXT: Record<ModelState, string> = {
+  ready: '已就绪',
+  loading: '加载中',
+  failed: '加载失败',
+  idle: '未加载',
+  unavailable: '文件缺失'
+};
+
+/** 模型名字去掉括号里的说明（矩阵 chip 上放不下「（主推，性能最强）」） */
+function shortLabel(label: string): string {
+  return label.split('（')[0] || label;
+}
+
+const modelTagType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
+  const st = store.currentModel?.state;
+  if (st === 'ready') return 'success';
+  if (st === 'loading') return 'warning';
+  if (st === 'failed') return 'danger';
+  return 'info';
+});
+
+const modelStatusText = computed(() => {
+  const st = store.currentModel?.state;
+  if (!st) return '未知';
+  // 「服务在加载**别的**模型」要单独说：否则用户看着自己选的那行写「未加载」，
+  // 旁边又有进度在动，只会以为界面坏了。
+  if (st !== 'loading' && store.modelBusy) return '别的模型加载中';
+  return MODEL_STATE_TEXT[st];
+});
+
+const modelDetail = computed(() => {
+  const svc = store.modelService;
+  const cur = store.currentModel;
+  switch (cur?.state) {
+    case 'failed':
+      return svc?.error || '模型服务加载失败，详见模型服务窗口的日志';
+    case 'loading': {
+      // 秒数在**加载早期**也要有数：那段窗口 HTTP 还没起，后端从 state 文件补出 elapsed
+      const secs = Math.max(0, Math.round(svc?.elapsed ?? 0));
+      return `${store.modelPhase || '正在加载'}（已 ${secs} 秒）· 期间解析 / 分析照常可用`;
+    }
+    case 'unavailable':
+      return '模型文件不在 models/ 目录里 —— 先放好文件再启动';
+    case 'ready':
+      return `已加载${svc?.load_seconds ? ` · 用时 ${Math.round(svc.load_seconds)} 秒` : ''} · 常驻，重启 API 不会重载`;
+    default:
+      // 正在加载的是**另一个**模型（用户刚切换、或上一次的进程还在收尾）
+      if (store.modelBusy) {
+        const busy = store.models.find((m) => m.state === 'loading');
+        return `「${busy ? shortLabel(busy.label) : '其他模型'}」正在加载，切换要等它结束`;
+      }
+      return svc?.running
+        ? '点「加载」后启动（首次约 40~90 秒）'
+        : '点「加载」拉起模型服务（首次约 40~90 秒；期间解析 / 分析照常可用）';
+  }
+});
+
+/** 「加载」按钮的可用性：模型文件都不在就别让它点了（点了必然失败） */
+const canLoadModel = computed(() => {
+  const cur = store.currentModel;
+  return !!cur && cur.state !== 'unavailable';
+});
+
+/** 主按钮点下去干什么 */
+function onModelAction(): void {
+  if (store.modelReady || store.modelBusy) void store.stopModelService();
+  else void store.warmModel();
+}
 
 // ---------- 大模型状态（区分「填了」和「真的能用」） ----------
 const llmProbe = computed(() => store.llmStatus?.probe);
@@ -596,18 +671,48 @@ onMounted(() => {
                 <el-option
                   v-for="m in store.models"
                   :key="m.key"
-                  :label="m.loaded ? `${m.label}（已加载）` : m.label"
+                  :label="`${m.label}（${MODEL_STATE_TEXT[m.state]}）`"
                   :value="m.key"
+                  :disabled="m.state === 'unavailable'"
                 />
               </el-select>
               <el-button
                 size="small"
-                :loading="store.modelLoadingKey === store.params.model"
-                @click="store.warmModel()"
+                :type="store.modelReady || store.modelBusy ? 'default' : 'primary'"
+                :loading="
+                  store.modelLoadingKey !== null ||
+                  store.modelStopping ||
+                  store.currentModel?.state === 'loading'
+                "
+                :disabled="!store.modelReady && !store.modelBusy && !canLoadModel"
+                @click="onModelAction"
               >
-                预热
+                {{ store.modelReady || store.modelBusy ? '停止' : '加载' }}
               </el-button>
             </div>
+          </div>
+
+          <!-- 状态行：这是「模型什么时候能用」的唯一答案 —— 必须脱离灰色小字 -->
+          <div class="params__model-state">
+            <el-tag :type="modelTagType" size="small" :effect="store.modelBusy ? 'dark' : 'light'">
+              {{ modelStatusText }}
+            </el-tag>
+            <span class="params__model-detail">{{ modelDetail }}</span>
+          </div>
+
+          <!-- 状态矩阵：每个模型各一格状态（只有一个模型时没有"矩阵"可言，不渲染） -->
+          <div v-if="store.models.length > 1" class="params__model-matrix">
+            <span
+              v-for="m in store.models"
+              :key="m.key"
+              class="params__model-chip"
+              :class="[`is-${m.state}`, { 'is-current': m.key === store.params.model }]"
+              :title="`${m.label}（${MODEL_STATE_TEXT[m.state]}）`"
+            >
+              <i class="params__model-dot" />
+              {{ shortLabel(m.label) }}
+              <em>{{ MODEL_STATE_TEXT[m.state] }}</em>
+            </span>
           </div>
 
           <div class="params__row">
@@ -990,7 +1095,14 @@ onMounted(() => {
         </div>
       </details>
 
-      <!-- 分组五：分析模块（芯片式多选：选中=品牌色卡片；全选/清空收进标题行） -->
+      <!-- 分组五：分析模块（芯片式多选：选中=品牌色卡片）
+           🔴 标题行只留「图标 + 分析模块 + ? + chevron」，计数与「全选/清空」一起下移到
+           **芯片正上方的工具条**（左=计数，右=操作）。
+           根因：320px 侧栏下标题行的可用宽只有 ~294px，而标题自身要 97.8px、
+           右侧「已选 N / M + 全选 + 清空」要 169.7px，合计 293.5px —— **只剩 0.5px 余量**。
+           于是计数从 9/9 变成 10/10（+12px）就溢出；而「分析模块」是**可收缩的 flex 项**，
+           中文的 min-content 只有 1 个字 ⇒ 被压成一列竖排，表头从 40px 撑到 60px。
+           下移后标题行只需 ~124px，彻底离开刀刃；工具条整行 294px 给两个按钮绰绰有余。 -->
       <details class="params__group">
         <summary class="params__group-head">
           <span class="params__group-title">
@@ -1008,14 +1120,17 @@ onMounted(() => {
               <span class="params__hint">?</span>
             </el-tooltip>
           </span>
-          <!-- @click.stop：标题行是 <summary>，不拦住点击会连带开合分组 -->
-          <span class="params__modules-summary" @click.stop>
-            <span class="params__group-meta">已选 {{ modules.length }} / {{ ALL_ANALYSIS_MODULES.length }}</span>
-            <el-button size="small" text type="primary" :disabled="allSelected" @click="selectAllModules">全选</el-button>
-            <el-button size="small" text :disabled="!modules.length" @click="clearModules">清空</el-button>
-          </span>
         </summary>
         <div class="params__group-body">
+          <!-- 工具条：左「已选 N / M」右「全选 / 清空」—— 两者都作用于下面的芯片，
+               放同一行左右对称、不再有一大片空白，也不跟标题抢宽度 -->
+          <div class="params__modules-bar">
+            <span class="params__group-meta">已选 {{ modules.length }} / {{ ALL_ANALYSIS_MODULES.length }}</span>
+            <span class="params__modules-summary">
+              <el-button size="small" text type="primary" :disabled="allSelected" @click="selectAllModules">全选</el-button>
+              <el-button size="small" text :disabled="!modules.length" @click="clearModules">清空</el-button>
+            </span>
+          </div>
           <div class="params__modules">
             <button
               v-for="opt in moduleOptions"
@@ -1161,6 +1276,13 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 7px;
+  /* 🔴 不参与收缩 + 不换行。
+     作为 flex 项它的 min-width 默认是 auto，而中文的 min-content 只有**一个字**
+     ⇒ 右侧一宽就被压成一列竖排（实测 320px 侧栏下「分析模块」被压成 2 行、
+     表头从 40px 撑到 60px）。这里让标题永远占满它需要的宽度，
+     把「让位」的责任交给右侧的 .params__group-meta（它可收缩、可打省略号）。 */
+  flex: 0 0 auto;
+  white-space: nowrap;
   font-size: 13px;
   font-weight: 600;
   color: var(--rw-text);
@@ -1205,6 +1327,10 @@ onMounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 140px;
+  /* 🔴 光有 overflow:hidden 缩不动：flex 项的 min-width:auto 会被解析成内容宽度，
+     而这里 white-space:nowrap ⇒ min-content = 整行文字宽度，于是被挤压的只会是标题。
+     补 min-width:0 才真的「先缩、再打省略号」。 */
+  min-width: 0;
 }
 
 .params__group-tag {
@@ -1248,6 +1374,87 @@ onMounted(() => {
 
 .params__model :deep(.el-select) {
   width: 160px;
+}
+
+/* ---------- 预测模型：状态行 + 状态矩阵 ---------- */
+/* 状态行是「模型什么时候能用」的主指标 ⇒ 独立成行、不能塞进灰色小字里 */
+.params__model-state {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: -2px;
+}
+
+.params__model-state :deep(.el-tag) {
+  flex: 0 0 auto;
+}
+
+.params__model-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--rw-text-3);
+  word-break: break-word;
+  padding-top: 1px;
+}
+
+/* 矩阵：一个模型一格。横排 + 允许换行（禁竖排 —— 竖排两行格子会跟右栏其他行对不齐） */
+.params__model-matrix {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.params__model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border: 1px solid var(--rw-border);
+  border-radius: 999px;
+  background: var(--rw-surface-2);
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--rw-text-2);
+  white-space: nowrap;
+}
+
+/* 当前选中的那格：描边用品牌色（不靠"更亮"来区分，深色皮肤下亮不起来） */
+.params__model-chip.is-current {
+  border-color: var(--rw-brand);
+  color: var(--rw-text);
+}
+
+.params__model-chip em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--rw-text-3);
+}
+
+.params__model-dot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rw-text-3);
+}
+
+/* 状态色：只改小圆点，不改底色 —— chip 底色一变，整块重量就压过了模型名 */
+.params__model-chip.is-ready .params__model-dot {
+  background: var(--rw-ok);
+}
+
+.params__model-chip.is-loading .params__model-dot {
+  background: var(--rw-warn);
+}
+
+.params__model-chip.is-failed .params__model-dot {
+  background: var(--rw-bad);
+}
+
+.params__model-chip.is-unavailable {
+  opacity: 0.65;
 }
 
 .params__llm {
@@ -1481,6 +1688,22 @@ onMounted(() => {
   display: flex;
   align-items: center;
   gap: 2px;
+  flex: 0 0 auto;
+}
+
+/* 芯片正上方的工具条：左「已选 N / M」右「全选 / 清空」，两端对齐不留大片空白 */
+.params__modules-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  /* 与芯片贴近一点，读作「这组芯片的操作条」而不是另起一段 */
+  margin-bottom: -4px;
+}
+
+.params__modules-bar .params__group-meta {
+  /* 这一行左边整片都是空的，不需要 140px 的截断上限 */
+  max-width: none;
 }
 
 .params__modules {
