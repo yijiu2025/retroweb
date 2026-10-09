@@ -28,6 +28,7 @@ import type {
   WorkspaceSnapshot
 } from '@/types/retro';
 import { countHeavyAtoms, levelOf, uid } from '@/utils/smiles';
+import { LOCAL_SESSIONS_LIMIT, persist } from '@/stores/persist';
 import { createModelsPart } from '@/stores/parts/models';
 import { createLlmPart } from '@/stores/parts/llm';
 import {
@@ -44,15 +45,9 @@ import {
 // 免得同一个常量出现两个来源（改一处忘一处）。
 export { ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS, reactionIdFor };
 
-const HISTORY_KEY = 'retroweb_history';
 const HISTORY_LIMIT = 30;
-const SESSIONS_KEY = 'retroweb_sessions';
-const SESSIONS_LIMIT = 10;
 /** 每个节点最多保留几次分析结果（多了 localStorage 会撑爆） */
 const MAX_RUNS = 6;
-/** 候选反应条件枚举的偏好（跨会话保留，属"用户习惯"而非任务数据） */
-const COND_PREF_KEY = 'retroweb_cond_pref';
-
 /** 一条路线方案的「体检结果」（用于多条路线横向对比） */
 export interface SchemeStat {
   schemeId: string;
@@ -88,99 +83,6 @@ export interface SchemeStat {
   manualSteps: number;
 }
 
-function readHistory(): HistoryTask[] {
-  try {
-    const raw = localStorage.getItem(HISTORY_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as HistoryTask[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function readSessions(): Session[] {
-  try {
-    const raw = localStorage.getItem(SESSIONS_KEY);
-    if (!raw) return [];
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as Session[]) : [];
-  } catch {
-    return [];
-  }
-}
-
-function writeSessions(list: Session[]): void {
-  try {
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, SESSIONS_LIMIT)));
-    return;
-  } catch {
-    /* 可能是 quota 超了 —— 下面用「瘦身版」再试一次 */
-  }
-  try {
-    // 🔴 兜底：把每步 AI 分析的**原始输出**丢掉（结构化 data 与 RDKit 质量表都留着）。
-    //    raw 是唯一可能几 KB 级膨胀的字段；丢了它只是不能再看「模型原文」，
-    //    界面该显示的内容一个不少。不这么兜底的话，quota 一超就会**静默**丢失
-    //    整个会话 → 「刷新后任务不见了」。
-    const slim = list.slice(0, SESSIONS_LIMIT).map((s) => ({
-      ...s,
-      snapshot: {
-        ...s.snapshot,
-        nodes: Object.fromEntries(
-          Object.entries(s.snapshot.nodes).map(([id, n]) => {
-            if (!n.analyses) return [id, n];
-            const analyses: NonNullable<MolNode['analyses']> = {};
-            for (const [k, rec] of Object.entries(n.analyses)) {
-              // 候选条件枚举的模型原文（condOptions.raw）与 rec.raw 同量级，一起丢掉
-              analyses[k] = {
-                ...rec,
-                raw: '',
-                ...(rec.condOptions ? { condOptions: { ...rec.condOptions, raw: '' } } : {})
-              };
-            }
-            return [id, { ...n, analyses }];
-          })
-        )
-      }
-    }));
-    localStorage.setItem(SESSIONS_KEY, JSON.stringify(slim));
-  } catch {
-    /* 仍然失败（隐私模式 / 配额硬上限）：放弃落盘，不影响当前会话使用 */
-  }
-}
-
-/**
- * 候选条件枚举的偏好。属于「用户习惯」而非任务数据 ⇒ 单独存一个 key，
- * 不进会话快照（换个任务不该把上一个人的偏好带过去）。
- *
- * 🔴 读写都要 try：SSR 测试环境（vue-pinia-real-store-harness 用 node 跑 store）
- *    里没有 localStorage，直接访问会抛 ReferenceError，一抛就连 store 都建不起来。
- */
-function readCondPref(): { planFirst: boolean; count: number } {
-  const def = { planFirst: true, count: 4 };
-  try {
-    const raw = localStorage.getItem(COND_PREF_KEY);
-    if (!raw) return def;
-    const obj = JSON.parse(raw) as { planFirst?: unknown; count?: unknown };
-    const count = Number(obj?.count);
-    return {
-      // 只有显式存成 false 才算关（老数据/坏数据都当默认开启）
-      planFirst: obj?.planFirst !== false,
-      count: Number.isFinite(count) ? Math.max(2, Math.min(6, Math.round(count))) : def.count
-    };
-  } catch {
-    return def;
-  }
-}
-
-function writeCondPref(v: { planFirst: boolean; count: number }): void {
-  try {
-    localStorage.setItem(COND_PREF_KEY, JSON.stringify(v));
-  } catch {
-    /* 隐私模式 / 配额满：偏好存不上不影响本次使用 */
-  }
-}
-
 export const useWorkspaceStore = defineStore('workspace', () => {
   // ---------- 状态 ----------
   const rootId = ref<string | null>(null);
@@ -190,11 +92,11 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    * 「先列候选条件再深入分析」—— 反应条件本就有多套组合，默认先枚举让用户挑一套。
    * 关掉 = 老行为：直接按模型的第一直觉给一套条件做深入分析。
    */
-  const condPlanFirst = ref(readCondPref().planFirst);
+  const condPlanFirst = ref(persist.readCondPref().planFirst);
   /** 一次枚举几套候选条件方案（后端夹到 2~6） */
-  const condOptionCount = ref(readCondPref().count);
+  const condOptionCount = ref(persist.readCondPref().count);
   watch([condPlanFirst, condOptionCount], () => {
-    writeCondPref({ planFirst: condPlanFirst.value, count: condOptionCount.value });
+    persist.writeCondPref({ planFirst: condPlanFirst.value, count: condOptionCount.value });
   });
   // ---------- 模型域（独立零件，见 stores/parts/models.ts） ----------
   const modelsPart = createModelsPart({ params, setGlobalError });
@@ -260,13 +162,13 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearGlobalError();
     fn?.();
   }
-  const history = ref<HistoryTask[]>(readHistory());
+  const history = ref<HistoryTask[]>(persist.readHistory());
 
   /**
    * 任务会话列表（持久化到 localStorage）：刷新网页后用来恢复「未完成 / 进行中」的任务。
    * 每个会话是一棵完整的路线树快照；当前正在编辑的会话 id 记录在 currentSessionId。
    */
-  const sessions = ref<Session[]>(readSessions());
+  const sessions = ref<Session[]>(persist.readSessions());
   const currentSessionId = ref<string | null>(null);
   /**
    * 标定面板当前「正在编辑」的会话 id（null = 全新任务，还没有归属）。
@@ -1425,7 +1327,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   // ---------- 历史（localStorage） ----------
   function persistHistory(): void {
     try {
-      localStorage.setItem(HISTORY_KEY, JSON.stringify(history.value.slice(0, HISTORY_LIMIT)));
+      persist.writeHistory(history.value.slice(0, HISTORY_LIMIT));
     } catch {
       /* ignore */
     }
@@ -1595,7 +1497,7 @@ function persistSession(): void {
         sig
       };
       if (!currentSessionId.value) currentSessionId.value = session.id;
-      sessions.value = [session, ...sessions.value].slice(0, SESSIONS_LIMIT);
+      sessions.value = [session, ...sessions.value].slice(0, LOCAL_SESSIONS_LIMIT);
     } else {
       session.snapshot = snap;
       session.status = status;
@@ -1611,7 +1513,7 @@ function persistSession(): void {
         session.updatedAt = Date.now();
       }
     }
-    writeSessions(sessions.value);
+    persist.writeSessions(sessions.value);
   }
 
   /** 防抖落盘：节点 / 参数 / 轮询进度变化都触发，但合并成 400ms 一次写 */
@@ -1801,7 +1703,7 @@ function persistSession(): void {
       // 若当前正显示这个会话的内容，一并清空工作台
       if (rootId.value && s.snapshot.rootId === rootId.value) reset({ keepParams: true });
     }
-    writeSessions(sessions.value);
+    persist.writeSessions(sessions.value);
   }
 
   // ---------- 路线方案（同一目标分子的多条路线，随时切换 / 对比） ----------
