@@ -66,4 +66,7 @@ declare module 'vue' {
     TargetSetupPanel: typeof import('./components/workspace/TargetSetupPanel.vue')['default']
     UserMenu: typeof import('./components/layout/UserMenu.vue')['default']
   }
+  export interface GlobalDirectives {
+    vLoading: typeof import('element-plus/es')['ElLoadingDirective']
+  }
 }

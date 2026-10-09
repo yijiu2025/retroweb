@@ -1093,3 +1093,51 @@ export interface Session {
    */
   sig?: string;
 }
+
+/* ---------- LLM 双来源（Node 后端 /retroweb/v1，绑定用户） ---------- */
+
+/** LLM 调用用哪个来源：用户自建 or 系统官方 */
+export type LlmSource = 'user' | 'official';
+
+/**
+ * 用户自建的一条端点配置（Node 后端 /llm/profiles 返回）。
+ *
+ * 🔴 与 Python 直连路径的 `LlmProfile` 是**两套**：这里 key 只回单个掩码
+ *    `key_masked`（保尾部、不暴露数量），不含多 Key 轮换状态。
+ */
+export interface NodeLlmProfile {
+  id: number;
+  owner: 'user' | 'system';
+  name: string;
+  base_url: string;
+  model: string;
+  active: boolean;
+  max_tokens: number | null;
+  extra_json: Record<string, unknown> | null;
+  /** 🔴 只回第一个 key 的掩码，不回数量、不回明文 */
+  key_masked: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * 官方模型（Node 后端 /llm/official 返回）。
+ *
+ * 🔴 只含 name / model / quota / enabled，**不含 token 数量与值，也不含 base_url**
+ *    —— base_url 是官方凭据的一部分，不出后端。
+ */
+export interface OfficialLlm {
+  id: string;
+  name: string;
+  model: string;
+  /** 剩余配额（token 数）；官方未启用时恒为 0 */
+  quota: number;
+  enabled: boolean;
+}
+
+/** 用户设置（含 llm_source），Node 后端 /settings 返回 */
+export interface RetrowebSettings {
+  /** LLM 调用用哪个来源（默认 'user'） */
+  llm_source?: LlmSource;
+  [key: string]: unknown;
+}

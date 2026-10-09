@@ -18,12 +18,14 @@
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { retroApi, llmApi } from '@/api/retro';
+import { nodeLlmApi } from '@/api/llm';
 import { useWorkspaceStore, ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
+import { RETRO_VIA_NODE } from '@/config/services';
 import { SUPPLIERS, supplierById, type Supplier } from '@/utils/suppliers';
 import { countHeavyAtoms } from '@/utils/smiles';
 import { isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
-import type { LlmKeyState, LlmProfile, LlmSettings, ModelState } from '@/types/retro';
+import type { LlmKeyState, LlmProfile, LlmSettings, LlmSource, ModelState, OfficialLlm } from '@/types/retro';
 
 /** true = 已被外层容器（右辅助面板）接管标题与外框，本组件只出内容 */
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
@@ -203,6 +205,58 @@ async function verifyLlm(): Promise<void> {
     else ElMessage.warning(store.llmStatus?.hint || '大模型未配置');
   } finally {
     probing.value = false;
+  }
+}
+
+// ---------- 大模型来源选择（官方 / 自建，走 Node 中转时才有） ----------
+// 🔴 官方 LLM 的 token 数量与值都不出后端（见 Node 的 official-llm.service），前端只能
+//    看到「有哪些官方模型 + 剩余配额」。选择「官方」= 让后端用自己的 key 出算力，
+//    前端没有任何官方凭据可看、可改、可泄露。
+// 🔴 该选择存服务端 UserSettings.llm_source（跨设备生效），不是前端 localStorage 记忆。
+// 🔴 只在走 Node 中转（RETRO_VIA_NODE）时出现：直连 Python 路径没有「官方」这个概念。
+
+/** 当前选的来源（'user' = 自建，'official' = 官方） */
+const llmSource = ref<LlmSource>('user');
+/** 官方模型清单（后端只回 name/model/quota/enabled） */
+const officialModels = ref<OfficialLlm[]>([]);
+const loadingSource = ref(false);
+const sourceSwitching = ref(false);
+
+/** 是否展示来源选择（仅走 Node 中转） */
+const showSourcePicker = computed(() => RETRO_VIA_NODE);
+
+/** 是否有已启用的官方模型可切过去 */
+const officialAvailable = computed(() =>
+  officialModels.value.some((m) => m.enabled && m.model)
+);
+
+/** 读来源偏好 + 官方清单（进页面时一次） */
+async function loadLlmSource(): Promise<void> {
+  if (!showSourcePicker.value) return;
+  loadingSource.value = true;
+  try {
+    const [s, models] = await Promise.all([nodeLlmApi.getSettings(), nodeLlmApi.official()]);
+    llmSource.value = s.llm_source === 'official' ? 'official' : 'user';
+    officialModels.value = models;
+  } catch {
+    /* 后端没起 / 老版本：保持默认，不打断面板 */
+  } finally {
+    loadingSource.value = false;
+  }
+}
+
+/** 切换来源：落服务端，成功才改本地态 */
+async function switchSource(next: LlmSource): Promise<void> {
+  if (next === llmSource.value) return;
+  sourceSwitching.value = true;
+  try {
+    await nodeLlmApi.setLlmSource(next);
+    llmSource.value = next;
+    ElMessage.success(next === 'official' ? '已切换到大模型来源「官方模型」' : '已切换到大模型来源「自建配置」');
+  } catch (e) {
+    ElMessage.error((e as Error).message || '切换来源失败');
+  } finally {
+    sourceSwitching.value = false;
   }
 }
 
@@ -688,6 +742,7 @@ const defaultSupplierName = computed(() => supplierById(settings.supplierId)?.na
 onMounted(() => {
   if (!store.models.length) void store.loadModels();
   void loadSettings(); // API 设置草稿（后端 llm_settings.json 的脱敏回显）
+  void loadLlmSource(); // 大模型来源偏好 + 官方清单（走 Node 中转时）
 });
 </script>
 
@@ -926,6 +981,57 @@ onMounted(() => {
               <el-button size="small" text :loading="probing" @click="verifyLlm">
                 {{ probing ? '验证中' : '验证' }}
               </el-button>
+            </div>
+          </div>
+
+          <!-- 大模型来源：官方 / 自建（走 Node 中转时才出现） -->
+          <div v-if="showSourcePicker" class="params__row params__row--col">
+            <div class="params__modules-head">
+              <label>
+                大模型来源
+                <el-tooltip
+                  content="「官方模型」由系统提供算力，你只需选模型、看配额，看不到任何密钥；「自建配置」用你自己的接口地址 + API Key。选择存在服务端，跨设备生效"
+                  placement="top"
+                >
+                  <span class="params__hint">?</span>
+                </el-tooltip>
+              </label>
+            </div>
+            <div class="params__source" v-loading="loadingSource">
+              <el-radio-group
+                :model-value="llmSource"
+                size="small"
+                :disabled="sourceSwitching"
+                @change="(v: unknown) => void switchSource(String(v) as LlmSource)"
+              >
+                <el-radio-button value="user">自建配置</el-radio-button>
+                <el-radio-button value="official" :disabled="!officialAvailable">
+                  官方模型
+                </el-radio-button>
+              </el-radio-group>
+
+              <!-- 官方模型清单：只展示 name/model/quota（token 数量与值永不出后端） -->
+              <div v-if="llmSource === 'official'" class="params__official">
+                <div
+                  v-for="m in officialModels"
+                  :key="m.id"
+                  class="params__official-item"
+                  :class="{ 'is-disabled': !m.enabled }"
+                >
+                  <span class="params__official-name">{{ m.name }}</span>
+                  <span class="params__official-model">{{ m.model }}</span>
+                  <el-tag v-if="m.enabled" size="small" type="success" effect="plain">
+                    配额 {{ m.quota }}
+                  </el-tag>
+                  <el-tag v-else size="small" type="info" effect="plain">暂未启用</el-tag>
+                </div>
+                <p v-if="!officialModels.length" class="params__modules-note">
+                  暂无可用官方模型（后端未配置或未启用）。
+                </p>
+                <p class="params__modules-note">
+                  官方模型由系统提供，密钥托管在服务端，此处只显示模型与剩余配额。
+                </p>
+              </div>
             </div>
           </div>
 
@@ -1631,6 +1737,54 @@ onMounted(() => {
 .params__row :deep(.el-input__wrapper.is-focus),
 .params__row :deep(.el-select__wrapper.is-focused) {
   box-shadow: 0 0 0 1px var(--rw-brand) inset;
+}
+
+/* ---------- 大模型来源选择 ---------- */
+.params__source {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.params__source :deep(.el-radio-group) {
+  align-self: flex-start;
+}
+
+.params__official {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.params__official-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 9px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+}
+
+.params__official-item.is-disabled {
+  opacity: 0.6;
+}
+
+.params__official-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rw-text);
+  flex: 0 0 auto;
+}
+
+.params__official-model {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--rw-text-3);
 }
 
 /* ---------- API 设置（接口地址 / 模型 / token / 多 Key） ---------- */
