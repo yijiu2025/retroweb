@@ -1706,6 +1706,21 @@ function persistSession(): void {
     persist.writeSessions(sessions.value);
   }
 
+  /**
+   * 清空本用户的任务数据（切换账号 / 登出 / 401 时由 auth store 调用）。
+   *
+   * 🔴 数据绑定用户后，这是「串号」的最后一道防线：上一个用户的任务若残留在
+   *    内存与本地缓存里，会出现在新用户的工作台里，甚至被写回污染云端。
+   *    所以这里同时清内存态与持久化层（persist.clear），两者缺一不可。
+   */
+  function clearLocalData(): void {
+    sessions.value = [];
+    history.value = [];
+    currentSessionId.value = null;
+    reset({ keepParams: true });
+    persist.clear();
+  }
+
   // ---------- 路线方案（同一目标分子的多条路线，随时切换 / 对比） ----------
   /** 应用方案期间禁止把中间态同步回方案（否则会把方案写坏） */
   let applyingScheme = false;
@@ -2214,6 +2229,7 @@ function persistSession(): void {
     resumeSessions,
     loadSession,
     removeSession,
+    clearLocalData,
     persistSession,
     exportJson,
     exportCsv,

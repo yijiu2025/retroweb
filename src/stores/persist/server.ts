@@ -1,0 +1,192 @@
+/**
+ * 持久化适配层 · 服务端实现（Node 中转，绑定用户）
+ *
+ * 与本地实现共用同一个 `PersistAdapter` 接口，但数据权威在服务端，本地只做缓存。
+ *
+ * 🔴 接口是**同步**的（index.ts 写死），所以这里必须：
+ *    ① `readSessions()` 返回**本地缓存**（可能为空 → 由 `preload()` 异步拉满）；
+ *    ② `writeSessions()` 同步更新本地缓存，把「提交到服务端」丢进后台队列
+ *       （debounce + 失败重试 + 静默降级）；
+ *    ③ 任何网络失败都**不抛给调用方** —— 写不上去时任务仍在本地缓存里，
+ *       下次写/刷新会再试，绝不让"断网"打断用户改树。
+ *
+ * 🔴 映射关系（本地 Session ↔ 服务端 retroweb_task）：
+ *    · Session.id          → task.client_id（幂等键，import 去重靠它）
+ *    · Session.snapshot    → task.snapshot（后端派生统计列）
+ *    · Session.sig         → task.sig（乐观锁）
+ *    · Session.updatedAt   → 服务端 updated_at（列表排序）
+ *
+ * @since 2026-10-09
+ */
+import { apiClient } from '@/api/http';
+import type { HistoryTask, Session } from '@/types/retro';
+import { readCondPref as localReadCondPref, writeCondPref as localWriteCondPref } from './local';
+import type { CondPref } from './local';
+
+const SERVER_CACHE_KEY = 'retroweb_server_cache_v1';
+
+/** 本地缓存结构：会话 + 历史（cond_pref 仍走本地，见下方说明） */
+interface ServerCache {
+  sessions: Session[];
+  history: HistoryTask[];
+}
+
+/** 空缓存 */
+const EMPTY: ServerCache = { sessions: [], history: [] };
+
+/** 读本地缓存（损坏 / 缺失 → 空） */
+function readCache(): ServerCache {
+  try {
+    const raw = localStorage.getItem(SERVER_CACHE_KEY);
+    if (!raw) return { ...EMPTY };
+    const parsed = JSON.parse(raw) as Partial<ServerCache>;
+    return {
+      sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
+      history: Array.isArray(parsed.history) ? parsed.history : []
+    };
+  } catch {
+    return { ...EMPTY };
+  }
+}
+
+function writeCache(cache: ServerCache): void {
+  try {
+    localStorage.setItem(SERVER_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    /* 隐私模式 / 配额满：缓存写不进，内存态仍可用 */
+  }
+}
+
+/** 内存态缓存（同步读写的真身），启动时从 localStorage 恢复 */
+let cache: ServerCache = readCache();
+
+/** 是否已登录（由 index.ts 注入：登录后才走服务端，否则切回本地实现） */
+let authed = false;
+
+/** 供 index.ts 设置登录态；切换账号/登出时传 false 并清内存 */
+export function setServerAuthed(next: boolean): void {
+  authed = next;
+  if (!next) {
+    cache = { ...EMPTY };
+  }
+}
+
+/**
+ * 异步预热：登录后把服务端任务拉到本地缓存（清掉旧的、换上权威数据）。
+ * 🔴 只在登录那一刻调一次；失败静默（本地缓存保持原样，下次读仍是旧的）。
+ */
+export async function preload(): Promise<void> {
+  if (!authed) return;
+  try {
+    const data = await apiClient.get<{ tasks: unknown[] }>('/retroweb/v1/tasks');
+    const tasks = (data?.tasks ?? []) as Array<{
+      id: number;
+      client_id: string | null;
+      name: string;
+      target: string;
+      model: string | null;
+      status: Session['status'];
+      sig: string | null;
+      updated_at: string;
+      snapshot: Session['snapshot'] | null;
+    }>;
+
+    const sessions: Session[] = tasks.map(t => ({
+      id: t.client_id ?? `srv-${t.id}`,
+      name: t.name,
+      target: t.target,
+      model: t.model ?? '',
+      status: t.status,
+      updatedAt: new Date(t.updated_at).getTime(),
+      snapshot: t.snapshot ?? { rootId: null, nodes: {}, params: {} as never, activeNodeId: null, jobIds: {} },
+      sig: t.sig ?? undefined
+    }));
+
+    cache = { sessions, history: cache.history };
+    writeCache(cache);
+  } catch {
+    /* 预热失败（离线 / 服务端没起）：保持本地缓存，不打断启动 */
+  }
+}
+
+// ---- 同步读（返回本地缓存） ----
+
+export function readSessions(): Session[] {
+  return cache.sessions;
+}
+
+export function readHistory(): HistoryTask[] {
+  return cache.history;
+}
+
+/** 条件枚举偏好：纯 UI 习惯，仍走本地实现（不迁服务端，避免为小偏好加往返） */
+export function readCondPref(): CondPref {
+  return localReadCondPref();
+}
+
+// ---- 同步写（更新本地缓存 + 后台提交） ----
+
+/** 待提交的会话（去重后的最新列表） */
+let pending: Session[] | null = null;
+let commitTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** 后台提交队列：把整个会话列表推给服务端（import 幂等 upsert） */
+function flushSoon(): void {
+  if (commitTimer) clearTimeout(commitTimer);
+  commitTimer = setTimeout(() => {
+    void commit().catch(() => {
+      /* 静默降级：下次写会再试 */
+    });
+  }, 800);
+}
+
+async function commit(): Promise<void> {
+  if (!authed || !pending) return;
+  const list = pending;
+  pending = null;
+  try {
+    await apiClient.post('/retroweb/v1/tasks/import', {
+      items: list.map(s => ({
+        client_id: s.id,
+        name: s.name,
+        target: s.target,
+        model: s.model,
+        status: s.status,
+        snapshot: s.snapshot,
+        sig: s.sig ?? null
+      }))
+    });
+  } catch {
+    // 提交失败：把列表塞回 pending，下次写时重试（不丢数据）
+    pending = pending ? pending : list;
+  }
+}
+
+export function writeSessions(list: Session[]): void {
+  cache = { ...cache, sessions: list };
+  writeCache(cache);
+  if (authed) {
+    pending = list;
+    flushSoon();
+  }
+}
+
+export function writeHistory(list: HistoryTask[]): void {
+  // 历史记录（手动保存快照）暂不迁服务端 —— S1 先只迁任务；仍落本地缓存
+  cache = { ...cache, history: list };
+  writeCache(cache);
+}
+
+export function writeCondPref(v: CondPref): void {
+  // 偏好类不迁服务端，仍走本地实现
+  localWriteCondPref(v);
+}
+
+export function clear(): void {
+  cache = { ...EMPTY };
+  try {
+    localStorage.removeItem(SERVER_CACHE_KEY);
+  } catch {
+    /* ignore */
+  }
+}

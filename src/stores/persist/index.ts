@@ -18,6 +18,7 @@
  */
 import type { HistoryTask, Session } from '@/types/retro';
 import * as local from './local';
+import * as server from './server';
 import type { CondPref } from './local';
 
 export type { CondPref };
@@ -47,10 +48,55 @@ const localAdapter: PersistAdapter = {
   clear: local.clearAll
 };
 
+const serverAdapter: PersistAdapter = {
+  readSessions: server.readSessions,
+  writeSessions: server.writeSessions,
+  readHistory: server.readHistory,
+  writeHistory: server.writeHistory,
+  readCondPref: server.readCondPref,
+  writeCondPref: server.writeCondPref,
+  clear: server.clear
+};
+
+/**
+ * 是否启用服务端持久化。
+ *
+ * S1 阶段：默认关（`false`），行为与改造前完全一致。打开开关 = 登录后走服务端、
+ * 未登录 / 离线仍走本地。开关来源：编译期 `VITE_PERSIST_SERVER`，将来接上登录态后
+ * 再改成运行时判据（见下方 `useServerPersist`）。
+ */
+const SERVER_PERSIST = import.meta.env.VITE_PERSIST_SERVER === 'true';
+
+/** 运行时决定走哪套实现（业务代码不感知，只认 `persist` 这一个出口） */
+let useServer = SERVER_PERSIST;
+
+/**
+ * 登录 / 登出时调用：切到服务端实现并预热，或切回本地并清缓存。
+ * 🔴 由 auth store 挂钩子调用（applyLogin / markExpired / logout / switchAccount），
+ *    业务代码不要直接碰这个函数。
+ */
+export async function activateServerPersist(authed: boolean): Promise<void> {
+  useServer = authed && SERVER_PERSIST;
+  server.setServerAuthed(useServer);
+  if (useServer) {
+    await server.preload();
+  } else {
+    // 登出 / 切账号：本地实现的 clear 已由调用方清，这里不重复清
+  }
+}
+
 /**
  * 当前生效的实现。
  *
- * S0 恒为本地实现；S1 起按登录态与开关决定（未登录 / 离线 → 本地）。
- * 切换的判据届时写在这里，业务代码不用知道。
+ * S1 恒为本地实现（开关默认关）；开关打开且登录后走服务端（本地降级为缓存）。
+ * 切换判据集中在这里，业务代码不用知道。
  */
-export const persist: PersistAdapter = localAdapter;
+export const persist: PersistAdapter = {
+  readSessions: () => (useServer ? serverAdapter.readSessions() : localAdapter.readSessions()),
+  writeSessions: list => (useServer ? serverAdapter.writeSessions(list) : localAdapter.writeSessions(list)),
+  readHistory: () => (useServer ? serverAdapter.readHistory() : localAdapter.readHistory()),
+  writeHistory: list => (useServer ? serverAdapter.writeHistory(list) : localAdapter.writeHistory(list)),
+  readCondPref: () => (useServer ? serverAdapter.readCondPref() : localAdapter.readCondPref()),
+  writeCondPref: v => (useServer ? serverAdapter.writeCondPref(v) : localAdapter.writeCondPref(v)),
+  clear: () => (useServer ? serverAdapter.clear() : localAdapter.clear())
+};

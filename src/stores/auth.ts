@@ -72,6 +72,14 @@ export const useAuthStore = defineStore('auth', () => {
   function setUser(next: AuthUser | null): void {
     user.value = next;
     loggedIn.value = !!next;
+    // 🔴 登录态变化 = 用户身份切换：清空上个用户的任务数据 + 切持久化实现。
+    //    用懒 import 避免 auth ↔ workspace 循环依赖（workspace 不依赖 auth）。
+    void import('@/stores/workspace').then(({ useWorkspaceStore }) => {
+      useWorkspaceStore().clearLocalData();
+    });
+    void import('@/stores/persist').then(({ activateServerPersist }) => {
+      void activateServerPersist(!!next);
+    });
   }
 
   /** 启动引导：bypass 直接注入 dev 用户；否则拉 userinfo 探活 */

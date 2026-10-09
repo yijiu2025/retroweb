@@ -156,7 +156,9 @@ DELETE /tasks/:id             软删
 POST   /tasks/import          本地 localStorage 批量上传（迁移用，幂等）
 GET    /tasks/:id/schemes     POST / PATCH / DELETE 同族
 GET    /settings              PUT /settings
-GET    /llm/profiles          PUT /llm/profiles（key 只回掩码）
+GET    /llm/profiles          用户自建配置（key 只回掩码）
+PUT    /llm/profiles          保存/更新用户自建配置（含密钥，落库加密）
+GET    /llm/official          官方模型清单（只回 name/model/quota，🔴 token 数量与值永不回传；暂不起用）
 ```
 
 **算法中转类**
@@ -225,10 +227,22 @@ POST   /analyze               SSE 透传（conditions / followup 同）
 - 前端拿到 `stale` ⇒ 显示"服务重启导致结果丢失，请重跑"，而不是现在的"一直转圈"
   （现有 `resumeSessions` 刷新后恢复 job 轮询，正是踩这个坑）
 
-### 6.5 LLM 密钥 per-user
+### 6.5 LLM 双来源：用户自建 + 系统官方（已定，用户拍板）
 
 现状 `web/llm_settings.json` 是**服务端全局一份**（谁都能用、谁改都影响别人）。
-绑定用户后必须拆：加密列 + 掩码回传 + 只认激活套（前端已有 `mask_key` / key 轮换口径）。
+绑定用户后拆成**两个来源**，都要支持：
+
+| 来源 | owner | 密钥存哪 | 前端看到什么 |
+| --- | --- | --- | --- |
+| 用户自建 | `user` | `retroweb_llm_profile.keys_enc`（对称加密，per-user） | 掩码（`mask_key` 保尾部） |
+| 系统官方 | `system` | **服务端注入**（`.env`，不进用户表、不落前端） | 只有 **模型名 + 配额**；token 数量与值**永不回传** |
+
+🔴 官方 LLM 的 token **数量与值都不出后端**：接口只回 `{ id, name, model, quota }`，
+不返回 `key_count` 更不返回明文。前端"官方模型"只展示"有哪些模型可用 + 每个的剩余配额"。
+🔴 官方 LLM **暂不起用**（`ENABLED` 关）：结构先落好（`owner='system'` + 官方配置注入 +
+只回模型/配额的口径），但前端不接开关、算法中转不路由到官方 key，等后续打开。
+🔴 用户密钥与官方密钥用**同一套对称加密工具**（AES-256-CBC，密钥由 `APP_SECRET` 派生），
+不引入新环境变量；用户密钥存 `keys_enc`，官方密钥只存在内存（读 `.env`），绝不写库。
 ⚠️ 前端"端点配置"面板现在容忍"后端无 profiles 字段"的老版本，改造时要同步。
 
 ### 6.6 并发与冲突
