@@ -14,6 +14,15 @@ export const SSO_LOGIN_PATH = '/mini-login';
 /** 逆合成模型服务：dev 为 /retro（vite proxy → Flask 8000 的 /api） */
 export const RETRO_BASE_URL: string = import.meta.env.VITE_RETRO_URL || '/retro';
 
+/**
+ * 算法调用是否改走 Node 中转（S3）。
+ *
+ * 🔴 关（默认）：`retroApi` / `llmApi` / SSE 直连 Python（现状，行为不变）。
+ * 🔴 开：baseURL 指向 `API_BASE_URL + '/retroweb/v1'`，响应拆 `{code,message,data}` 信封，
+ *    Python 从公网下线（只在 Node 后端内网可见，`RETRO_PYTHON_URL`）。
+ */
+export const RETRO_VIA_NODE: boolean = import.meta.env.VITE_RETRO_VIA_NODE === 'true';
+
 /** 应用名（透传给 oauth21，登录页会显示"正在登录 XX"） */
 export const APP_NAME = 'retroweb';
 

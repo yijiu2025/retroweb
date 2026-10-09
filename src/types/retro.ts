@@ -254,7 +254,7 @@ export interface LoadForwardOk {
 
 // ---------- 后台任务（jobhub） ----------
 // 把「同步长任务」改造成可查询、可取消、带阶段时间线与实时日志的 job。
-export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
 export type JobStageState = 'running' | 'done' | 'skipped' | 'failed';
 
 export interface JobStage {

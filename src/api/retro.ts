@@ -10,8 +10,8 @@
  * Flask 返回的是裸 JSON（没有 node 后端的 {code,message,data} 信封），
  * 所以这里独立建一个实例，不做信封拆包。
  */
-import axios from 'axios';
-import { RETRO_BASE_URL } from '@/config/services';
+import axios, { type AxiosResponse } from 'axios';
+import { RETRO_BASE_URL, API_BASE_URL, RETRO_VIA_NODE } from '@/config/services';
 import type {
   AnalyzeRequest,
   AnalyzeStreamEvent,
@@ -36,22 +36,46 @@ import type {
   StepAnalysis
 } from '@/types/retro';
 
+/**
+ * 算法服务 baseURL（S3 切换）。
+ *
+ * 🔴 关（默认）：`RETRO_BASE_URL`（/retro → vite proxy → Flask 直连）。
+ * 🔴 开：`API_BASE_URL + '/retroweb/v1'`（走 Node 中转，Python 从公网下线）。
+ */
+const retroBaseURL = RETRO_VIA_NODE ? `${API_BASE_URL}/retroweb/v1` : RETRO_BASE_URL;
+
+/**
+ * 响应拆包：Node 中转回 `{code,message,data}` 信封，直连 Python 回裸 JSON。
+ * 走 Node 时取 `data`；直连时原样返回。统一挂到三个 client 的响应拦截器上。
+ */
+function unwrapNodeEnvelope<T>(response: AxiosResponse<T>): AxiosResponse<T> {
+  if (!RETRO_VIA_NODE) return response;
+  const body = response.data as { code?: number; data?: unknown } | null;
+  // code===200 才算成功；否则抛错（与 http.ts 同口径，但这里不触发 401 续期）
+  if (body && typeof body === 'object' && 'data' in body) {
+    return { ...response, data: body.data as T };
+  }
+  return response;
+}
+
 export const retroClient = axios.create({
-  baseURL: RETRO_BASE_URL,
+  baseURL: retroBaseURL,
   // 首次预测要加载模型 + 起规则子进程，实测可达数十秒 ⇒ 超时放到 10 分钟
   timeout: 600000,
   headers: { 'Content-Type': 'application/json' }
 });
+retroClient.interceptors.response.use(unwrapNodeEnvelope);
 
 /**
  * 轮询专用客户端：进度查询必须「快失败」，否则后端一旦卡顿，前端会干等最久 10 分钟。
  * 单次轮询最多 20s，超时就让上层重试（重试 N 次仍不通才判失败）。
  */
 export const retroJobClient = axios.create({
-  baseURL: RETRO_BASE_URL,
+  baseURL: retroBaseURL,
   timeout: 20000,
   headers: { 'Content-Type': 'application/json' }
 });
+retroJobClient.interceptors.response.use(unwrapNodeEnvelope);
 
 /** 轮询/接口错误：带状态码与「是否可重试」标记 */
 export class RetroApiError extends Error {
@@ -272,8 +296,17 @@ export const retroApi = {
   async getJob(jobId: string, since = 0): Promise<JobSnapshot> {
     try {
       const { data } = await retroJobClient.get<JobSnapshot>(`/jobs/${jobId}?since=${since}`);
+      // 🔴 S3：Node 中转把「上游重启 / 结果丢失」标记成 state='stale'（非 HTTP 404）。
+      //    转成 non-transient 的 RetroApiError，复用「任务已丢失，请重新展开」的提示路径。
+      if ((data as { state?: string } | null)?.state === 'stale') {
+        throw new RetroApiError('后端任务结果已丢失（服务可能重启过），请重新展开', {
+          status: 410,
+          transient: false
+        });
+      }
       return data;
     } catch (e) {
+      if (e instanceof RetroApiError) throw e;
       const ae = e as { response?: { status?: number }; code?: string; message?: string };
       // 404 = 后端任务已过期/不存在（进程重启或 TTL 到期）→ 不可重试，明确告诉用户
       if (ae?.response?.status === 404) {
@@ -310,10 +343,11 @@ export const retroApi = {
  * （流式路径不用 axios —— 见 streamAnalyze。）
  */
 export const retroLlmClient = axios.create({
-  baseURL: RETRO_BASE_URL,
+  baseURL: retroBaseURL,
   timeout: 300000,
   headers: { 'Content-Type': 'application/json' }
 });
+retroLlmClient.interceptors.response.use(unwrapNodeEnvelope);
 
 export const llmApi = {
   /**
@@ -502,7 +536,7 @@ async function postSse<T extends { type: string }>(
 ): Promise<void> {
   let resp: Response;
   try {
-    resp = await fetch(`${RETRO_BASE_URL}${path}`, {
+    resp = await fetch(`${retroBaseURL}${path}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),
