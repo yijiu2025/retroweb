@@ -98,17 +98,35 @@ key 池轮换、SSE 流式、分析模块编排。建议按 `profiles / key-pool
 `.tmp-run.log`、`.tmp-model-service/`（空）、`启动后端API.bat.bak` 8 KB、4 个 `__pycache__/`。
 全部已在 `.gitignore` 里（`*.log` / `*.bak` / `__pycache__/` / `.tmp-*/`），删了不影响仓库。
 
-## 五、待办清单（挑哪个做哪个）
+## 五、待办清单与执行状态
 
-| # | 事项 | 优先级 | 改动面 |
+| # | 事项 | 优先级 | 状态 |
 | --- | --- | --- | --- |
-| 1 | 重写 `README.md` 过期三处（多步搜索、接口表、启动脚本路径） | P1 | 1 文件 |
-| 2 | 拆 `stores/workspace.ts`（3057 行） | P1 | store + 试验台 |
-| 3 | 拆 `RunParams.vue` / `RouteCanvas.vue` / `StepAnalysis.vue` | P2 | 前端组件 |
-| 4 | 拆后端 `web/llm.py`（2342 行） | P2 | 后端 |
-| 5 | 清后端根目录临时文件 | P2 | 零代码改动 |
-| 6 | 启动后端做一次真实接口连通性验证（需加载 9 GB 模型） | P2 | 只读 |
-| 7 | 给组件层补自动化测试（现只有 store 试验台） | P3 | 新增测试 |
+| 1 | 重写 `README.md`（实际过期**五处**，不止三处） | P1 | ✅ 已做 |
+| 2 | 拆 `stores/workspace.ts`（3057 行） | P1 | ✅ 已做 → 2321 行 |
+| 3 | 拆 `RunParams.vue` / `RouteCanvas.vue` / `StepAnalysis.vue` | P2 | ⏸ 未做（见下） |
+| 4 | 拆后端 `web/llm.py`（2342 行） | P2 | ✅ 已做 → 4 模块 + 170 行壳 |
+| 5 | 清后端根目录临时文件 | P2 | ✅ 已做 |
+| 6 | 启动后端做一次真实接口连通性验证（需加载 9 GB 模型） | P2 | ⏸ 未做（需你同意起服务） |
+| 7 | 给组件层补自动化测试（现只有 store 试验台） | P3 | ⏸ 未做（见下） |
+
+### #1 的实际情况：过期五处，不是三处
+
+重写时又发现两处：页签被写成「三页签」（实际四个：目标分析 / 逆合成树 /
+路线网络 / 步骤详情）；**第五章整章还在讲"自研 SVG 画板 + 为什么不上 Ketcher"**，
+而代码早在 2026-10-06 就换成了 Ketcher 3.14。目录结构里列的文件也有一半不存在
+（`RouteSummary.vue` / `useStructureEditor.ts` / `types/editor.ts` / `utils/{molfile,rings}.ts`）。
+⇒ 整份 README 按真实代码重写了（311 行改动）。
+
+### #3 / #7 为什么这轮没做
+
+- **#3 组件拆分**：`RunParams`(1999) / `RouteCanvas`(1829) / `StepAnalysis`(1609) 合计 5437 行，
+  且**大头是模板与样式**（RunParams = script 693 + template 620 + style 684）。
+  拆 Vue SFC 的正确做法是"把模板段落提成子组件 + props/emits"，需要逐个读懂语义，
+  而且**后端没起、无法在浏览器里验证 UI** —— 盲改 UI 的风险高于收益，留单独一轮做。
+- **#7 组件测试**：当前唯一的自动化入口是 store 试验台（`vite build` + 裸 node），
+  组件层要测得装 vitest + jsdom/happy-dom。且项目里有明确的「测试有效性」约束
+  （禁手写常量自测），新测试必须真实加载被测代码 —— 属于独立的基础设施改动。
 
 ---
 
