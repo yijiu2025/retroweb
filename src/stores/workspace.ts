@@ -10,44 +10,39 @@
  */
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';
-import {
-  llmApi,
-  retroApi,
-  RetroApiError,
-  streamAnalyze,
-  streamConditions,
-  streamFollowup
-} from '@/api/retro';
+import { retroApi, RetroApiError } from '@/api/retro';
 import type {
-  AnalysisModuleKey,
   AnalysisRun,
-  AnalyzeRequest,
-  ConditionOption,
-  ConditionsRequest,
-  FeedbackEntry,
-  FollowupRequest,
-  ForwardModelInfo,
   HistoryTask,
   JobProgress,
-  LlmStatus,
-  ModelServiceInfo,
   MolNode,
   ParseSuccess,
   PredictOk,
   Reaction,
-  RetroModel,
   RouteScheme,
   RouteStep,
   RunParams,
   SearchOk,
   Session,
   SessionStatus,
-  StepAnalysis,
-  StepConditions,
-  StepFollowup,
   WorkspaceSnapshot
 } from '@/types/retro';
 import { countHeavyAtoms, levelOf, uid } from '@/utils/smiles';
+import { createModelsPart } from '@/stores/parts/models';
+import { createLlmPart } from '@/stores/parts/llm';
+import {
+  ALL_ANALYSIS_MODULES,
+  ANALYSIS_MODULE_LABELS,
+  DEFAULT_PARAMS,
+  isAbort,
+  materializeCandidates,
+  reactionIdFor,
+  sleep
+} from '@/stores/parts/shared';
+
+// 组件仍从 `@/stores/workspace` 拿这几个（见 RunParams.vue）—— 在这里统一再导出，
+// 免得同一个常量出现两个来源（改一处忘一处）。
+export { ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS, reactionIdFor };
 
 const HISTORY_KEY = 'retroweb_history';
 const HISTORY_LIMIT = 30;
@@ -55,43 +50,8 @@ const SESSIONS_KEY = 'retroweb_sessions';
 const SESSIONS_LIMIT = 10;
 /** 每个节点最多保留几次分析结果（多了 localStorage 会撑爆） */
 const MAX_RUNS = 6;
-/** 每个节点最多保留几份 AI 工艺分析 */
-const MAX_ANALYSES = 6;
-/** 每份工艺分析最多保留几条追问（追问会累积，不设上限 localStorage 迟早爆） */
-const MAX_FOLLOWUPS = 10;
 /** 候选反应条件枚举的偏好（跨会话保留，属"用户习惯"而非任务数据） */
 const COND_PREF_KEY = 'retroweb_cond_pref';
-/** 模型加载期间的状态轮询间隔（毫秒） */
-const MODELS_POLL_MS = 1500;
-/** 轮询连续失败几次就收手（后端都没了还每秒打一次没有意义） */
-const MODELS_POLL_MAX_FAILS = 3;
-
-/**
- * 候选反应的**确定性 id**：由「节点 + 前体组合」推出。
- *
- * 🔴 为什么不能用随机 uid：一个节点会被反复分析（保留历史 runs），也可能复用别的节点的
- *    相同分子分析。若 id 随机，切换 runs / 复用结果时 `chosenReactionId` 就对不上，
- *    已建的子树会被误判成「无效选择」而清掉。用确定性 id ⇒ 同样的前体组合永远同一个 id，
- *    选择、复用、切换全都稳定。
- */
-export function reactionIdFor(nodeId: string, precursors: string): string {
-  let h = 5381;
-  const s = String(precursors || '');
-  for (let i = 0; i < s.length; i += 1) {
-    h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
-  }
-  return `rxn_${nodeId}_${h.toString(36)}`;
-}
-
-/** 把任意来源的候选整理成「属于 nodeId」的形状（复用别人结果时必须重挂） */
-function materializeCandidates(nodeId: string, list: Reaction[]): Reaction[] {
-  return list.map((r) => ({
-    ...r,
-    id: reactionIdFor(nodeId, r.precursors),
-    productNodeId: nodeId,
-    childNodeIds: []
-  }));
-}
 
 /** 一条路线方案的「体检结果」（用于多条路线横向对比） */
 export interface SchemeStat {
@@ -127,56 +87,6 @@ export interface SchemeStat {
    */
   manualSteps: number;
 }
-
-const DEFAULT_PARAMS: RunParams = {
-  model: 'pistachio',
-  numResults: 5,
-  maxDepth: 4,
-  // 阈值定 10 时阿司匹林拆一步就到底了（前体普遍 ≤10 重原子），「多次一步」形同虚设。
-  // 6 = 苯环量级（苯 6、甲苯 7 继续拆），才是可购买起始物料的常用口径。
-  heavyAtomThreshold: 6,
-  startingMaterials: [],
-  budgetCalls: 40,
-  // 「可行性过滤」默认**关**：它要额外常驻一份正向模型（约 1 GB），而且要等它
-  // 加载完才用得上 —— 没打算用的人不该被迫先下 835 MB。
-  forwardFilter: false,
-  // top-5 = 官方 evaluation 里 ForwardReactionFilterModel 的常用取值：放宽到 50 几乎
-  // 不过滤（失去意义），收到 1 会误杀大量真反应。详见「拆分约束」里的说明。
-  forwardTopK: 5
-};
-
-/**
- * AI 工艺分析可勾选的模块（默认全选）。
- * 🔴 顺序即面板展示顺序；`summary`（总述+反应类型）是每次分析的兜底，不在这里展示，
- *    但永远随请求带上。与后端 `_MODULE_FIELDS` 的 key 对齐。
- */
-export const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
-  'mechanism',
-  'order',
-  'conditions',
-  'workup',
-  'outcome',
-  'byproducts',
-  'lcms',
-  'nmr',
-  'tlc',
-  'safety'
-];
-
-/** 模块 key → 中文名（RunParams 勾选面板用） */
-export const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
-  summary: '总述与反应类型',
-  mechanism: '反应机理',
-  order: '投料顺序',
-  conditions: '反应条件',
-  workup: '后处理分析',
-  outcome: '预期结果与收率',
-  byproducts: '可能的副产物',
-  lcms: 'LCMS 解读',
-  nmr: 'NMR 谱图归属',
-  tlc: '点板与过柱极性',
-  safety: '安全与放大提示'
-};
 
 function readHistory(): HistoryTask[] {
   try {
@@ -271,29 +181,11 @@ function writeCondPref(v: { planFirst: boolean; count: number }): void {
   }
 }
 
-function isAbort(err: unknown): boolean {
-  const code = (err as { code?: string })?.code;  return code === 'ERR_CANCELED' || (err instanceof Error && err.name === 'CanceledError');
-}
-
-/** 可被打断的 sleep：abort 时立即 resolve，让轮询循环能尽快退出 */
-function sleep(ms: number, signal?: AbortSignal): Promise<void> {
-  return new Promise((resolve) => {
-    if (signal?.aborted) return resolve();
-    const t = setTimeout(() => resolve(), ms);
-    signal?.addEventListener('abort', () => {
-      clearTimeout(t);
-      resolve();
-    });
-  });
-}
-
 export const useWorkspaceStore = defineStore('workspace', () => {
   // ---------- 状态 ----------
   const rootId = ref<string | null>(null);
   const nodes = ref<Record<string, MolNode>>({});
   const params = ref<RunParams>({ ...DEFAULT_PARAMS });
-  /** AI 工艺分析勾选的模块（默认全选）。空数组 = 全量分析（与后端语义一致） */
-  const analysisModules = ref<AnalysisModuleKey[]>([...ALL_ANALYSIS_MODULES]);
   /**
    * 「先列候选条件再深入分析」—— 反应条件本就有多套组合，默认先枚举让用户挑一套。
    * 关掉 = 老行为：直接按模型的第一直觉给一套条件做深入分析。
@@ -304,32 +196,28 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   watch([condPlanFirst, condOptionCount], () => {
     writeCondPref({ planFirst: condPlanFirst.value, count: condOptionCount.value });
   });
-  const models = ref<RetroModel[]>([]);
-  const modelsLoading = ref(false);
-  /**
-   * 正在「加载 / 切换」的那个模型 key（null = 没有进行中的操作）。
-   * 它是**按钮的 loading 态**，不是模型状态 —— 模型状态看每行的 `state`。
-   */
-  const modelLoadingKey = ref<string | null>(null);
-  /** 正在停止模型服务（回收规则子进程要几秒） */
-  const modelStopping = ref(false);
-  /** 模型服务（独立常驻进程 :8001）的概览；老后端不给这个字段 ⇒ null */
-  const modelService = ref<ModelServiceInfo | null>(null);
-  /**
-   * 正向模型（「可行性过滤」的判据）。
-   *
-   * 🔴 与 `models` 是两个不同的东西，不能混：`models` 里每一行都能当**搜索主模型**，
-   *    而正向模型只是个附件 —— 混进去就会冒出一格"可选的预测模型"，选中它跑逆合成
-   *    必然失败。所以它单独一个 ref，界面上也只出现在「可行性过滤」那一行。
-   *    老后端不返回这个字段 ⇒ null，界面按「没有正向模型」渲染。
-   */
-  const forwardModel = ref<ForwardModelInfo | null>(null);
-  /** 正向模型的「加载」按钮在转圈（null = 没有进行中的操作） */
-  const forwardLoadingKey = ref<string | null>(null);
-  /** 模型状态轮询定时器（null = 没在轮询） */
-  let modelsPollTimer: ReturnType<typeof setInterval> | null = null;
-  /** 轮询连续失败次数 */
-  let modelsPollFails = 0;
+  // ---------- 模型域（独立零件，见 stores/parts/models.ts） ----------
+  const modelsPart = createModelsPart({ params, setGlobalError });
+  const {
+    models,
+    modelsLoading,
+    modelLoadingKey,
+    modelStopping,
+    modelService,
+    forwardModel,
+    forwardLoadingKey,
+    forwardReady,
+    forwardBusy,
+    canUseForwardFilter,
+    currentModel,
+    modelReady,
+    modelBusy,
+    modelPhase,
+    loadModels,
+    warmModel,
+    stopModelService,
+    loadForward
+  } = modelsPart;
 
   /** 当前展开候选面板的节点 */
   const activeNodeId = ref<string | null>(null);
@@ -407,8 +295,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const schemes = ref<RouteScheme[]>([]);
   const currentSchemeId = ref<string | null>(null);
 
-  /** 大模型配置状态（决定「AI 分析」按钮能用 / 还是指引去填 .env） */
-  const llmStatus = ref<LlmStatus | null>(null);
 
   /** 工艺分析面板要聚焦的节点（从路线树点「工艺分析」跳转过来） */
   const analysisFocus = ref<string | null>(null);
@@ -430,8 +316,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
    *    `loadSession` / `resumeSessions` 会把它复位成 `overview`（换任务 = 换上下文）。
    */
   const mainTab = ref<'overview' | 'tree' | 'route' | 'flow'>('overview');
-  /** 正在流式输出的工艺分析的中止句柄（key = nodeId） */
-  const analysisAborts = new Map<string, AbortController>();
 
   /**
    * 标定面板是否打开 —— 工作台版式的**唯一开关**。
@@ -774,182 +658,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   }
 
   // ---------- 动作 ----------
-  /**
-   * 真拉一次模型状态矩阵（内部件，不负责 loading 态与错误提示）。
-   *
-   * 🔴 单独抽出来是为了让**轮询**和**用户点刷新**共用同一条取数路径：
-   *    轮询每 1.5 秒跑一次，若它去动 `modelsLoading`，下拉框就会一直闪转圈；
-   *    若它去 `setGlobalError`，网络抖一下就弹出错误条。所以取数与"怎么呈现"分开。
-   */
-  async function fetchModels(): Promise<void> {
-    const res = await retroApi.models();
-    models.value = res.models ?? [];
-    modelService.value = res.service ?? null;
-    // 老后端不返回 forward ⇒ 保持 null（界面按「没有正向模型」渲染，开关禁用）。
-    forwardModel.value = res.forward ?? null;
-    if (models.value.length && !models.value.some((m) => m.key === params.value.model)) {
-      // 换过默认模型时优先落到「已经就绪」的那一个，其次才是文件存在的第一个
-      const pick =
-        models.value.find((m) => m.state === 'ready') ??
-        models.value.find((m) => m.exists !== false) ??
-        models.value[0];
-      params.value.model = pick.key;
-    }
-    syncModelsPolling();
-  }
-
-  /** 拉模型列表（用户可见的入口：首次挂载 / 加载失败后的重试） */
-  async function loadModels(): Promise<void> {
-    modelsLoading.value = true;
-    try {
-      await fetchModels();
-    } catch (e) {
-      setGlobalError((e as Error).message, () => void loadModels());
-      models.value = [];
-      modelService.value = null;
-      forwardModel.value = null;
-      stopModelsPolling();
-    } finally {
-      modelsLoading.value = false;
-    }
-  }
-
-  /**
-   * 模型只要还在加载，就每 1.5 秒重读一次 `/api/models`，直到它落到终态。
-   *
-   * 🔴 为什么必须轮询：`/api/load` 是**立刻返回**的（只表示"已受理"），
-   *    模型要 40~90 秒才真的能用。没有轮询，界面就永远停在"加载中"，
-   *    用户分不清是在正常加载还是卡死了 —— 也就谈不上"什么时候加载好显示就绪"。
-   *
-   * 🔴 为什么不能依赖 WebSocket / SSE：模型服务在加载期间**连 HTTP 都还没起**
-   *    （它必须先在单线程阶段把模型加载完，见 web/model_server.py），
-   *    没有任何长连接可挂。只能轮询。
-   */
-  function syncModelsPolling(): void {
-    // 🔴 正向模型也要算进去：它在 HTTP 起来之后热挂，加载期间 `service.state` 是
-    //    ready（逆向模型早就绪了）、`models` 里也没有任何 loading 行 —— 只看这两者
-    //    的话轮询会立刻停掉，按钮就永远停在「加载中」，用户只能手动刷新页面。
-    const busy =
-      modelService.value?.state === 'loading' ||
-      forwardModel.value?.state === 'loading' ||
-      models.value.some((m) => m.state === 'loading');
-    if (!busy) {
-      stopModelsPolling();
-      return;
-    }
-    if (modelsPollTimer !== null) return;
-    modelsPollFails = 0;
-    modelsPollTimer = setInterval(() => {
-      void fetchModels()
-        .then(() => {
-          modelsPollFails = 0;
-        })
-        .catch(() => {
-          // 轮询失败**静默**（不弹错误条）：网络抖一下不该刷屏。
-          // 但连续失败到上限就停 —— 后端都没了还每秒打一次毫无意义。
-          if (++modelsPollFails >= MODELS_POLL_MAX_FAILS) stopModelsPolling();
-        });
-    }, MODELS_POLL_MS);
-  }
-
-  function stopModelsPolling(): void {
-    if (modelsPollTimer !== null) {
-      clearInterval(modelsPollTimer);
-      modelsPollTimer = null;
-    }
-    modelsPollFails = 0;
-  }
-
-  /**
-   * 加载 / 切换模型（「模型后启动」的用户入口）。
-   *
-   * 后端立刻返回「已受理」，随后由 `syncModelsPolling` 接手，直到就绪。
-   * 换模型 = 重启模型服务进程（加载必须在单线程阶段完成），所以这里会等几秒。
-   */
-  async function warmModel(key?: string): Promise<void> {
-    const target = key || params.value.model;
-    modelLoadingKey.value = target;
-    try {
-      const res = await retroApi.loadModel(target);
-      if (res && res.ok === false) {
-        setGlobalError(res.error || '模型加载失败', () => void warmModel(target));
-        return;
-      }
-      await fetchModels();
-    } catch (e) {
-      setGlobalError((e as Error).message, () => void warmModel(target));
-    } finally {
-      modelLoadingKey.value = null;
-    }
-  }
-
-  /** 停止模型服务（省内存）。API 不受影响 —— 解析 / 绘制 / AI 分析照常可用。 */
-  async function stopModelService(): Promise<void> {
-    modelStopping.value = true;
-    try {
-      const res = await retroApi.modelService('stop');
-      if (res && res.ok === false) {
-        setGlobalError(res.error || '停止模型服务失败', () => void stopModelService());
-        return;
-      }
-      await fetchModels();
-    } catch (e) {
-      setGlobalError((e as Error).message, () => void stopModelService());
-    } finally {
-      modelStopping.value = false;
-    }
-  }
-
-  /**
-   * 加载正向模型（「可行性过滤」的判据）。
-   *
-   * 🔴 与 `warmModel` 的差别必须说清：它**不会**重启模型服务，所以
-   *    ① 已加载的逆向模型照常在；② 不需要等"停旧起新"那几秒；
-   *    ③ 但**必须模型服务在跑**（正向模型挂在它下面，另起一份会多一个进程）。
-   */
-  async function loadForward(): Promise<void> {
-    if (!forwardModel.value) return;
-    forwardLoadingKey.value = params.value.model; // 非 null 即「按钮转圈中」
-    try {
-      const res = await retroApi.loadForward(forwardModel.value.key);
-      if (res && res.ok === false) {
-        setGlobalError(res.error || '加载正向模型失败', () => void loadForward());
-        return;
-      }
-      await fetchModels();
-    } catch (e) {
-      setGlobalError((e as Error).message, () => void loadForward());
-    } finally {
-      forwardLoadingKey.value = null;
-    }
-  }
-
-  /** 正向模型是否已就绪 —— 「可行性过滤」开关的**唯一**可用性判据 */
-  const forwardReady = computed(() => forwardModel.value?.state === 'ready');
-  /** 正向模型正在加载（按钮转圈 + 开关禁用，并说明"等它一下"） */
-  const forwardBusy = computed(() => forwardModel.value?.state === 'loading');
-  /**
-   * 能不能打开「可行性过滤」。
-   * 两条都要：正向模型就绪 **且** 主模型也跑在同一个模型服务里（搜索得通过它转接）。
-   */
-  const canUseForwardFilter = computed(() => forwardReady.value && modelReady.value);
-
-  /** 当前下拉里选中的那一行（拿它的 state 决定按钮长什么样） */
-  const currentModel = computed<RetroModel | null>(
-    () => models.value.find((m) => m.key === params.value.model) ?? null
-  );
-
-  /** 选中的模型是不是已就绪、可以立刻推理 */
-  const modelReady = computed(() => currentModel.value?.state === 'ready');
-
-  /** 有任何一个模型/服务在加载中（含"选的那个不是加载的那个"这种情形） */
-  const modelBusy = computed(
-    () => modelService.value?.state === 'loading' || models.value.some((m) => m.state === 'loading')
-  );
-
-  /** 模型服务写的人话阶段文案，直接可展示 */
-  const modelPhase = computed(() => modelService.value?.phase || '');
-
   /** 设置目标分子：重置整棵树，并（按上下文）编辑现有会话或开一个新会话 */
   function setTarget(parsed: ParseSuccess): void {
     reset({ keepParams: true });
@@ -1706,8 +1414,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     clearGlobalError();
     aborts.forEach((c) => c.abort());
     aborts.clear();
-    analysisAborts.forEach((c) => c.abort());
-    analysisAborts.clear();
+    cancelAllAnalyses();
     analysisFocus.value = null;
     jobProgress.value = {};
     schemes.value = [];
@@ -2397,475 +2104,32 @@ function persistSession(): void {
     schedulePersist();
   }
 
-  // ---------- 大模型工艺分析 ----------
-  /**
-   * 拉取大模型配置状态。
-   * `probe=true` 时后端会真发一次最小请求验证 key + 模型，结果放在 `status.probe`。
-   * 🔴 只在用户点「刷新 / 验证」时才 probe —— 每次进页面都 probe 会白打一次网络，
-   *    而且很多网关有 tpm/rpm 限流（实测连打几次就 429）。
-   */
-  async function loadLlmStatus(probe = false): Promise<void> {
-    llmStatus.value = await llmApi.status(probe);
-  }
-
-  /** 该节点在「当前采纳的那一步」上的 AI 分析记录 */
-  function analysisOf(nodeId: string): StepAnalysis | undefined {
-    const node = nodes.value[nodeId];
-    const rid = node?.chosenReactionId;
-    if (!node || !rid) return undefined;
-    return node.analyses?.[rid];
-  }
-
-  /**
-   * 该节点「用户选定的候选条件」对应的那套方案（没选过 = undefined）。
-   *
-   * 🔴 从 condOptions 里**按 id 现查**，不缓存对象引用：枚举结果可能被重新枚举覆盖，
-   *    缓存引用会指向一份已经不在界面上显示的旧方案。
-   */
-  function chosenCondition(nodeId: string): ConditionOption | undefined {
-    const rec = analysisOf(nodeId);
-    const id = rec?.chosenConditionId;
-    if (!id) return undefined;
-    return rec?.condOptions?.data?.options.find((o) => o.id === id);
-  }
-
-  /** 从目标分子到该节点，已经走过的步骤（作为大模型的路线上下文） */
-  function routeContext(nodeId: string): AnalyzeRequest['context'] {
-    const chain: MolNode[] = [];
-    let cur: MolNode | undefined = nodes.value[nodeId];
-    const guard = new Set<string>();
-    while (cur && !guard.has(cur.id)) {
-      guard.add(cur.id);
-      chain.unshift(cur);
-      // 🔴 显式标注类型：cur 由下面那行的 find 赋值，而 find 的条件又用了 pid ⇒
-      //    TS 无法自行推导（TS7022 循环引用），加注解打断这个环。
-      const pid: string | null | undefined = cur.parentReactionId;
-      if (!pid) break;
-      cur = Object.values(nodes.value).find((n): boolean =>
-        n.candidates.some((r): boolean => r.id === pid)
-      );
-    }
-    const steps: string[] = [];
-    for (const n of chain) {
-      const r = n.candidates.find((x) => x.id === n.chosenReactionId);
-      if (r) steps.push(`${n.smiles} ← ${r.precursorList.join(' + ')}`);
-    }
-    return {
-      target: rootId.value ? nodes.value[rootId.value]?.smiles : undefined,
-      step_no: chain.length,
-      prior_steps: steps.slice(0, -1)
-    };
-  }
-
-  function trimAnalyses(node: MolNode): void {
-    const map = node.analyses;
-    if (!map) return;
-    const keys = Object.keys(map);
-    while (keys.length > MAX_ANALYSES) {
-      const k = keys.shift() as string;
-      delete map[k];
-    }
-  }
-
-  /**
-   * 对「该节点当前采纳的那一步反应」跑一次 AI 工艺分析（流式）。
-   *
-   * 结果按 reactionId 存在节点上 ⇒ 天然保留：同一个分子换过几种拆法就有几份分析。
-   * 已有 done 的结果默认不重复跑（要看就展开），想重跑传 `force`。
-   *
-   * 🔴 `continue`（接着分析）：LLM 是无状态的，普通重跑会从头再来。上次失败（截断/中断）
-   *    若已收到部分正文，把那段正文作为 assistant 前缀续写，让模型从断点接着补完，
-   *    而不是重头再写一遍。传 `continue: true` 时内部自动带上 `continue_from`。
-   */
-  async function analyzeStep(
-    nodeId: string,
-    opts: { force?: boolean; continue?: boolean } = {}
-  ): Promise<void> {
-    const node = nodes.value[nodeId];
-    if (!node) return;
-    const rid = node.chosenReactionId;
-    if (!rid) return;
-    const rxn = node.candidates.find((r) => r.id === rid);
-    if (!rxn) return;
-
-    if (!node.analyses) node.analyses = {};
-    const prev = node.analyses[rid];
-    if (prev?.status === 'streaming') return;
-    if (prev?.status === 'done' && !opts.force) return;
-
-    analysisAborts.get(nodeId)?.abort();
-    const controller = new AbortController();
-    analysisAborts.set(nodeId, controller);
-
-    // 接着分析：把上次已收到的正文接上续写（保留思考过程不被丢弃）
-    const continueFrom = opts.continue && prev?.raw ? prev.raw : undefined;
-
-    node.analyses[rid] = {
-      reactionId: rid,
-      status: 'streaming',
-      raw: '',
-      data: null,
-      computed: null,
-      model: llmStatus.value?.model,
-      at: Date.now(),
-      // 🔴 候选条件与「已选条件」必须跨「重新分析」保留：不带上就会在这次分析开始时被抹掉，
-      //    于是界面上「已选条件方案」的标记与本轮枚举结果一起消失（枚举等于白跑）。
-      ...(prev?.condOptions ? { condOptions: prev.condOptions } : {}),
-      ...(prev?.chosenConditionId ? { chosenConditionId: prev.chosenConditionId } : {})
-    };
-
-    /** 一律通过响应式代理写回（直接改本地裸对象不会触发 Vue 更新） */
-    const patch = (p: Partial<StepAnalysis>): void => {
-      const cur = node.analyses?.[rid];
-      if (cur) Object.assign(cur, p);
-    };
-    const appended = (text: string): void => {
-      const cur = node.analyses?.[rid];
-      if (cur) cur.raw = (cur.raw || '') + text;
-    };
-    /** 推理模型的思考增量单独累积 —— 不能混进 raw，否则 JSON 抽取会先撞上思考文本 */
-    const appendedThinking = (text: string): void => {
-      const cur = node.analyses?.[rid];
-      if (cur) cur.reasoning = (cur.reasoning || '') + text;
-    };
-
-    const t0 = Date.now();
-    const req: AnalyzeRequest = {
-      product: node.smiles,
-      precursors: rxn.precursorList,
-      probability: rxn.probability ?? undefined,
-      model: params.value.model,
-      context: routeContext(nodeId),
-      // 勾选的模块；空数组 = 全量（后端据此裁剪 prompt，只输出勾选字段）
-      modules: [...analysisModules.value],
-      // 用户选定的候选条件：锁定这套条件，否则模型会另换一套溶剂/温度，用户的选择就白做了
-      chosen_condition: chosenCondition(nodeId) ?? null,
-      ...(continueFrom ? { continue_from: continueFrom } : {})
-    };
-
-    try {
-      await streamAnalyze(
-        req,
-        {
-          onMeta: (m) => patch({ model: m }),
-          onThinking: (t) => appendedThinking(t),
-          onDelta: (t) => appended(t),
-          onDone: (p) => {
-            patch({
-              raw: p.raw || node.analyses?.[rid]?.raw || '',
-              reasoning: p.reasoning || node.analyses?.[rid]?.reasoning || '',
-              data: p.data,
-              computed: p.computed,
-              model: p.model,
-              status: 'done',
-              elapsed: Math.round((Date.now() - t0) / 100) / 10
-            });
-            analysisAborts.delete(nodeId);
-          },
-          onError: (m) => {
-            patch({ status: 'failed', error: m, elapsed: Math.round((Date.now() - t0) / 100) / 10 });
-            analysisAborts.delete(nodeId);
-          }
-        },
-        controller.signal
-      );
-    } finally {
-      const cur = node.analyses?.[rid];
-      // 被 abort 时既走不到 done 也走不到 error ⇒ 这里收尾，避免永远停在「分析中」
-      if (cur && cur.status === 'streaming') {
-        cur.status = 'failed';
-        cur.error = cur.error || '分析已中断';
-      }
-      analysisAborts.delete(nodeId);
-      trimAnalyses(node);
-      schedulePersist();
-    }
-  }
-
-  function cancelAnalysis(nodeId: string): void {
-    analysisAborts.get(nodeId)?.abort();
-    analysisAborts.delete(nodeId);
-    const node = nodes.value[nodeId];
-    const rid = node?.chosenReactionId;
-    const rec = node && rid ? node.analyses?.[rid] : undefined;
-    if (rec && rec.status === 'streaming') {
-      rec.status = 'failed';
-      rec.error = '已手动停止';
-    }
-  }
-
-  /* ---------- 候选反应条件（先枚举 → 选一套 → 深入分析） ---------- */
-
-  /**
-   * 枚举「这一步反应可能的反应条件」—— 先让模型列出几套方案，再由用户挑一套深入分析。
-   *
-   * 反应条件（溶剂 / 温度 / 碱与缩合剂 / 浓度 / 投料方式）本就是组合空间，一次只给一套
-   * 等于把模型的第一直觉当唯一答案。结果挂在 `analysis.condOptions` 上（按 reactionId 存 ⇒
-   * 同一个分子换过不同拆法，各有各的枚举结果）。
-   *
-   * 已有 done 的结果默认不重跑（要看就展开展示），想重新枚举传 `force`。
-   */
-  async function analyzeConditions(nodeId: string, opts: { force?: boolean } = {}): Promise<void> {
-    const node = nodes.value[nodeId];
-    const rid = node?.chosenReactionId;
-    if (!node || !rid) return;
-    const rxn = node.candidates.find((r) => r.id === rid);
-    if (!rxn) return;
-
-    if (!node.analyses) node.analyses = {};
-    // 🔴 枚举通常发生在「还没做过深入分析」的时候 ⇒ 记录不存在要自己建出来，
-    //    否则 condOptions 无处安放（沿用 StepAnalysis 的状态字段形状，status 先 idle）。
-    if (!node.analyses[rid]) {
-      node.analyses[rid] = { reactionId: rid, status: 'idle', raw: '' };
-    }
-    const prev = node.analyses[rid];
-    if (prev.condOptions?.status === 'streaming') return;
-    if (prev.condOptions?.status === 'done' && !opts.force) return;
-
-    // 用独立 key：枚举与深入分析可以并存（选了条件就立刻跑分析，两者是两条流）
-    const ak = `cond:${nodeId}`;
-    analysisAborts.get(ak)?.abort();
-    const controller = new AbortController();
-    analysisAborts.set(ak, controller);
-
-    const t0 = Date.now();
-    prev.condOptions = {
-      status: 'streaming',
-      raw: '',
-      data: null,
-      computed: null,
-      model: llmStatus.value?.model,
-      at: Date.now()
-    };
-
-    /** 一律重新从响应式对象上取 —— 记录可能刚被 analyzeStep 重建过，别缓存引用 */
-    const cur = (): StepConditions | undefined =>
-      node.analyses?.[rid]?.condOptions ?? undefined;
-    const patch = (p: Partial<StepConditions>): void => {
-      const c = cur();
-      if (c) Object.assign(c, p);
-    };
-    const append = (key: 'raw' | 'reasoning', text: string): void => {
-      const c = cur();
-      if (c) c[key] = (c[key] || '') + text;
-    };
-
-    const req: ConditionsRequest = {
-      product: node.smiles,
-      precursors: rxn.precursorList,
-      probability: rxn.probability ?? undefined,
-      model: params.value.model,
-      context: routeContext(nodeId),
-      count: condOptionCount.value
-    };
-
-    try {
-      await streamConditions(
-        req,
-        {
-          onMeta: (m) => patch({ model: m }),
-          onThinking: (t) => append('reasoning', t),
-          onDelta: (t) => append('raw', t),
-          onDone: (p) => {
-            patch({
-              raw: p.raw || cur()?.raw || '',
-              reasoning: p.reasoning || cur()?.reasoning || '',
-              data: p.data,
-              computed: p.computed,
-              model: p.model,
-              status: 'done',
-              elapsed: Math.round((Date.now() - t0) / 100) / 10
-            });
-            analysisAborts.delete(ak);
-          },
-          onError: (m) => {
-            patch({ status: 'failed', error: m, elapsed: Math.round((Date.now() - t0) / 100) / 10 });
-            analysisAborts.delete(ak);
-          }
-        },
-        controller.signal
-      );
-    } finally {
-      const c = cur();
-      // 被 abort 时既走不到 done 也走不到 error ⇒ 这里收尾，避免永远停在「枚举中」
-      if (c && c.status === 'streaming') {
-        c.status = 'failed';
-        c.error = c.error || '枚举已中断';
-      }
-      analysisAborts.delete(ak);
-      schedulePersist();
-    }
-  }
-
-  /**
-   * 选定一套候选条件（`optionId = null` = 取消选择，恢复「不限条件」）。
-   *
-   * 🔴 只改 `chosenConditionId`、**不动 condOptions** —— 用户要能来回切换比较；
-   *    分析侧读的是 `chosenCondition(nodeId)`（按 id 现查），所以这里不用同步改别的字段。
-   * opts.analyze 默认 true：选定即用这套条件跑一次深入分析。
-   */
-  function chooseCondition(
-    nodeId: string,
-    optionId: string | null,
-    opts: { analyze?: boolean } = {}
-  ): void {
-    const rec = analysisOf(nodeId);
-    if (!rec) return;
-    if (optionId === null) {
-      rec.chosenConditionId = undefined;
-    } else {
-      const exists = rec.condOptions?.data?.options.some((o) => o.id === optionId);
-      if (!exists) return;
-      rec.chosenConditionId = optionId;
-    }
-    schedulePersist();
-    if (opts.analyze !== false) void analyzeStep(nodeId, { force: true });
-  }
-
-  function cancelConditions(nodeId: string): void {
-    const ak = `cond:${nodeId}`;
-    analysisAborts.get(ak)?.abort();
-    analysisAborts.delete(ak);
-    const c = analysisOf(nodeId)?.condOptions;
-    if (c && c.status === 'streaming') {
-      c.status = 'failed';
-      c.error = '已手动停止';
-    }
-  }
-
-  /**
-   * 对「该节点这一步反应」追问一个问题 —— **携带上下文**。
-   *
-   * 带过去的东西：产物 / 前体 / 路线上下文 / 已生成的结构化分析 / 本份分析上的历史问答。
-   * 结果追加到 `analysis.followups`（随会话落盘）⇒ 刷新后问答还在。
-   *
-   * 🔴 与首轮分析的区别：追问要的是**自由文本**回答（后端已显式关掉 json 模式），
-   *    所以这里不抽 JSON，直接累积文本。
-   * 🔴 写回必须走**响应式代理**：用 `find()` 从响应式数组里取当前那条再改；
-   *    抓着 push 时的裸对象引用改，Vue 收不到更新（界面会一直空着）。
-   */
-  async function askFollowup(nodeId: string, question: string): Promise<void> {
-    const node = nodes.value[nodeId];
-    const rid = node?.chosenReactionId;
-    if (!node || !rid) return;
-    const rxn = node.candidates.find((r) => r.id === rid);
-    const rec = node.analyses?.[rid];
-    const q = question.trim();
-    if (!rxn || !rec || !q) return;
-    if (rec.followups?.some((f) => f.status === 'streaming')) return; // 一次只跑一条
-
-    if (!rec.followups) rec.followups = [];
-    const items = rec.followups;
-    // 只留最近 MAX_FOLLOWUPS 条：追问会累积，不设上限 localStorage 迟早爆
-    if (items.length >= MAX_FOLLOWUPS) items.splice(0, items.length - MAX_FOLLOWUPS + 1);
-    const myId = uid('fu');
-    items.push({ id: myId, q, a: '', status: 'streaming', at: Date.now() });
-
-    /** 每次都重新从响应式数组里取 —— 数组可能刚被 trim 过，别缓存下标 */
-    const cur = (): StepFollowup | undefined =>
-      node.analyses?.[rid]?.followups?.find((f) => f.id === myId);
-
-    const ak = `fu:${nodeId}`;
-    analysisAborts.get(ak)?.abort();
-    const controller = new AbortController();
-    analysisAborts.set(ak, controller);
-
-    const history: { role: 'user' | 'assistant'; content: string }[] = [];
-    for (const f of items) {
-      if (f.id === myId) continue;
-      if (f.status !== 'done' || !f.a) continue;
-      history.push({ role: 'user', content: f.q });
-      history.push({ role: 'assistant', content: f.a });
-    }
-
-    const req: FollowupRequest = {
-      product: node.smiles,
-      precursors: rxn.precursorList,
-      probability: rxn.probability ?? undefined,
-      model: params.value.model,
-      context: routeContext(nodeId),
-      analysis: rec.data ?? null,
-      history,
-      question: q
-    };
-
-    try {
-      await streamFollowup(
-        req,
-        {
-          onDelta: (t) => {
-            const c = cur();
-            if (c) c.a += t;
-          },
-          onDone: (p) => {
-            const c = cur();
-            if (c) {
-              c.a = p.text || c.a;
-              c.status = 'done';
-            }
-          },
-          onError: (m) => {
-            const c = cur();
-            if (c) {
-              c.status = 'failed';
-              c.error = m;
-            }
-          }
-        },
-        controller.signal
-      );
-    } finally {
-      // abort 时既走不到 done 也走不到 error ⇒ 这里收尾，别永远停在「回答中」
-      const c = cur();
-      if (c && c.status === 'streaming') {
-        c.status = 'failed';
-        c.error = c.error || '追问已中断';
-      }
-      analysisAborts.delete(ak);
-      schedulePersist();
-    }
-  }
-
-  /** 停止正在流式的那条追问 */
-  function cancelFollowup(nodeId: string): void {
-    const ak = `fu:${nodeId}`;
-    analysisAborts.get(ak)?.abort();
-    analysisAborts.delete(ak);
-  }
-
-  /**
-   * 提交一条「预测 vs 实测」错误反馈：用户做实验后发现预测与实际偏差较大，
-   * 把差异记录下来。后端落盘到 feedback.jsonl，供后续微调/蒸馏训练。
-   *
-   * 🔴 与 AI 分析解耦：反馈只是「记录」，不触发新的模型调用，也不影响已生成的分析。
-   *    即使后端大模型没配置，反馈也能提交（后端 /api/feedback 不依赖 llm 模块）。
-   */
-  async function submitFeedback(nodeId: string, entry: Omit<FeedbackEntry, 'product' | 'precursors' | 'reaction_id' | 'model'>): Promise<boolean> {
-    const node = nodes.value[nodeId];
-    if (!node) return false;
-    const rid = node.chosenReactionId;
-    const rxn = rid ? node.candidates.find((r) => r.id === rid) : undefined;
-    const payload: FeedbackEntry = {
-      ...entry,
-      product: node.smiles,
-      precursors: rxn?.precursorList ?? [],
-      reaction_id: rid ?? undefined,
-      model: llmStatus.value?.model
-    };
-    const res = await llmApi.submitFeedback(payload);
-    return !!res?.ok;
-  }
-
-  /** 把所有节点的 AI 分析一次性生成（沿当前路线的每一步） */
-  async function analyzeRoute(): Promise<void> {    const steps = route.value;
-    for (const step of steps) {
-      const node = nodes.value[step.nodeId];
-      if (!node?.chosenReactionId) continue;
-      const rec = node.analyses?.[node.chosenReactionId];
-      if (rec?.status === 'done' || rec?.status === 'streaming') continue;
-      await analyzeStep(step.nodeId);
-    }
-  }
+  // ---------- 大模型工艺分析（独立零件，见 stores/parts/llm.ts） ----------
+  const llmPart = createLlmPart({
+    nodes,
+    rootId,
+    route,
+    params,
+    condOptionCount,
+    schedulePersist
+  });
+  const {
+    llmStatus,
+    analysisModules,
+    loadLlmStatus,
+    analysisOf,
+    chosenCondition,
+    analyzeStep,
+    cancelAnalysis,
+    analyzeConditions,
+    chooseCondition,
+    cancelConditions,
+    askFollowup,
+    cancelFollowup,
+    submitFeedback,
+    analyzeRoute,
+    cancelAllAnalyses
+  } = llmPart;
 
   // ---------- 导出 ----------
   function exportJson(): string {
