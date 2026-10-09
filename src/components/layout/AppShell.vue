@@ -75,8 +75,22 @@ function newSession(): void {
   if (route.path !== '/') void router.push('/');
 }
 
+/** 侧栏「查看全部 N 个任务」→ 整页任务列表（能搜能筛，侧栏只列得下前 6 条） */
+function allSessions(): void {
+  void router.push('/tasks');
+}
+
+/**
+ * 主导航。
+ *
+ * 🔴 「工作台」与「任务列表」是并列的两个一级入口，不是从属关系：
+ *    工作台 = 手上的**这一个**任务（拆它的树、看它的分析）；
+ *    任务列表 = **所有**任务（找一条、看它做到哪了、删掉不要的）。
+ *    侧栏「最近的任务」只列前 6 条，是"切回上一个活"的捷径，替代不了整页列表。
+ */
 const navItems = [
   { path: '/', label: '工作台', icon: '⌗' },
+  { path: '/tasks', label: '任务列表', icon: '☰' },
   { path: '/history', label: '历史记录', icon: '⟲' },
   { path: '/profile', label: '个人中心', icon: '☺' }
 ];
@@ -198,7 +212,7 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
               就都只剩半截。合成一条滚动流后高度由内容决定、滚动只有一处。 -->
       <div v-show="!collapsed" class="app__side-scroll rw-scroll">
         <div class="app__recent">
-          <SessionPanel @open="openSession" @new="newSession" />
+          <SessionPanel @open="openSession" @new="newSession" @all="allSessions" />
         </div>
         <div class="app__target">
           <TargetBar v-if="showTarget" @preview="openPreview" />

@@ -16,6 +16,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '逆合成工作台', desc: '一行一化合物 · 多次一步交互式拆分', requiresAuth: true }
   },
   {
+    path: '/tasks',
+    name: 'tasks',
+    component: () => import('@/views/TasksView.vue'),
+    meta: { title: '任务列表', desc: '所有进行中与已完成的目标分析任务', requiresAuth: true }
+  },
+  {
     path: '/history',
     name: 'history',
     component: () => import('@/views/HistoryView.vue'),

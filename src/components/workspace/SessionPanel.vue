@@ -24,12 +24,15 @@ import { computed, ref } from 'vue';
 import { ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import type { Session, SessionStatus } from '@/types/retro';
+import { relativeTime } from '@/utils/time';
 
 const store = useWorkspaceStore();
 
 const emit = defineEmits<{
   (e: 'open', id: string): void;
   (e: 'new'): void;
+  /** 「全部 N →」：侧栏只列得下前几条，看全量得去整页的任务列表 */
+  (e: 'all'): void;
 }>();
 
 /** 第一组最多显示几条，其余进「更早的任务」 */
@@ -49,19 +52,6 @@ const STATUS_META: Record<SessionStatus, { label: string; cls: string }> = {
 
 function shortTarget(s: Session): string {
   return s.target.length > 22 ? s.target.slice(0, 22) + '…' : s.target;
-}
-
-function timeText(ts: number): string {
-  const now = Date.now();
-  const diff = now - ts;
-  const min = Math.floor(diff / 60000);
-  if (min < 1) return '刚刚';
-  if (min < 60) return `${min} 分钟前`;
-  const hr = Math.floor(min / 60);
-  if (hr < 24) return `${hr} 小时前`;
-  const d = new Date(ts);
-  const pad = (n: number) => String(n).padStart(2, '0');
-  return `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 const confirming = ref<string | null>(null);
@@ -122,7 +112,7 @@ async function onRemove(id: string, name: string): Promise<void> {
                 <span class="recent__sub">
                   <code class="rw-mono">{{ shortTarget(s) }}</code>
                   <i>·</i>
-                  <span>{{ timeText(s.updatedAt) }}</span>
+                  <span>{{ relativeTime(s.updatedAt) }}</span>
                 </span>
               </div>
               <button
@@ -162,7 +152,7 @@ async function onRemove(id: string, name: string): Promise<void> {
                 <span class="recent__sub">
                   <code class="rw-mono">{{ shortTarget(s) }}</code>
                   <i>·</i>
-                  <span>{{ timeText(s.updatedAt) }}</span>
+                  <span>{{ relativeTime(s.updatedAt) }}</span>
                 </span>
               </div>
               <button
@@ -178,6 +168,17 @@ async function onRemove(id: string, name: string): Promise<void> {
           </li>
         </ul>
       </details>
+
+      <!-- 出口：侧栏只装得下前 6 条 + 折叠归档，要看全量（搜 / 筛 / 删）走整页任务列表。
+           只在真的有"被折叠掉的"时才出现 —— 任务没几条时它只是白占一行。 -->
+      <button
+        v-if="all.length > RECENT_SIZE"
+        type="button"
+        class="recent__all"
+        @click="emit('all')"
+      >
+        查看全部 {{ all.length }} 个任务 →
+      </button>
     </template>
   </div>
 </template>
@@ -393,6 +394,25 @@ async function onRemove(id: string, name: string): Promise<void> {
 .recent__del:hover {
   background: var(--el-color-danger-light-9);
   color: var(--el-color-danger);
+}
+
+/* 「查看全部」：列表末尾的出口，做成朴素文字按钮（比「＋新任务」更低调，
+   它是"我还想看别的"而不是"我要开始新活"） */
+.recent__all {
+  align-self: flex-start;
+  padding: 2px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--rw-text-3);
+  font-size: 11px;
+  cursor: pointer;
+  border-radius: var(--rw-radius-sm);
+  white-space: nowrap;
+}
+
+.recent__all:hover {
+  color: var(--rw-brand-d);
+  background: var(--rw-surface-2);
 }
 
 .recent__empty {
