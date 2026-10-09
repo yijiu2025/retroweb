@@ -99,7 +99,7 @@ function schemeCount(s: Session): number {
 }
 
 function open(id: string): void {
-  store.loadSession(id);
+  void store.loadSession(id);
   void router.push('/');
 }
 

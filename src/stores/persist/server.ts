@@ -60,6 +60,9 @@ function writeCache(cache: ServerCache): void {
 /** 内存态缓存（同步读写的真身），启动时从 localStorage 恢复 */
 let cache: ServerCache = readCache();
 
+/** client_id（前端 Session.id）→ 服务端 task.id 的映射（preload 时记下，详情按需拉取用） */
+let clientIdMap: Record<string, number> = {};
+
 /** 是否已登录（由 index.ts 注入：登录后才走服务端，否则切回本地实现） */
 let authed = false;
 
@@ -68,11 +71,15 @@ export function setServerAuthed(next: boolean): void {
   authed = next;
   if (!next) {
     cache = { ...EMPTY };
+    clientIdMap = {};
   }
 }
 
 /**
- * 异步预热：登录后把服务端任务拉到本地缓存（清掉旧的、换上权威数据）。
+ * 异步预热：登录后把服务端任务**元数据**拉到本地缓存（清掉旧的、换上权威数据）。
+ *
+ * 🔴 列表接口只回元数据（不含 snapshot，见后端设计），所以这里拉到的每个 session 的
+ *    snapshot 是空占位。真正打开任务时由 `ensureLoaded(id)` 按需拉全量详情。
  * 🔴 只在登录那一刻调一次；失败静默（本地缓存保持原样，下次读仍是旧的）。
  */
 export async function preload(): Promise<void> {
@@ -88,24 +95,59 @@ export async function preload(): Promise<void> {
       status: Session['status'];
       sig: string | null;
       updated_at: string;
-      snapshot: Session['snapshot'] | null;
     }>;
 
-    const sessions: Session[] = tasks.map(t => ({
-      id: t.client_id ?? `srv-${t.id}`,
-      name: t.name,
-      target: t.target,
-      model: t.model ?? '',
-      status: t.status,
-      updatedAt: new Date(t.updated_at).getTime(),
-      snapshot: t.snapshot ?? { rootId: null, nodes: {}, params: {} as never, activeNodeId: null, jobIds: {} },
-      sig: t.sig ?? undefined
-    }));
+    const sessions: Session[] = [];
+    clientIdMap = {};
+    for (const t of tasks) {
+      const clientId = t.client_id ?? `srv-${t.id}`;
+      clientIdMap[clientId] = t.id;
+      sessions.push({
+        id: clientId,
+        name: t.name,
+        target: t.target,
+        model: t.model ?? '',
+        status: t.status,
+        updatedAt: new Date(t.updated_at).getTime(),
+        // 列表不含 snapshot：占位，打开时 ensureLoaded 拉全量
+        snapshot: { rootId: null, nodes: {}, params: {} as never, activeNodeId: null, jobIds: {} },
+        sig: t.sig ?? undefined
+      });
+    }
 
     cache = { sessions, history: cache.history };
     writeCache(cache);
   } catch {
     /* 预热失败（离线 / 服务端没起）：保持本地缓存，不打断启动 */
+  }
+}
+
+/**
+ * 按需拉取单个任务的全量快照并填进缓存（S2 读路径核心）。
+ *
+ * 🔴 打开任务前调用：列表只有元数据，详情接口 `/tasks/:id` 才含完整 snapshot。
+ *    拉取成功后用解压后的快照**原地替换**缓存里那条 session 的 snapshot。
+ * 🔴 失败静默：缓存里已有的（可能来自上次写回）继续用，不让"详情拉不到"挡住打开。
+ *
+ * @param id 前端 Session.id（= client_id）
+ */
+export async function ensureLoaded(id: string): Promise<void> {
+  if (!authed) return;
+  const taskId = clientIdMap[id];
+  if (!taskId) return; // 本地新建、尚未同步到服务端的任务：没有服务端 id，跳过
+  try {
+    const data = await apiClient.get<{ task: { snapshot: Session['snapshot'] | null } }>(
+      `/retroweb/v1/tasks/${taskId}`
+    );
+    const snapshot = data?.task?.snapshot;
+    if (!snapshot) return;
+    const idx = cache.sessions.findIndex(s => s.id === id);
+    if (idx >= 0) {
+      cache.sessions[idx] = { ...cache.sessions[idx], snapshot };
+      writeCache(cache);
+    }
+  } catch {
+    /* 详情拉不到：保持现状，打开时用缓存里的（可能为空占位，由 restoreSnapshot 兜底） */
   }
 }
 

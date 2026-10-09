@@ -36,6 +36,11 @@ export interface PersistAdapter {
   writeCondPref(v: CondPref): void;
   /** 清空本用户的数据（切换账号 / 登出时用） */
   clear(): void;
+  /**
+   * 打开任务前按需拉取全量快照（S2 读路径）：列表只回元数据，详情才含 snapshot。
+   * local 实现为 no-op（数据本就在本地）；server 实现从 /tasks/:id 拉取。
+   */
+  ensureLoaded(id: string): Promise<void>;
 }
 
 const localAdapter: PersistAdapter = {
@@ -45,7 +50,8 @@ const localAdapter: PersistAdapter = {
   writeHistory: local.writeHistory,
   readCondPref: local.readCondPref,
   writeCondPref: local.writeCondPref,
-  clear: local.clearAll
+  clear: local.clearAll,
+  ensureLoaded: async () => {} // 本地实现：数据本就在 localStorage，无需拉取
 };
 
 const serverAdapter: PersistAdapter = {
@@ -55,7 +61,8 @@ const serverAdapter: PersistAdapter = {
   writeHistory: server.writeHistory,
   readCondPref: server.readCondPref,
   writeCondPref: server.writeCondPref,
-  clear: server.clear
+  clear: server.clear,
+  ensureLoaded: server.ensureLoaded
 };
 
 /**
@@ -69,6 +76,15 @@ const SERVER_PERSIST = import.meta.env.VITE_PERSIST_SERVER === 'true';
 
 /** 运行时决定走哪套实现（业务代码不感知，只认 `persist` 这一个出口） */
 let useServer = SERVER_PERSIST;
+
+/**
+ * 当前是否走服务端实现（供 store 判断「打开任务要不要先异步拉详情」）。
+ * 🔴 local 模式必须保持**完全同步**（测试与历史代码都假设 loadSession 同步生效），
+ *    只有 server 模式才需要异步 ensureLoaded。
+ */
+export function isServerPersist(): boolean {
+  return useServer;
+}
 
 /**
  * 登录 / 登出时调用：切到服务端实现并预热，或切回本地并清缓存。
@@ -98,5 +114,6 @@ export const persist: PersistAdapter = {
   writeHistory: list => (useServer ? serverAdapter.writeHistory(list) : localAdapter.writeHistory(list)),
   readCondPref: () => (useServer ? serverAdapter.readCondPref() : localAdapter.readCondPref()),
   writeCondPref: v => (useServer ? serverAdapter.writeCondPref(v) : localAdapter.writeCondPref(v)),
-  clear: () => (useServer ? serverAdapter.clear() : localAdapter.clear())
+  clear: () => (useServer ? serverAdapter.clear() : localAdapter.clear()),
+  ensureLoaded: id => (useServer ? serverAdapter.ensureLoaded(id) : localAdapter.ensureLoaded(id))
 };

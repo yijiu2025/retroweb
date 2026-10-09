@@ -59,7 +59,7 @@ const collapsed = computed({
 
 /** 打开某个历史任务：恢复它的路线树 + 收起标定面板，必要时跳回工作台 */
 function openSession(id: string): void {
-  store.loadSession(id);
+  void store.loadSession(id);
   if (route.path !== '/') void router.push('/');
 }
 

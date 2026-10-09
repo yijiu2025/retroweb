@@ -86,7 +86,7 @@ onMounted(() => {
   // 大模型是否配置（决定「AI 分析」可用 / 还是提示去填 .env）
   void store.loadLlmStatus();
   // 刷新网页后：自动恢复最近一个未完成 / 进行中的会话，并续上还在跑的节点轮询
-  store.resumeSessions();
+  void store.resumeSessions();
 });
 </script>
 

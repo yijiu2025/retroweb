@@ -28,7 +28,7 @@ import type {
   WorkspaceSnapshot
 } from '@/types/retro';
 import { countHeavyAtoms, levelOf, uid } from '@/utils/smiles';
-import { LOCAL_SESSIONS_LIMIT, persist } from '@/stores/persist';
+import { LOCAL_SESSIONS_LIMIT, persist, isServerPersist } from '@/stores/persist';
 import { createModelsPart } from '@/stores/parts/models';
 import { createLlmPart } from '@/stores/parts/llm';
 import {
@@ -1613,6 +1613,18 @@ function persistSession(): void {
    */
   function resumeSessions(): void {
     if (rootId.value) return;
+    if (isServerPersist()) {
+      // 🔴 S2：server 模式下列表快照是空占位，恢复前要先异步拉全量（见 resumeServerSession）。
+      void resumeServerSessions();
+      return;
+    }
+    // local 模式：数据本就在快照里，同步恢复
+    resumeSessionNow();
+  }
+
+  /** local 模式：同步恢复最近一个未完成/进行中的会话 */
+  function resumeSessionNow(): void {
+    if (rootId.value) return;
     const candidates = sessions.value
       .filter((s) => s.status !== 'done' && s.snapshot?.rootId)
       .sort((a, b) => b.updatedAt - a.updatedAt);
@@ -1642,6 +1654,35 @@ function persistSession(): void {
     }
   }
 
+  /** server 模式：先按需拉全量快照，再恢复最近一个未完成/进行中的会话 */
+  async function resumeServerSessions(): Promise<void> {
+    // 列表快照是空占位（rootId=null），按 status 纳入候选，等 ensureLoaded 拉全量后再判树
+    const candidates = sessions.value
+      .filter((s) => s.status !== 'done')
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+    for (const s of candidates) {
+      try {
+        await persist.ensureLoaded(s.id);
+        const fresh = sessions.value.find((x) => x.id === s.id);
+        if (!fresh?.snapshot?.rootId) continue;
+        restoreSnapshot(fresh);
+        if (!rootId.value) continue;
+        currentSessionId.value = fresh.id;
+        editingSessionId.value = fresh.id;
+        if (!isDraftSession(fresh)) {
+          targetSetupOpen.value = false;
+        } else {
+          targetSetupOpen.value = true;
+        }
+        mainTab.value = 'overview';
+        resumeLoading();
+        return;
+      } catch (e) {
+        console.warn('[retroweb] 跳过一条无法恢复的会话：', s.id, e);
+      }
+    }
+  }
+
   /**
    * 这个会话是不是还停留在「标定态」—— 即只设了目标分子、还没点过「开始分析」。
    *
@@ -1662,6 +1703,24 @@ function persistSession(): void {
 
   /** 从列表里手动打开一个会话（点击「继续」） */
   function loadSession(id: string): void {
+    // 🔴 S2：server 模式下列表只回元数据，需先异步拉全量快照再恢复；local 模式数据
+    //    本就在本地，**必须保持完全同步**（历史测试与调用方都假设 loadSession 同步生效，
+    //    把它改成无条件 async 会破坏"恢复后立刻能读到节点"的时序）。
+    if (isServerPersist()) {
+      void openServerSession(id);
+      return;
+    }
+    restoreSessionNow(id);
+  }
+
+  /** server 模式：先拉全量快照，再恢复（异步） */
+  async function openServerSession(id: string): Promise<void> {
+    await persist.ensureLoaded(id);
+    restoreSessionNow(id);
+  }
+
+  /** 真正恢复：从 sessions 里取、灌回工作台（同步，local/server 共用） */
+  function restoreSessionNow(id: string): void {
     const s = sessions.value.find((x) => x.id === id);
     if (!s) return;
     try {
