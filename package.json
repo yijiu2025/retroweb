@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "description": "逆合成工作台前端（独立项目，登录走 oauth21 iframe SSO）",
+  "license": "MIT",
+  "author": "世间無晚風(*功) <https://github.com/yijiu2025/retroweb>",
   "scripts": {
     "dev": "vite",
     "build": "npm run type-check && vite build",

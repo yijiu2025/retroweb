@@ -64,4 +64,19 @@ const DONATE_OWNER = '世间無晚風(*功)';
  *    写成"服务器开销"会让人误以为有托管服务，反而困惑。 */
 const DONATE_NOTE = '自愿支持，不影响任何功能使用。本项目本地部署，模型与推理都在你自己的机器上。';
 
-export { REPO_URL, REPO_TAGLINE, REPO_INTRO, REPO_FEATURES, DONATE_CHANNELS, DONATE_OWNER, DONATE_NOTE };
+/** 署名一句：作者做这件事的立场。放在二维码**上方**，与收款人署名一起构成
+ *  「为什么收这笔钱、收去做什么、是谁」三段式。
+ *  🔴 不用 Markdown（Vue 模板不解析，星号会原样显示）。 */
+const DONATE_MISSION =
+  '以微薄之力，为人类社会的进步添一点实在的东西 —— 与同道一起推进我国有机 AI 研究生态，为生物化学的基础研究往前推一步。';
+
+export {
+  REPO_URL,
+  REPO_TAGLINE,
+  REPO_INTRO,
+  REPO_FEATURES,
+  DONATE_CHANNELS,
+  DONATE_OWNER,
+  DONATE_NOTE,
+  DONATE_MISSION
+};

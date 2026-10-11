@@ -13,7 +13,7 @@ import { ref } from 'vue';
 //    以 PascalCase 直接书写的标签，`<component :is="'Monitor'">` 这种字符串形式
 //    它解析不到 ⇒ 渲染成空白（写完才发现的坑）。
 import { Link, CoffeeCup } from '@element-plus/icons-vue';
-import { REPO_URL, REPO_TAGLINE, REPO_INTRO, REPO_FEATURES, DONATE_CHANNELS, DONATE_OWNER, DONATE_NOTE } from '@/config/about';
+import { REPO_URL, REPO_TAGLINE, REPO_INTRO, REPO_FEATURES, DONATE_CHANNELS, DONATE_OWNER, DONATE_NOTE, DONATE_MISSION } from '@/config/about';
 // 🔴 复制必须走 `copyText` —— 它是全站唯一入口（utils/clipboard.ts），
 //    内部已处理「非安全上下文 / 用户拒绝权限」的降级提示。
 //    直接调 navigator.clipboard 在 http 访问下会静默失败，点了没反应。
@@ -73,6 +73,9 @@ function copyRepo(): void {
       </button>
 
       <div v-show="donateOpen" class="about__donate-panel">
+        <!-- 立场声明置顶：先说"为什么做"，再给"怎么支持"。 -->
+        <blockquote class="about__mission">{{ DONATE_MISSION }}</blockquote>
+
         <div class="about__codes">
           <figure v-for="c in DONATE_CHANNELS" :key="c.key" class="about__code">
             <img :src="c.image" :alt="`${c.label}收款码`" loading="lazy" />
@@ -196,6 +199,20 @@ function copyRepo(): void {
   flex-direction: column;
   gap: 10px;
   padding-top: 12px;
+}
+
+/* 立场声明：左竖线引文块。比居中大字更克制，也不抢二维码的视觉重心。
+   ⚠️ 底色必须用**两档都定义了的** token（--rw-brand-l：亮色 #eff6ff / 暗色 #14243f），
+      别写死 rgba(0,0,0,.03) —— 暗色档下那层黑几乎看不见，等于没底色。 */
+.about__mission {
+  margin: 0;
+  padding: 10px 14px;
+  border-left: 2px solid var(--rw-brand);
+  border-radius: 0 6px 6px 0;
+  background: var(--rw-brand-l);
+  font-size: 13px;
+  line-height: 1.85;
+  color: var(--rw-text-2);
 }
 
 .about__codes {

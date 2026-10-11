@@ -527,6 +527,9 @@ LCMS（**理论值来自 RDKit，注释来自模型**）· NMR（¹H / ¹³C 描
 本项目按**本地部署**使用（模型与推理都在你自己的机器上），不产生服务器开销。
 若你所在机构有相关预算，走机构采购 / 科研经费流程对双方都更省事。
 
+> 以微薄之力，为人类社会的进步添一点实在的东西 —— 与同道一起推进我国有机 AI 研究生态，
+> 为生物化学的基础研究往前推一步。
+
 <table>
   <tr>
     <td align="center"><img src="public/donate/wechat.png" width="220" alt="微信收款码"></td>
@@ -544,7 +547,22 @@ LCMS（**理论值来自 RDKit，注释来自模型**）· NMR（¹H / ¹³C 描
 
 ## 十、许可与免责
 
-- 代码可用于学习与内部研发；对外分发前请自行确认合规要求。
-- **模型权重、RDKit、Ketcher、Element Plus 等第三方组件各自遵循其原许可**，商用前须逐项确认。
-- 逆合成预测与 AI 工艺分析均为**模型推测**，未经实验验证；用于研发辅助，
-  不应直接作为生产或安全决策依据。
+本项目采用 **[MIT 协议](LICENSE)** —— 你可以自由使用、复制、修改、合并、再分发（含商用），
+唯一要求是在所有副本中保留版权声明与许可声明。
+
+> ⚠️ MIT **不含专利授权**。若你需要明确的专利许可（例如打算进企业内部产品），请改用 Apache-2.0。
+
+第三方组件各自遵循其原许可，商用前须逐项确认（下列取自 `node_modules/*/package.json`
+的 `license` 字段，非记忆）：
+
+| 组件 | 协议 |
+| --- | --- |
+| Ketcher（结构式画板） | Apache-2.0 |
+| RDKit（`@rdkit/rdkit`，WASM） | BSD-3-Clause |
+| Element Plus / Vue / axios / Pinia / Vue Router | MIT |
+| Vite / ESLint / Pinia / Vue Router / zod | MIT |
+| TypeScript | Apache-2.0 |
+| Ketcher 内含的 Indigo | 见 Ketcher 仓库声明 |
+
+逆合成预测与 AI 工艺分析均为**模型推测**，未经实验验证；用于研发辅助，
+不应直接作为生产或安全决策依据。
