@@ -66,6 +66,7 @@ step, and save the routes that work into multiple schemes for side-by-side revie
 | Draw structures | [5. Structure editor](#5-structure-editor--ketcher-314) |
 | Configure an LLM / read the analysis API | [6. LLM process analysis](#6-llm-process-analysis-optional) |
 | Avoid the known pitfalls | [7. Known constraints](#7-known-constraints) |
+| Read commit history / see which lines changed in a file | [docs/how-to-read-diff.md](docs/how-to-read-diff.md) |
 
 ---
 
