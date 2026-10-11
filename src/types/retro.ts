@@ -18,7 +18,12 @@ interface RetroModel {
   exists: boolean;
   /** 该模型此刻的真实状态 */
   state: ModelState;
-  /** 是不是模型服务当前加载的那一个 */
+  /**
+   * 是不是模型服务当前加载的那一个。
+   *
+   * TODO(Node 中转): 前端**从未读过**这个字段（死字段）。多模型并行后契约里不该再有
+   *   "当前/唯一"语义 ⇒ 届时直接删，**不要再加深用法**（见 docs/plan-node-backend.md §6.7）。
+   */
   is_current: boolean;
   /** 模型目录体积（字节；`exists=false` 时为 0） */
   size_bytes?: number;
@@ -30,6 +35,10 @@ interface RetroModel {
  *
  * 🔴 它和 API 服务（:8000）是**两个进程**：API 秒起，模型在它后面慢慢加载。
  *    所以「API 起来了」不等于「模型能用了」—— 这个对象就是那道区分。
+ *
+ * TODO(Node 中转): 本对象是**单例**，只能描述"某一个"在加载。走 Node 后模型加载归 Node 管、
+ *   前端只问"能不能用"，且要允许多模型并行 ⇒ 届时改为**按模型各一份**，本接口要拆掉重来
+ *   （见 docs/plan-node-backend.md §6.7）。
  */
 interface ModelServiceInfo {
   /** HTTP 通 = true。只读 state 文件时为 false（加载早期就是这种） */
@@ -80,7 +89,12 @@ interface ModelsResponse {
   models: RetroModel[];
   /** 模型服务概览（老后端没有这个字段 ⇒ 可选） */
   service?: ModelServiceInfo;
-  /** 模型服务当前加载的模型 key（没加载为空串） */
+  /**
+   * 模型服务当前加载的模型 key（没加载为空串）。
+   *
+   * TODO(Node 中转): 前端未读此字段。单个 key 表达不了"多个模型同时就绪"，
+   *   多模型并行后应删（见 docs/plan-node-backend.md §6.7）。
+   */
   current?: string;
   /**
    * 正向模型（可行性过滤用）。老后端 / 没配这个模型时为 `null` 或缺失。

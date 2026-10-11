@@ -42,7 +42,13 @@ function createModelsPart(ctx: ModelsPartCtx) {
   const modelLoadingKey = ref<string | null>(null);
   /** 正在停止模型服务（回收规则子进程要几秒） */
   const modelStopping = ref(false);
-  /** 模型服务（独立常驻进程 :8001）的概览；老后端不给这个字段 ⇒ null */
+  /**
+   * 模型服务（独立常驻进程 :8001）的概览；老后端不给这个字段 ⇒ null。
+   *
+   * TODO(Node 中转): 这是个**单例** ref —— 本文件与"只跑一个模型"之间**唯一真正的耦合点**。
+   *   走 Node 后模型加载归 Node 管、前端只问"能不能用"，且要允许多模型并行 ⇒ 改成按模型
+   *   各存一份状态（见 docs/plan-node-backend.md §6.7）。
+   */
   const modelService = ref<ModelServiceInfo | null>(null);
   /**
    * 正向模型（「可行性过滤」的判据）。
@@ -257,7 +263,12 @@ function createModelsPart(ctx: ModelsPartCtx) {
   /** 选中的模型是不是已就绪、可以立刻推理 */
   const modelReady = computed(() => currentModel.value?.state === 'ready');
 
-  /** 有任何一个模型/服务在加载中（含"选的那个不是加载的那个"这种情形） */
+  /**
+   * 有任何一个模型/服务在加载中（含"选的那个不是加载的那个"这种情形）。
+   *
+   * TODO(Node 中转): 多模型并行时必须改成"**我要用的那个**忙不忙" —— 否则 A 模型加载中
+   *   会把已经就绪的 B 模型一起挡掉（见 docs/plan-node-backend.md §6.7）。
+   */
   const modelBusy = computed(
     () => modelService.value?.state === 'loading' || models.value.some((m) => m.state === 'loading')
   );
