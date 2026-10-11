@@ -21,13 +21,11 @@ import * as local from './local';
 import * as server from './server';
 import type { CondPref } from './local';
 
-export type { CondPref };
-
 /** 本地缓存容量上限：store 限制内存里的会话条数时也用它，两处必须是同一个数。
  *  🔴 与服务端配额（能建几个任务：普通 2 / 会员 50）不是一回事，别混。 */
-export const LOCAL_SESSIONS_LIMIT = local.SESSIONS_LIMIT;
+const LOCAL_SESSIONS_LIMIT = local.SESSIONS_LIMIT;
 
-export interface PersistAdapter {
+interface PersistAdapter {
   readSessions(): Session[];
   writeSessions(list: Session[]): void;
   readHistory(): HistoryTask[];
@@ -41,6 +39,15 @@ export interface PersistAdapter {
    * local 实现为 no-op（数据本就在本地）；server 实现从 /tasks/:id 拉取。
    */
   ensureLoaded(id: string): Promise<void>;
+  /**
+   * 异步重读：把**权威数据**（服务端）重新灌进本地缓存。
+   *
+   * 🔴 为什么必须有这一环：`readSessions()` 是**同步**的（接口写死），它读的永远是缓存。
+   *    而 store 里的 `sessions` ref 只在创建时读过一次缓存 —— 登录成功后
+   *    `preload()` 把服务端数据拉进了缓存，ref 却仍是登录前的那份（通常是空数组），
+   *    于是"刷新回来我的任务没了"。补一次 refresh + 重读，ref 才跟得上权威。
+   */
+  refresh(): Promise<void>;
 }
 
 const localAdapter: PersistAdapter = {
@@ -51,7 +58,8 @@ const localAdapter: PersistAdapter = {
   readCondPref: local.readCondPref,
   writeCondPref: local.writeCondPref,
   clear: local.clearAll,
-  ensureLoaded: async () => {} // 本地实现：数据本就在 localStorage，无需拉取
+  ensureLoaded: async () => {}, // 本地实现：数据本就在 localStorage，无需拉取
+  refresh: async () => {} // 本地实现：localStorage 即权威，无需重读
 };
 
 const serverAdapter: PersistAdapter = {
@@ -62,7 +70,8 @@ const serverAdapter: PersistAdapter = {
   readCondPref: server.readCondPref,
   writeCondPref: server.writeCondPref,
   clear: server.clear,
-  ensureLoaded: server.ensureLoaded
+  ensureLoaded: server.ensureLoaded,
+  refresh: server.preload
 };
 
 /**
@@ -82,7 +91,7 @@ let useServer = SERVER_PERSIST;
  * 🔴 local 模式必须保持**完全同步**（测试与历史代码都假设 loadSession 同步生效），
  *    只有 server 模式才需要异步 ensureLoaded。
  */
-export function isServerPersist(): boolean {
+function isServerPersist(): boolean {
   return useServer;
 }
 
@@ -91,7 +100,7 @@ export function isServerPersist(): boolean {
  * 🔴 由 auth store 挂钩子调用（applyLogin / markExpired / logout / switchAccount），
  *    业务代码不要直接碰这个函数。
  */
-export async function activateServerPersist(authed: boolean): Promise<void> {
+async function activateServerPersist(authed: boolean): Promise<void> {
   useServer = authed && SERVER_PERSIST;
   server.setServerAuthed(useServer);
   if (useServer) {
@@ -107,7 +116,17 @@ export async function activateServerPersist(authed: boolean): Promise<void> {
  * S1 恒为本地实现（开关默认关）；开关打开且登录后走服务端（本地降级为缓存）。
  * 切换判据集中在这里，业务代码不用知道。
  */
-export const persist: PersistAdapter = {
+/**
+ * 把权威数据重新灌进缓存（换用户 / 登录后调用）。
+ *
+ * 调用方在它返回后**必须重新读** `persist.readSessions()` —— 同步接口只认缓存，
+ * 缓存换了不代表已经看过它的 ref 也跟着换了。
+ */
+async function refreshPersist(): Promise<void> {
+  await (useServer ? serverAdapter.refresh() : localAdapter.refresh());
+}
+
+const persist: PersistAdapter = {
   readSessions: () => (useServer ? serverAdapter.readSessions() : localAdapter.readSessions()),
   writeSessions: list => (useServer ? serverAdapter.writeSessions(list) : localAdapter.writeSessions(list)),
   readHistory: () => (useServer ? serverAdapter.readHistory() : localAdapter.readHistory()),
@@ -115,5 +134,10 @@ export const persist: PersistAdapter = {
   readCondPref: () => (useServer ? serverAdapter.readCondPref() : localAdapter.readCondPref()),
   writeCondPref: v => (useServer ? serverAdapter.writeCondPref(v) : localAdapter.writeCondPref(v)),
   clear: () => (useServer ? serverAdapter.clear() : localAdapter.clear()),
-  ensureLoaded: id => (useServer ? serverAdapter.ensureLoaded(id) : localAdapter.ensureLoaded(id))
+  ensureLoaded: id => (useServer ? serverAdapter.ensureLoaded(id) : localAdapter.ensureLoaded(id)),
+  refresh: () => (useServer ? serverAdapter.refresh() : localAdapter.refresh())
 };
+
+export { LOCAL_SESSIONS_LIMIT, isServerPersist, activateServerPersist, refreshPersist, persist };
+
+export type { CondPref, PersistAdapter };

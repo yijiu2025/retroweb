@@ -244,8 +244,10 @@ async function openDraw(i: number): Promise<void> {
   await nextTick();
   const ed = drawRef.value;
   if (!ed) return;
-  // 把这一行已有的结构带进画板（SMILES 不是空才带）—— 开一张空画板等于让人重画
-  const seed = row.canonical || row.text.trim();
+  // 灌画板的种子：① 这一行已有的结构（改着画）；
+  // ② 行是空的 ⇒ 带**这一步的产物**进来（用户最常做的就是"在产物上断键改出前体"，
+  //    从白板重画既慢又容易画错氮上的乙基这类细节）。画错直接清空重画即可。
+  const seed = row.canonical || row.text.trim() || node.value?.smiles || '';
   if (!seed) return;
   try {
     // 🔴 Ketcher 的读取接口全是异步的（要过 WASM worker），`isEmpty()` 漏 await 会恒为真
@@ -453,7 +455,12 @@ async function apply(): Promise<void> {
             spellcheck="false"
             @blur="onRowBlur(row)"
           />
-          <el-button size="small" plain @click="openDraw(i)">画</el-button>
+          <el-button
+            size="small"
+            plain
+            :title="rowMol(row) ? '在画板里修改这个结构' : '打开画板 —— 会先带上这一步的产物结构，在它基础上改出前体'"
+            @click="openDraw(i)"
+          >画</el-button>
           <el-button size="small" text type="danger" @click="removeRow(row.key)">删除</el-button>
           <div class="sed__row-state">
             <span v-if="row.state === 'checking'" class="sed__state is-wait">校验中…</span>

@@ -4,7 +4,7 @@
 import { apiClient } from './http';
 import type { AuthUser } from '@/types/sso';
 
-export interface BindSessionResult {
+interface BindSessionResult {
   user?: Partial<AuthUser> & { uid?: string };
   /** uid 明文，前端存 localStorage 作多账号 key */
   accountKey: string | null;
@@ -12,7 +12,7 @@ export interface BindSessionResult {
   rememberMe: boolean;
 }
 
-export interface UserInfo {
+interface UserInfo {
   uid?: string;
   userId?: number | string;
   username?: string;
@@ -22,7 +22,7 @@ export interface UserInfo {
   roles?: string[];
 }
 
-export const authApi = {
+const authApi = {
   /** 当前用户信息（未登录返回 401） */
   getUserInfo: () => apiClient.get<UserInfo>('/user/v1/userinfo'),
 
@@ -47,3 +47,7 @@ export const authApi = {
   revokeSavedAccount: (accountKey: string) =>
     apiClient.post('/auth/v1/saved-accounts/revoke', { accountKey })
 };
+
+export { authApi };
+
+export type { BindSessionResult, UserInfo };

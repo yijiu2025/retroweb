@@ -15,7 +15,7 @@ import type { AnalysisModuleKey, Reaction, RunParams } from '@/types/retro';
  *    已建的子树会被误判成「无效选择」而清掉。用确定性 id ⇒ 同样的前体组合永远同一个 id，
  *    选择、复用、切换全都稳定。
  */
-export function reactionIdFor(nodeId: string, precursors: string): string {
+function reactionIdFor(nodeId: string, precursors: string): string {
   let h = 5381;
   const s = String(precursors || '');
   for (let i = 0; i < s.length; i += 1) {
@@ -25,7 +25,7 @@ export function reactionIdFor(nodeId: string, precursors: string): string {
 }
 
 /** 把任意来源的候选整理成「属于 nodeId」的形状（复用别人结果时必须重挂） */
-export function materializeCandidates(nodeId: string, list: Reaction[]): Reaction[] {
+function materializeCandidates(nodeId: string, list: Reaction[]): Reaction[] {
   return list.map((r) => ({
     ...r,
     id: reactionIdFor(nodeId, r.precursors),
@@ -34,10 +34,13 @@ export function materializeCandidates(nodeId: string, list: Reaction[]): Reactio
   }));
 }
 
-export const DEFAULT_PARAMS: RunParams = {
+const DEFAULT_PARAMS: RunParams = {
   model: 'pistachio',
   numResults: 5,
   maxDepth: 4,
+  // 默认 Retro*：它是 paper 里那个「用价值函数挑着拆」的最佳优先 —— 同样的调用预算
+  // 下能往深里走得更多。BFS 不用价值函数、逐层铺开，覆盖是全但要给足预算才跑得动。
+  searchAlgorithm: 'retro_star',
   // 阈值定 10 时阿司匹林拆一步就到底了（前体普遍 ≤10 重原子），「多次一步」形同虚设。
   // 6 = 苯环量级（苯 6、甲苯 7 继续拆），才是可购买起始物料的常用口径。
   heavyAtomThreshold: 6,
@@ -56,7 +59,7 @@ export const DEFAULT_PARAMS: RunParams = {
  * 🔴 顺序即面板展示顺序；`summary`（总述+反应类型）是每次分析的兜底，不在这里展示，
  *    但永远随请求带上。与后端 `_MODULE_FIELDS` 的 key 对齐。
  */
-export const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
+const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
   'mechanism',
   'order',
   'conditions',
@@ -66,11 +69,12 @@ export const ALL_ANALYSIS_MODULES: AnalysisModuleKey[] = [
   'lcms',
   'nmr',
   'tlc',
-  'safety'
+  'safety',
+  'toxicity'
 ];
 
 /** 模块 key → 中文名（RunParams 勾选面板用） */
-export const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
+const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
   summary: '总述与反应类型',
   mechanism: '反应机理',
   order: '投料顺序',
@@ -81,17 +85,20 @@ export const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
   lcms: 'LCMS 解读',
   nmr: 'NMR 谱图归属',
   tlc: '点板与过柱极性',
-  safety: '安全与放大提示'
+  safety: '安全与放大提示',
+  // 🔴 与 `safety` 分工不同：safety 是**过程安全**（放热/产气/压力/放大失控），
+  //    toxicity 是**物质本身的毒性**（哪个原料/溶剂毒、怎么防、能否替代）。两者都保留、各自独立渲染。
+  toxicity: '毒性与防护要点'
 };
 
 /** axios 的取消错误（用户点停止 / 组件卸载）—— 不该当失败弹错误条 */
-export function isAbort(err: unknown): boolean {
+function isAbort(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
   return code === 'ERR_CANCELED' || (err instanceof Error && err.name === 'CanceledError');
 }
 
 /** 可被打断的 sleep：abort 时立即 resolve，让轮询循环能尽快退出 */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();
     const t = setTimeout(() => resolve(), ms);
@@ -101,3 +108,13 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
     });
   });
 }
+
+export {
+  reactionIdFor,
+  materializeCandidates,
+  DEFAULT_PARAMS,
+  ALL_ANALYSIS_MODULES,
+  ANALYSIS_MODULE_LABELS,
+  isAbort,
+  sleep
+};

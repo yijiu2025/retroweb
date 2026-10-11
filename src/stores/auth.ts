@@ -47,7 +47,7 @@ function normalizeUser(info: UserInfo | undefined): AuthUser | null {
   };
 }
 
-export const useAuthStore = defineStore('auth', () => {
+const useAuthStore = defineStore('auth', () => {
   const user = ref<AuthUser | null>(null);
   const loggedIn = ref(false);
   const initialized = ref(false);
@@ -69,17 +69,32 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
+  /**
+   * 登录态落地后的数据侧收尾。
+   *
+   * 🔴 顺序是有讲究的（串行 await，不能并行）：
+   *   ① 切持久化通道 —— 必须先完成，否则新用户的数据会写进**上一套实现**里
+   *      （未登录走本地 localStorage，登录后走服务端）。do这一步之前，
+   *      「用哪个实现」这个问题的答案还是错的。
+   *   ② 清旧用户数据 —— 防串号（见 clearLocalData 的注释）。
+   *   ③ 登录了才补拉 —— 首屏那批请求是在没 cookie 的时候发的，全失败了；
+   *      登录只补凭证、不重放请求，必须显式补一次，否则登录后还是空工作台。
+   */
+  async function syncUserData(next: AuthUser | null): Promise<void> {
+    const { activateServerPersist } = await import('@/stores/persist');
+    await activateServerPersist(!!next);
+    const { useWorkspaceStore } = await import('@/stores/workspace');
+    const ws = useWorkspaceStore();
+    ws.clearLocalData();
+    if (next) await ws.refreshAfterLogin();
+  }
+
   function setUser(next: AuthUser | null): void {
     user.value = next;
     loggedIn.value = !!next;
-    // 🔴 登录态变化 = 用户身份切换：清空上个用户的任务数据 + 切持久化实现。
+    // 🔴 登录态变化 = 用户身份切换：清空上个用户的任务数据 + 切持久化实现 + （登录后）补拉。
     //    用懒 import 避免 auth ↔ workspace 循环依赖（workspace 不依赖 auth）。
-    void import('@/stores/workspace').then(({ useWorkspaceStore }) => {
-      useWorkspaceStore().clearLocalData();
-    });
-    void import('@/stores/persist').then(({ activateServerPersist }) => {
-      void activateServerPersist(!!next);
-    });
+    void syncUserData(next);
   }
 
   /** 启动引导：bypass 直接注入 dev 用户；否则拉 userinfo 探活 */
@@ -217,3 +232,5 @@ export const useAuthStore = defineStore('auth', () => {
     revokeSavedAccount
   };
 });
+
+export { useAuthStore };

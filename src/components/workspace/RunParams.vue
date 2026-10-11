@@ -15,7 +15,7 @@
  *       「运行参数 / 运行参数」两行标题叠在一起（实测踩过）。
  *    判据是显式 prop，**不要靠 CSS 去猜父容器** —— 猜错就是重复标题或彻底没标题。
  */
-import { computed, onMounted, ref } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { retroApi, llmApi } from '@/api/retro';
 import { nodeLlmApi } from '@/api/llm';
@@ -24,8 +24,18 @@ import { useSettingsStore } from '@/stores/settings';
 import { RETRO_VIA_NODE } from '@/config/services';
 import { SUPPLIERS, supplierById, type Supplier } from '@/utils/suppliers';
 import { countHeavyAtoms } from '@/utils/smiles';
-import { isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
-import type { LlmKeyState, LlmProfile, LlmSettings, LlmSource, ModelState, OfficialLlm } from '@/types/retro';
+import { depictMolfile, isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
+import MolView from '@/components/mol/MolView.vue';
+import StructureEditor from '@/components/mol/StructureEditor.vue';
+import type {
+  LlmKeyState,
+  LlmProfile,
+  LlmSettings,
+  LlmSource,
+  ModelState,
+  OfficialLlm,
+  SearchAlgorithm
+} from '@/types/retro';
 
 /** true = 已被外层容器（右辅助面板）接管标题与外框，本组件只出内容 */
 withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false });
@@ -55,6 +65,18 @@ function shortLabel(label: string): string {
   return label.split('（')[0] || label;
 }
 
+/**
+ * 搜索算法下拉的选项表。
+ *
+ * 🔴 key 必须与后端 `model_runtime.SEARCH_ALGORITHMS` 逐字对齐 —— 后端才是唯一的
+ *    合法性判据地（非法值会被静默退回 retro_star）。这里若多出后端没有的 key，
+ *    用户会选中一个实际跑 Retro* 的「BFS」而毫无察觉。
+ */
+const SEARCH_ALGORITHMS: Record<SearchAlgorithm, { label: string; note: string }> = {
+  retro_star: { label: 'Retro*', note: '最佳优先 · 挑最有希望的路先拆' },
+  bfs: { label: '广度优先 BFS', note: '逐层铺开 · 覆盖全但吃预算' }
+};
+
 const modelTagType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
   const st = store.currentModel?.state;
   if (st === 'ready') return 'success';
@@ -64,6 +86,11 @@ const modelTagType = computed<'success' | 'warning' | 'danger' | 'info'>(() => {
 });
 
 const modelStatusText = computed(() => {
+  // 🔴 正在「加载/切换中」要**立即**说「加载中」，不能等轮询回来：
+  //    切换模型后 `modelLoadingKey` 立刻置位，但 `currentModel.state` 要等
+  //    下一次 /api/models 轮询（1.5s+）才变 —— 这期间 tag 会停在旧状态
+  //    （实测「未加载」卡 5 秒才变「加载中」，用户以为没反应）。
+  if (store.modelLoadingKey !== null || store.modelStopping) return '加载中';
   const st = store.currentModel?.state;
   if (!st) return '未知';
   // 「服务在加载**别的**模型」要单独说：否则用户看着自己选的那行写「未加载」，
@@ -99,6 +126,24 @@ const modelDetail = computed(() => {
   }
 });
 
+/**
+ * 加载进度（0~100），**直接用后端给的 progress**。
+ *
+ * 🔴 后端 `_progress_now()` 已经做了实时插值（锚点 + elapsed 线性推进），
+ *    `/status` 每次被读都会重算，前端每 1.5s 轮询拿到的就是**平滑爬升的值** ——
+ *    前端再插一遍纯属画蛇添足（实测引入抖动 0↔1、30↔31 与 99% 提前封顶）。
+ *
+ * 唯一的边界是「加载早期 HTTP 还没起」：那段走 state 文件回退，progress 停在阶段
+ *    锚点（0/30/88）。但后端 `_write_state` 写的是 `host._progress_now()`，阶段切换时
+ *    会刷新一次；且 import/model 阶段本就无内部进度可报，锚点跳跃是诚实表现，
+ *    等 HTTP 起来（rules 段）就变实时平滑。所以这里只做「取整 + 夹紧」，不画蛇添足。
+ */
+const modelProgress = computed<number | null>(() => {
+  if (!store.modelBusy) return null;
+  const p = store.modelService?.progress;
+  return typeof p === 'number' && Number.isFinite(p) ? Math.min(100, Math.max(0, Math.round(p))) : null;
+});
+
 /** 「加载」按钮的可用性：模型文件都不在就别让它点了（点了必然失败） */
 const canLoadModel = computed(() => {
   const cur = store.currentModel;
@@ -109,6 +154,60 @@ const canLoadModel = computed(() => {
 function onModelAction(): void {
   if (store.modelReady || store.modelBusy) void store.stopModelService();
   else void store.warmModel();
+}
+
+/**
+ * 主按钮文案。🔴 加载/切换中必须说「加载中…」而不是停在「加载」——
+ *    切换模型后 `modelLoadingKey` 立刻置位（按钮转圈），但 `modelBusy` 要等
+ *    轮询回来才变 true，若文案只认 ready/busy 就会「转着圈还写『加载』」，
+ *    用户分不清是正在加载还是没反应。这里把「正在进行中」也算进去。
+ */
+const modelActionText = computed(() => {
+  if (store.modelLoadingKey !== null || store.modelStopping) return '加载中…';
+  if (store.currentModel?.state === 'loading') return '加载中…';
+  if (store.modelReady || store.modelBusy) return '停止';
+  return '加载';
+});
+
+/**
+ * 切换预测模型（下拉 @change）。
+ *
+ * 🔴 原实现只有 `v-model` 没有 `@change` ⇒ 切下拉只改了 store 值、**不加载**，
+ *    界面纹丝不动（实测「未加载/加载」切完还是「未加载/加载」），用户以为切了其实没切。
+ *    这里改成：切模型 = 自动加载（与后端 /api/load 的「换模型 = 停旧起新」对齐）。
+ *
+ * 🔴 但切模型是**重操作**（停掉旧模型进程、重启、重新加载 40~90 秒），
+ *    误点一下就白等几十秒还中断正在跑的搜索 —— 所以弹一次确认。
+ */
+/** 下拉展开那一刻选中的模型 key —— 取消切换时用它回退（`@change` 里拿不到旧值） */
+let _modelBeforeOpen = '';
+
+/** 下拉展开时记下当前值：`@change` 触发时 v-model 已改成新值，旧值只能在这时抓 */
+function onModelSelectVisible(visible: boolean): void {
+  if (visible) _modelBeforeOpen = store.params.model;
+}
+
+async function onModelChange(key: string): Promise<void> {
+  // 选回「已经就绪 / 正在加载」的那个模型 ⇒ 无需动作（后端 /api/load 也会 no-op 直接返回）
+  const curState = store.models.find((m) => m.key === key)?.state;
+  if (curState === 'ready' || curState === 'loading') {
+    return;
+  }
+  // 🔴 `@change` 触发时 v-model 已把 store.params.model 改成新值，旧值在 _modelBeforeOpen。
+  //    先回退显示，等确认通过才真正切过去，否则确认框还开着、下拉已变，割裂感很怪。
+  const prev = _modelBeforeOpen || key;
+  store.params.model = prev;
+  try {
+    await ElMessageBox.confirm(
+      `切换到「${shortLabel(store.models.find((m) => m.key === key)?.label ?? key)}」会停止当前模型并重新加载（约 40~90 秒）。确定切换？`,
+      '切换预测模型',
+      { confirmButtonText: '切换', cancelButtonText: '取消', type: 'warning' }
+    );
+  } catch {
+    return; // 取消：params.model 保持 prev，无需再动
+  }
+  store.params.model = key;
+  await store.warmModel(key);
 }
 
 // ---------- 可行性过滤（正向模型） ----------
@@ -156,11 +255,12 @@ const showForwardLoad = computed(() => {
   return !!st && st !== 'ready' && st !== 'unavailable';
 });
 
-/** 「拆分约束」组的折叠摘要：把过滤开关也算进去，收起时也能看出开没开 */
+/** 「拆分约束」组的折叠摘要：算法/深度/预算/起始物料数（可行性过滤已挪进「预测设置」组） */
 const constraintMeta = computed(
   () =>
+    `${SEARCH_ALGORITHMS[store.params.searchAlgorithm]?.label ?? store.params.searchAlgorithm} · ` +
     `深度 ${store.params.maxDepth} · 预算 ${store.params.budgetCalls}` +
-    (store.params.forwardFilter ? ' · 过滤开' : '')
+    (store.params.startingMaterials.length ? ` · 起始物料 ${store.params.startingMaterials.length}` : '')
 );
 
 // ---------- 大模型状态（区分「填了」和「真的能用」） ----------
@@ -708,7 +808,10 @@ async function addMaterial(): Promise<void> {
     }
     const res = useBackend ? await retroApi.parse(raw) : await parseStructure(raw);
     if (!res.ok) {
-      ElMessage.error(res.reasons?.[0] || res.error || '无法解析该起始物料');
+      // 🔴 失败要写进**行内**提示（红字挂在输入框下），ElMessage 会被下一次操作顶走，
+      //    而行内提示跟输入框同寿命 —— 用户改一字就重验，改对了提示自己消失。
+      materialIssue.value = res.reasons?.[0] || res.error || '无法解析该起始物料';
+      ElMessage.error(materialIssue.value);
       return;
     }
     if (store.params.startingMaterials.includes(res.smiles)) {
@@ -717,8 +820,10 @@ async function addMaterial(): Promise<void> {
       store.params.startingMaterials = [...store.params.startingMaterials, res.smiles];
     }
     materialInput.value = '';
+    materialIssue.value = '';
   } catch (e) {
-    ElMessage.error((e as Error).message);
+    materialIssue.value = (e as Error).message;
+    ElMessage.error(materialIssue.value);
   } finally {
     addingMaterial.value = false;
   }
@@ -727,6 +832,91 @@ async function addMaterial(): Promise<void> {
 function removeMaterial(smiles: string): void {
   store.params.startingMaterials = store.params.startingMaterials.filter((s) => s !== smiles);
 }
+
+/* ---------- 手动画原料 ---------- */
+
+const matDrawOpen = ref(false);
+const matDrawRef = ref<InstanceType<typeof StructureEditor> | null>(null);
+const matDrawBusy = ref(false);
+const matDrawError = ref('');
+/** 上一次灌进画板的结构 —— 结构没变且画板非空时不重灌，别冲掉画到一半的图 */
+const matDrawSeeded = ref('');
+
+/** 打开画板：把手上的输入（若已解析）带进去，否则开空板让用户画 */
+async function openMatDraw(): Promise<void> {
+  matDrawOpen.value = true;
+  matDrawError.value = '';
+  await nextTick();
+  const ed = matDrawRef.value;
+  if (!ed) return;
+  // 输入框里若已是合法 SMILES，带进去改；否则开空板（用户本来就点「画」）
+  const seed = materialInput.value.trim();
+  if (!seed) return;
+  try {
+    if (seed === matDrawSeeded.value && !(await ed.isEmpty())) return;
+    const molfile = await depictMolfile(seed);
+    if (molfile) {
+      await ed.loadFromMolfile(molfile);
+      matDrawSeeded.value = seed;
+    }
+  } catch {
+    /* 载不进去就让用户直接画 */
+  }
+}
+
+async function confirmMatDraw(): Promise<void> {
+  const ed = matDrawRef.value;
+  if (!ed) return;
+  matDrawBusy.value = true;
+  matDrawError.value = '';
+  try {
+    if (await ed.isEmpty()) {
+      ElMessage.warning('画板还是空的，先画一个结构');
+      return;
+    }
+    const res = await parseStructure(await ed.getMolfile());
+    if (!res.ok) {
+      matDrawError.value = res.error || res.reasons?.[0] || '这个结构 RDKit 判不合法';
+      return;
+    }
+    if (store.params.startingMaterials.includes(res.smiles)) {
+      ElMessage.info('该起始物料已在列表中');
+    } else {
+      store.params.startingMaterials = [...store.params.startingMaterials, res.smiles];
+    }
+    matDrawSeeded.value = res.smiles;
+    matDrawOpen.value = false;
+  } catch (e) {
+    ElMessage.error((e as Error).message);
+  } finally {
+    matDrawBusy.value = false;
+  }
+}
+
+/**
+ * 输入的**行内**校验提示（空串 = 没问题）。
+ *
+ * 防抖 600ms 后用前端 RDKit 解析一次：坏结构在回车**之前**就标红 ——
+ * 原来只有点了「添加」才弹 ElMessage，敲半天才知道从头就是错的。
+ * CDXML 之类要走后端的格式**不在这里校验**（不在浏览器引擎能力内，留着让
+ * addMaterial 走完整链路），所以只对本地可判的输入给提示。
+ */
+const materialIssue = ref('');
+let materialCheckTimer: ReturnType<typeof setTimeout> | null = null;
+watch(materialInput, (raw) => {
+  if (materialCheckTimer) clearTimeout(materialCheckTimer);
+  const text = raw.trim();
+  if (!text || needsBackendParse(text) || !isRdkitReady()) {
+    materialIssue.value = '';
+    return;
+  }
+  materialCheckTimer = setTimeout(async () => {
+    const res = await parseStructure(text);
+    // await 期间输入可能已变：只对"还是这一份输入"的结果负责
+    if (materialInput.value.trim() !== text) return;
+    materialIssue.value = res.ok ? '' : res.reasons?.[0] || res.error || '这个结构认不出来';
+  }, 600);
+});
 
 // ---------- 采购询价（查价用哪家 + 用什么标识） ----------
 // 这里存的是**默认值**：路线图卡片、逆合成树标签行、候选面板三处询价入口都读它，
@@ -761,6 +951,9 @@ onMounted(() => {
 
       <!-- 分组一：预测设置（最常改的两个） -->
       <details class="params__group" open>
+        <!-- 🔴 这组的标题**必须**叫「预测设置」而不能跟卡片头的「运行参数」同名：
+             标定卡片里卡片头已有一行「运行参数」，同名就是两行一样的字叠着
+             （组件头部注释记着这个坑）。 -->
         <summary class="params__group-head">
           <span class="params__group-title">
             <svg class="params__group-ico" viewBox="0 0 16 16" aria-hidden="true">
@@ -774,7 +967,13 @@ onMounted(() => {
           <div class="params__row">
             <label>预测模型</label>
             <div class="params__model">
-              <el-select v-model="store.params.model" size="small" :loading="store.modelsLoading">
+              <el-select
+                v-model="store.params.model"
+                size="small"
+                :loading="store.modelsLoading"
+                @visible-change="onModelSelectVisible"
+                @change="(v: unknown) => void onModelChange(String(v))"
+              >
                 <el-option
                   v-for="m in store.models"
                   :key="m.key"
@@ -794,7 +993,7 @@ onMounted(() => {
                 :disabled="!store.modelReady && !store.modelBusy && !canLoadModel"
                 @click="onModelAction"
               >
-                {{ store.modelReady || store.modelBusy ? '停止' : '加载' }}
+                {{ modelActionText }}
               </el-button>
             </div>
           </div>
@@ -806,6 +1005,16 @@ onMounted(() => {
             </el-tag>
             <span class="params__model-detail">{{ modelDetail }}</span>
           </div>
+
+          <!-- 加载进度条：后端给了 progress 才画（老后端回落成上面的阶段文案+秒数）。
+               只在「当前选中的模型正在加载」时出现 —— 加载别的模型不该在这里画条。 -->
+          <el-progress
+            v-if="modelProgress !== null"
+            :percentage="modelProgress"
+            :stroke-width="6"
+            :show-text="true"
+            class="params__model-progress"
+          />
 
           <!-- 状态矩阵：每个模型各一格状态（只有一个模型时没有"矩阵"可言，不渲染） -->
           <div v-if="store.models.length > 1" class="params__model-matrix">
@@ -820,6 +1029,58 @@ onMounted(() => {
               {{ shortLabel(m.label) }}
               <em>{{ MODEL_STATE_TEXT[m.state] }}</em>
             </span>
+          </div>
+
+          <!-- 可行性过滤（正向模型）：开关 + 判别器的加载/状态**同框**。
+               🔴 开关已开着时**不做 disabled**：否则正向模型一旦不可用，
+                  用户连关都关不掉。`:disabled` 只拦「从关到开」。 -->
+          <div class="params__row params__row--col params__fwd">
+            <div class="params__fwd-head">
+              <label>
+                可行性过滤
+                <el-tooltip
+                  content="逆向模型爱给幻觉前体（化学上根本走不通的前体组合），它们会白白吃掉调用预算。开启后每条候选反应都要用正向模型『前体 → 产物』复核一次，只有产物命中正向 top-k 的才保留。只在多步拆分时生效"
+                  placement="top"
+                >
+                  <span class="params__hint">?</span>
+                </el-tooltip>
+              </label>
+              <el-switch
+                v-model="store.params.forwardFilter"
+                size="small"
+                :disabled="!store.canUseForwardFilter && !store.params.forwardFilter"
+              />
+            </div>
+
+            <!-- 判别器（正向模型）的加载/状态：紧跟开关，开不了的人不用跳组找原因 -->
+            <div class="params__fwd-line">
+              <el-tag size="small" :type="fwdTagType" effect="light">{{ fwdStateText }}</el-tag>
+              <span class="params__fwd-name">正向模型</span>
+              <el-button
+                v-if="showForwardLoad"
+                size="small"
+                text
+                type="primary"
+                :loading="store.forwardLoadingKey !== null || store.forwardBusy"
+                @click="void store.loadForward()"
+              >
+                {{ store.forwardBusy ? '加载中' : '加载' }}
+              </el-button>
+            </div>
+            <span class="params__model-detail">{{ fwdDetail }}</span>
+
+            <div v-if="store.params.forwardFilter" class="params__row">
+              <label>
+                候选保留 Top-K
+                <el-tooltip
+                  content="正向模型只保留排名前 K 的产物。K 越小过滤越狠（误杀真反应的几率也越大）：5 是官方评测常用值，1 会砍掉大量可行路线"
+                  placement="top"
+                >
+                  <span class="params__hint">?</span>
+                </el-tooltip>
+              </label>
+              <el-input-number v-model="store.params.forwardTopK" :min="1" :max="50" size="small" />
+            </div>
           </div>
 
           <div class="params__row">
@@ -842,13 +1103,37 @@ onMounted(() => {
           <span class="params__group-meta">{{ constraintMeta }}</span>
         </summary>
         <div class="params__group-body">
-          <!-- 这一句是必须的：单步「展开」不受任何约束，用户很容易以为把深度调小
-               就能限制手动展开 —— 那只会让人以为参数失灵 -->
+          <!-- 🔴 这一句原来铺了三行小字，读完才明白"手动展开不受约束"。
+             改成两行、并且把「不受限制」提前（用户真正要确认的是这件事）。 -->
           <p class="params__note">
-            以下约束<strong>只在「多步拆分」时生效</strong>（新建分析界面里的「自动往下拆 N 层」）：
-            深度与预算决定它拆到哪收手、何时改用起始物料。
-            <br />手动单步「展开 / 采纳候选」不受这些限制。
+            <strong>仅自动往下拆时生效</strong>；手动单步「展开 / 采纳候选」不受这些限制。
           </p>
+
+          <!-- 搜索算法放**第一位**：它决定后面「深度/预算」花得值不值 ——
+               同样的预算，Retro* 用价值函数挑着拆能往深里走，BFS 逐层铺开则摊得更开。 -->
+          <div class="params__row">
+            <label>
+              搜索算法
+              <el-tooltip placement="top">
+                <template #content>
+                  Retro*：按「剩余步数估计 + 反应代价」挑最有希望的节点先拆 —— 同等预算下走得更深。<br />
+                  广度优先 BFS：不做取舍、逐层铺开 —— 覆盖最全，但预算吃得凶，跑同样深度要给足调用次数。
+                </template>
+                <span class="params__hint">?</span>
+              </el-tooltip>
+            </label>
+            <el-select v-model="store.params.searchAlgorithm" size="small">
+              <el-option
+                v-for="(meta, key) in SEARCH_ALGORITHMS"
+                :key="key"
+                :label="meta.label"
+                :value="key"
+              >
+                <span>{{ meta.label }}</span>
+                <span class="params__alg-note">{{ meta.note }}</span>
+              </el-option>
+            </el-select>
+          </div>
 
           <div class="params__row">
             <label>自动拆分最大深度</label>
@@ -870,81 +1155,51 @@ onMounted(() => {
             <el-input-number v-model="store.params.budgetCalls" :min="1" :max="200" size="small" />
           </div>
 
-          <!-- 可行性过滤：用正向模型给每条候选反应复核一遍（删掉走不通的幻觉前体） -->
-          <div class="params__row params__row--col params__fwd">
-            <div class="params__fwd-head">
-              <label>
-                可行性过滤
-                <el-tooltip
-                  content="逆向模型爱给幻觉前体（化学上根本走不通的前体组合），它们会白白吃掉调用预算。开启后每条候选反应都要用正向模型『前体 → 产物』复核一次，只有产物命中正向 top-k 的才保留。只在多步拆分时生效"
-                  placement="top"
-                >
-                  <span class="params__hint">?</span>
-                </el-tooltip>
-              </label>
-              <!-- 🔴 已开着时**不做 disabled**：否则正向模型一旦不可用，用户连关都关不掉，
-                   只能去改历史任务。`:disabled` 只拦「从关到开」。 -->
-              <el-switch
-                v-model="store.params.forwardFilter"
-                size="small"
-                :disabled="!store.canUseForwardFilter && !store.params.forwardFilter"
-              />
-            </div>
-            <div class="params__fwd-state">
-              <div class="params__fwd-line">
-                <el-tag size="small" :type="fwdTagType" effect="light">{{ fwdStateText }}</el-tag>
-                <el-button
-                  v-if="showForwardLoad"
-                  size="small"
-                  text
-                  type="primary"
-                  :loading="store.forwardLoadingKey !== null || store.forwardBusy"
-                  @click="void store.loadForward()"
-                >
-                  {{ store.forwardBusy ? '加载中' : '加载正向模型' }}
-                </el-button>
-              </div>
-              <span class="params__model-detail">{{ fwdDetail }}</span>
-            </div>
-            <div v-if="store.params.forwardFilter" class="params__row">
-              <label>
-                候选保留 Top-K
-                <el-tooltip
-                  content="正向模型只保留排名前 K 的产物。K 越小过滤越狠（误杀真反应的几率也越大）：5 是官方评测常用值，1 会砍掉大量可行路线"
-                  placement="top"
-                >
-                  <span class="params__hint">?</span>
-                </el-tooltip>
-              </label>
-              <el-input-number v-model="store.params.forwardTopK" :min="1" :max="50" size="small" />
-            </div>
-          </div>
+          <!-- 额外可购买原料：填了的分子视为「买得到」，搜索拆到它就停。
+               🔴 与上面的重原子阈值是「**或**」关系 —— 空态要说清默认行为，
+                  否则用户不知道不填时靠什么判定。 -->
+          <div class="params__row params__row--col params__mat">
+            <label>
+              额外可购买原料
+              <el-tooltip
+                content="列表里的分子视为买得到：搜索拆到它就停止继续往下。与左侧「可购买重原子阈值」是『或』关系 —— 命中任意一条即停。适合填你手头有的原料、或想让路线优先经过的中间体"
+                placement="top"
+              >
+                <span class="params__hint">?</span>
+              </el-tooltip>
+            </label>
 
-          <div class="params__row params__row--col">
-            <label>指定起始物料</label>
             <div class="params__materials">
               <el-input
                 v-model="materialInput"
                 size="small"
-                placeholder="输入 SMILES 后回车，命中即停止拆分"
+                placeholder="粘贴 SMILES / MOL / 结构文本，回车添加"
+                spellcheck="false"
                 @keyup.enter="addMaterial"
               />
               <el-button size="small" :loading="addingMaterial" @click="addMaterial">添加</el-button>
+              <el-button size="small" plain @click="openMatDraw">绘制</el-button>
             </div>
-            <div v-if="store.params.startingMaterials.length" class="params__tags">
-              <el-tag
-                v-for="s in store.params.startingMaterials"
-                :key="s"
-                size="small"
-                closable
-                type="success"
-                effect="light"
-                @close="removeMaterial(s)"
-              >
-                {{ s.length > 22 ? s.slice(0, 22) + '…' : s }}
-                <i class="params__tag-atoms">{{ countHeavyAtoms(s) }} 原子</i>
-              </el-tag>
+            <p v-if="materialIssue" class="params__mat-issue">{{ materialIssue }}</p>
+
+            <!-- 有内容才渲染列表；每一项带结构缩略图 —— 裸 SMILES 截断没法认分子 -->
+            <div v-if="store.params.startingMaterials.length" class="params__mat-list">
+              <div v-for="s in store.params.startingMaterials" :key="s" class="params__mat-item">
+                <span class="params__mat-mol">
+                  <MolView :smiles="s" fit :bond-px="14" :min-px="26" :max-px="120" />
+                </span>
+                <span class="params__mat-meta">
+                  <span class="params__mat-formula">{{ countHeavyAtoms(s) }} 重原子</span>
+                  <code class="rw-mono" :title="s">{{ s.length > 18 ? s.slice(0, 18) + '…' : s }}</code>
+                </span>
+                <button type="button" class="params__mat-del" title="移除" @click="removeMaterial(s)">
+                  ×
+                </button>
+              </div>
             </div>
+            <p v-else class="params__mat-empty">
+              不填时：重原子数 ≤ {{ store.params.heavyAtomThreshold }} 的分子视为可购买。
+            </p>
           </div>
         </div>
       </details>
@@ -1294,9 +1549,9 @@ onMounted(() => {
             />
           </div>
           <p class="params__modules-note">
-            开启后，「AI 工艺分析」面板会先列出这一步反应的多套条件方案（溶剂 / 温度 / 碱与缩合剂 / 浓度
-            各成一派，并给出优缺点与适用场景）。选一套再深入分析 —— 分析会<b>锁定</b>这套条件，不会另换。<br />
-            关闭 = 直接按模型的第一直觉给一套条件做分析；面板里仍可随时手动「列出候选条件」。
+            开启后先列出这一步的多套条件方案（溶剂 / 温度 / 碱各成一派），
+            选一套再深入分析，分析会<b>锁定</b>这套条件。
+            关闭 = 直接给一套条件；面板里仍可随时手动「列出候选条件」。
           </p>
         </div>
       </details>
@@ -1405,17 +1660,41 @@ onMounted(() => {
           </div>
 
           <p class="params__modules-note">
-            用什么标识去查，取决于平台<b>怎么建索引</b>：
-            <b>{{ casSuppliers }}</b> 按 CAS / 货号检索 —— 把 CAS 拼进查询 URL 能直接出结果，
-            换成 SMILES 必然搜不到；<b>{{ smilesSuppliers }}</b> 走结构式 / SMILES 列表检索，
-            CAS 在它们那儿只是普通关键词，所以这几家始终用 SMILES。<br />
-            无论用哪种，标识都会同时复制到剪贴板 —— 到站粘进搜索框即可（对方站点参数名变了也不怕）。<br />
-            CAS 号来自 PubChem，缓存在本地：只在<b>第一次展开询价菜单</b>时查一次，
-            查不到（没收录 / 内网）就原样回落 SMILES，不会堵住查价。
+            标识取决于平台<b>怎么建索引</b>：<b>{{ casSuppliers }}</b>按 CAS / 货号检索，
+            <b>{{ smilesSuppliers }}</b>走结构式检索（它们只认 SMILES，CAS 在那儿只是关键词）。
+            标识会一并复制到剪贴板，到站粘进搜索框即可。<br />
+            CAS 来自 PubChem、本地缓存：首次展开询价菜单时查一次，查不到就回落 SMILES，不堵住查价。
           </p>
         </div>
       </details>
     </div>
+
+    <!-- 手动画原料：Ketcher 画板。画完 RDKit 校验 → 加入「额外可购买原料」列表。
+         🔴 `append-to-body` 必须给：本组件渲染在「运行设置」el-dialog 内容里，
+            不传送出去的话，画板的 overlay 会留在设置弹窗的 DOM 链内 ——
+            设置弹窗关掉后守门脚本按 `.app__run-settings-dialog .el-overlay` 数 overlay
+            仍会命中它（实测 count=1 ⇒ 误报"弹窗没关"）。teleport 到 body 即脱离；
+            scoped 样式不受影响（el-dialog 根元素自带本组件的 scope id）。 -->
+    <el-dialog
+      v-model="matDrawOpen"
+      title="绘制原料结构"
+      width="min(1180px, 94vw)"
+      align-center
+      :close-on-click-modal="false"
+      append-to-body
+      class="params__mat-dialog"
+    >
+      <StructureEditor ref="matDrawRef" />
+      <el-alert v-if="matDrawError" type="error" :closable="false" class="params__mat-draw-err">
+        {{ matDrawError }}
+      </el-alert>
+      <template #footer>
+        <el-button @click="matDrawOpen = false">取消</el-button>
+        <el-button type="primary" :loading="matDrawBusy" @click="confirmMatDraw">
+          用这个结构
+        </el-button>
+      </template>
+    </el-dialog>
   </section>
 </template>
 
@@ -1578,8 +1857,15 @@ onMounted(() => {
   gap: 6px;
 }
 
+/* 下拉吃掉剩余宽度，按钮**禁止收缩** —— 收缩时「停止」两个字会被裁掉
+   （实测：弹窗窄栏里按钮只剩一半）。 */
 .params__model :deep(.el-select) {
-  width: 160px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.params__model > .el-button {
+  flex: 0 0 auto;
 }
 
 /* ---------- 预测模型：状态行 + 状态矩阵 ---------- */
@@ -1603,6 +1889,17 @@ onMounted(() => {
   color: var(--rw-text-3);
   word-break: break-word;
   padding-top: 1px;
+}
+
+/* 加载进度条：紧贴状态行下方，占满这一行，别和下面的状态矩阵/参数挤在一起 */
+.params__model-progress {
+  margin-top: 8px;
+}
+
+.params__model-progress :deep(.el-progress__text) {
+  font-size: 11px;
+  min-width: 32px;
+  color: var(--rw-text-2);
 }
 
 /* 矩阵：一个模型一格。横排 + 允许换行（禁竖排 —— 竖排两行格子会跟右栏其他行对不齐） */
@@ -1682,22 +1979,35 @@ onMounted(() => {
   letter-spacing: 0.2px;
 }
 
-.params__fwd-state {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+/* 可行性过滤卡（预测设置组里）：开关 + 判别器加载/状态 + Top-K 同框 */
+.params__fwd {
+  padding: 10px 12px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface-2);
 }
 
-/* 标签 + 按钮同行；两者都不参与收缩，免得被挤压变形 */
+.params__fwd .params__model-detail {
+  padding-left: 2px;
+}
+
+/* 状态 tag + 「正向模型」名 + 加载按钮同行 */
 .params__fwd-line {
   display: flex;
   align-items: center;
   gap: 4px;
   flex-wrap: wrap;
+  margin-top: 8px;
 }
 
 .params__fwd-line > * {
   flex: 0 0 auto;
+}
+
+.params__fwd-name {
+  font-size: 12px;
+  color: var(--rw-text-2);
+  font-weight: 500;
 }
 
 .params__llm {
@@ -1725,6 +2035,14 @@ onMounted(() => {
 .params__hint:hover {
   background: var(--rw-brand-l);
   color: var(--rw-brand-d);
+}
+
+/* 下拉项右侧的一句算法说明 —— 拉开左边的名字，别让用户把描述读成选项名的一部分 */
+.params__alg-note {
+  float: right;
+  margin-left: 16px;
+  color: var(--rw-text-3);
+  font-size: 11px;
 }
 
 /* 统一输入控件聚焦态：品牌色描边 + 柔和外发光（穿透 scoped 到 EP 内部） */
@@ -2080,16 +2398,101 @@ onMounted(() => {
   gap: 6px;
 }
 
-.params__tags {
+.params__materials .el-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* ---------- 额外可购买原料：行内校验 + 带结构图的列表 ---------- */
+.params__mat-issue {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--rw-danger, #d33);
+}
+
+/* 列表项：结构图 + 元信息 + 删除，横向排（一行一个，图是主角） */
+.params__mat-list {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 6px;
 }
 
-.params__tag-atoms {
-  font-style: normal;
-  margin-left: 4px;
-  opacity: 0.7;
+.params__mat-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 4px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+}
+
+.params__mat-mol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 32px;
+  flex: 0 0 44px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--rw-surface-2);
+}
+
+.params__mat-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 11px;
+  color: var(--rw-text-3);
+}
+
+.params__mat-meta code {
+  font-size: 11px;
+  color: var(--rw-text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 删除钮：低调的 ×，hover 才亮 */
+.params__mat-del {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--rw-text-3);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.params__mat-del:hover {
+  color: var(--rw-danger, #d33);
+  background: var(--rw-surface-3);
+}
+
+.params__mat-empty {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--rw-text-3);
+}
+
+/* 手动画原料的画板 dialog：内容再高也不把底部按钮顶出视口 */
+.params__mat-dialog :deep(.el-dialog__body) {
+  max-height: calc(100vh - 210px);
+  overflow: auto;
+}
+
+.params__mat-draw-err {
+  margin-top: 10px;
 }
 
 /* 「多步拆分」范围标签：挂在分组标题上，一眼看出这组参数的适用面 */

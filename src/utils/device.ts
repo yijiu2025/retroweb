@@ -15,7 +15,7 @@ function randomId(): string {
   return `dev-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-export function getDeviceId(): string {
+function getDeviceId(): string {
   try {
     const cached = localStorage.getItem(DEVICE_KEY);
     if (cached) return cached;
@@ -31,7 +31,7 @@ export function getDeviceId(): string {
  * 采纳 oauth21 下发的设备 ID。
  * 只接受长得像设备 ID 的值（≥8 字符），异常值仅告警不阻断登录。
  */
-export function adoptDeviceId(id: string): void {
+function adoptDeviceId(id: string): void {
   if (!id || id.length < 8) {
     console.warn('[device] 忽略可疑的 deviceId:', id);
     return;
@@ -42,3 +42,5 @@ export function adoptDeviceId(id: string): void {
     /* localStorage 不可用时忽略 */
   }
 }
+
+export { getDeviceId, adoptDeviceId };

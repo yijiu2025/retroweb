@@ -60,7 +60,7 @@ function readInitial(): boolean {
   return typeof window !== 'undefined' && window.matchMedia?.('(prefers-color-scheme: dark)').matches;
 }
 
-export const useSettingsStore = defineStore('settings', () => {
+const useSettingsStore = defineStore('settings', () => {
   const isDark = ref(readInitial());
   /** 左侧导航栏是否收起（收起后只剩图标条） */
   const sidebarCollapsed = ref(readFlag(SIDEBAR_KEY, false));
@@ -150,3 +150,5 @@ export const useSettingsStore = defineStore('settings', () => {
     apply
   };
 });
+
+export { useSettingsStore };

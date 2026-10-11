@@ -12,7 +12,7 @@
 import { onMounted, onUnmounted } from 'vue';
 import { parseSsoMessage, type SsoMessage, type SsoUser } from '@/types/sso';
 
-export interface SsoHandlers {
+interface SsoHandlers {
   /** iframe 内应用就绪 */
   onReady?: () => void;
   onLoginSuccess?: (payload: { token?: string; sessionToken?: string; user?: SsoUser; deviceId?: string }) => void;
@@ -20,7 +20,7 @@ export interface SsoHandlers {
   onDenied?: (payload: { error?: string; description?: string }) => void;
 }
 
-export function useSsoMessage(options: {
+function useSsoMessage(options: {
   ssoOrigin: string;
   getIframe: () => HTMLIFrameElement | null;
   handlers: SsoHandlers;
@@ -68,3 +68,7 @@ export function useSsoMessage(options: {
 
   return { postTheme };
 }
+
+export { useSsoMessage };
+
+export type { SsoHandlers };

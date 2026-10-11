@@ -16,9 +16,9 @@ const SsoUserSchema = z.object({
   avatar: z.string().optional()
 });
 
-export type SsoUser = z.infer<typeof SsoUserSchema>;
+type SsoUser = z.infer<typeof SsoUserSchema>;
 
-export const SsoMessageSchema = z.discriminatedUnion('type', [
+const SsoMessageSchema = z.discriminatedUnion('type', [
   /** iframe 内 Vue 已 mount、监听器已就绪 —— 真正的握手信号（不是 @load） */
   z.object({ type: z.literal('SSO_READY') }),
   z.object({
@@ -43,22 +43,22 @@ export const SsoMessageSchema = z.discriminatedUnion('type', [
   })
 ]);
 
-export type SsoMessage = z.infer<typeof SsoMessageSchema>;
+type SsoMessage = z.infer<typeof SsoMessageSchema>;
 
 /** 父 → iframe：主题同步 */
-export interface ThemeChangeMessage {
+interface ThemeChangeMessage {
   type: 'THEME_CHANGE';
   isDark: boolean;
 }
 
 /** 解析一条 postMessage；非法消息返回 null（宿主静默丢弃，不崩） */
-export function parseSsoMessage(data: unknown): SsoMessage | null {
+function parseSsoMessage(data: unknown): SsoMessage | null {
   const parsed = SsoMessageSchema.safeParse(data);
   return parsed.success ? parsed.data : null;
 }
 
 /** 当前登录用户（宿主侧规范化后的形态） */
-export interface AuthUser {
+interface AuthUser {
   uid: string;
   username: string;
   email?: string;
@@ -67,9 +67,13 @@ export interface AuthUser {
 }
 
 /** 多账号免切用的账号条目 */
-export interface SavedAccount {
+interface SavedAccount {
   username: string;
   avatar?: string;
   rememberMe: boolean;
   lastLoginAt: number;
 }
+
+export { SsoMessageSchema, parseSsoMessage };
+
+export type { SsoUser, SsoMessage, ThemeChangeMessage, AuthUser, SavedAccount };

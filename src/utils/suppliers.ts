@@ -30,9 +30,9 @@ import { copyText } from '@/utils/clipboard';
 import { casState } from '@/utils/pubchem';
 
 /** 平台搜索框最认的标识 */
-export type SupplierIdent = 'cas' | 'smiles';
+type SupplierIdent = 'cas' | 'smiles';
 
-export interface Supplier {
+interface Supplier {
   /** 唯一 id */
   id: string;
   /** 显示名 */
@@ -52,7 +52,7 @@ export interface Supplier {
  * 把它作为**返回值**（而不是只返回一个 URL）是为了让 UI 能如实告诉用户
  * 「这次用的是 CAS 50-78-2 还是 SMILES」「为什么」，也让验收能断言回落路径。
  */
-export interface SupplierQuery {
+interface SupplierQuery {
   supplier: Supplier;
   /** 本次实际采用的标识 */
   ident: SupplierIdent;
@@ -74,7 +74,7 @@ export interface SupplierQuery {
 /** 标识的 URL 编码 */
 const enc = encodeURIComponent;
 
-export const SUPPLIERS: Supplier[] = [
+const SUPPLIERS: Supplier[] = [
   // ---------- 结构式 / 列表检索平台：认 SMILES，CAS 只是关键词 ----------
   {
     id: 'molport',
@@ -157,15 +157,15 @@ export const SUPPLIERS: Supplier[] = [
 ];
 
 /** 找不到 id 时的兜底供应商（清单被改/老 localStorage 里存着已删除的 id） */
-export const DEFAULT_SUPPLIER_ID = SUPPLIERS[0].id;
+const DEFAULT_SUPPLIER_ID = SUPPLIERS[0].id;
 
 /** 这个 id 是否在清单里 */
-export function isSupplierId(id: string): boolean {
+function isSupplierId(id: string): boolean {
   return SUPPLIERS.some((x) => x.id === id);
 }
 
 /** 取一家供应商（无效 id 返回 undefined，调用方决定怎么兜底） */
-export function supplierById(id: string): Supplier | undefined {
+function supplierById(id: string): Supplier | undefined {
   return SUPPLIERS.find((x) => x.id === id);
 }
 
@@ -181,7 +181,7 @@ export function supplierById(id: string): Supplier | undefined {
  * 🔴 第 ④ 条刻意**不等待** PubChem：查不到 CAS 是外部的正常状态（内网、限流、
  *    结构没收录），拿它去堵「查价」这个动作是本末倒置。回落 SMILES 并如实标注即可。
  */
-export function resolveSupplierQuery(
+function resolveSupplierQuery(
   id: string,
   smiles: string,
   preferCas: boolean
@@ -220,7 +220,7 @@ export function resolveSupplierQuery(
  *    那用户看到的就是「点了没反应」，正是最难排查的那种。
  *    复制失败只影响「到站能不能直接粘」，由 `copyText` 自己弹降级提示。
  */
-export function querySupplier(id: string, smiles: string, preferCas: boolean): SupplierQuery | null {
+function querySupplier(id: string, smiles: string, preferCas: boolean): SupplierQuery | null {
   const q = resolveSupplierQuery(id, smiles, preferCas);
   if (!q) return null;
   window.open(q.url, '_blank', 'noopener,noreferrer');
@@ -229,3 +229,14 @@ export function querySupplier(id: string, smiles: string, preferCas: boolean): S
   });
   return q;
 }
+
+export {
+  SUPPLIERS,
+  DEFAULT_SUPPLIER_ID,
+  isSupplierId,
+  supplierById,
+  resolveSupplierQuery,
+  querySupplier
+};
+
+export type { SupplierIdent, Supplier, SupplierQuery };

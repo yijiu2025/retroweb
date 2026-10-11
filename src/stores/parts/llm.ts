@@ -45,7 +45,7 @@ const MAX_FOLLOWUPS = 10;
 /** `route` 是 computed，用这个形状接，免得 Ref / ComputedRef 的协变问题 */
 type ReadonlyBox<T> = { readonly value: T };
 
-export interface LlmPartCtx {
+interface LlmPartCtx {
   nodes: Ref<Record<string, MolNode>>;
   rootId: Ref<string | null>;
   route: ReadonlyBox<RouteStep[]>;
@@ -56,7 +56,7 @@ export interface LlmPartCtx {
   schedulePersist: () => void;
 }
 
-export function createLlmPart(ctx: LlmPartCtx) {
+function createLlmPart(ctx: LlmPartCtx) {
   const llmStatus = ref<LlmStatus | null>(null);
   /** AI 工艺分析勾选的模块（默认全选）。空数组 = 全量分析（与后端语义一致） */
   const analysisModules = ref<AnalysisModuleKey[]>([...ALL_ANALYSIS_MODULES]);
@@ -562,3 +562,7 @@ export function createLlmPart(ctx: LlmPartCtx) {
     cancelAllAnalyses
   };
 }
+
+export { createLlmPart };
+
+export type { LlmPartCtx };

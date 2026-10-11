@@ -72,7 +72,10 @@ function humanizeError(msg: string): string {
   if (m) {
     const code = m[1];
     if (code.startsWith('5')) return `后端服务暂不可用（HTTP ${code}）：请确认后端 API 已启动，或稍后重试`;
-    if (code === '401') return '登录已过期（HTTP 401），请重新登录';
+    // 🔴 401 **不能**写成「登录已过期」：它也是"用户压根没登录过"的那条路
+    //    （首屏挂载就拉模型 ⇒ 未登录必然吃 401）。过期是**曾经登录**的推论，
+    //    在没登录的人身上说这句是错的；中性说法两边都成立。
+    if (code === '401') return '需要登录（HTTP 401）：请先在登录窗口中完成登录，然后再重试';
     if (code === '404') return '接口不存在（HTTP 404）：前后端版本可能不一致';
     return `请求失败（HTTP ${code}）`;
   }

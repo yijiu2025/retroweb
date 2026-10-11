@@ -4,11 +4,14 @@ import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '@/stores/auth';
+import { safeRemoteUrl } from '@/utils/safe-url';
 
 const authStore = useAuthStore();
 const router = useRouter();
 
 const user = computed(() => authStore.user);
+/** 头像地址过协议白名单（`avatar` 用户可控，见 utils/safe-url.ts 的说明） */
+const avatarUrl = computed(() => safeRemoteUrl(user.value?.avatar));
 
 async function onLogout(): Promise<void> {
   await authStore.logout();
@@ -25,7 +28,7 @@ async function onLogout(): Promise<void> {
     <div class="rw-card__body profile__body">
       <div class="profile__hero">
         <span class="profile__avatar">
-          <img v-if="user?.avatar" :src="user.avatar" :alt="user?.username" />
+          <img v-if="avatarUrl" :src="avatarUrl" :alt="user?.username" />
           <span v-else>{{ (user?.username || '?').charAt(0).toUpperCase() }}</span>
         </span>
         <div>

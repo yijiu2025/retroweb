@@ -67,7 +67,7 @@ let clientIdMap: Record<string, number> = {};
 let authed = false;
 
 /** 供 index.ts 设置登录态；切换账号/登出时传 false 并清内存 */
-export function setServerAuthed(next: boolean): void {
+function setServerAuthed(next: boolean): void {
   authed = next;
   if (!next) {
     cache = { ...EMPTY };
@@ -82,7 +82,7 @@ export function setServerAuthed(next: boolean): void {
  *    snapshot 是空占位。真正打开任务时由 `ensureLoaded(id)` 按需拉全量详情。
  * 🔴 只在登录那一刻调一次；失败静默（本地缓存保持原样，下次读仍是旧的）。
  */
-export async function preload(): Promise<void> {
+async function preload(): Promise<void> {
   if (!authed) return;
   try {
     const data = await apiClient.get<{ tasks: unknown[] }>('/retroweb/v1/tasks');
@@ -131,7 +131,7 @@ export async function preload(): Promise<void> {
  *
  * @param id 前端 Session.id（= client_id）
  */
-export async function ensureLoaded(id: string): Promise<void> {
+async function ensureLoaded(id: string): Promise<void> {
   if (!authed) return;
   const taskId = clientIdMap[id];
   if (!taskId) return; // 本地新建、尚未同步到服务端的任务：没有服务端 id，跳过
@@ -153,16 +153,16 @@ export async function ensureLoaded(id: string): Promise<void> {
 
 // ---- 同步读（返回本地缓存） ----
 
-export function readSessions(): Session[] {
+function readSessions(): Session[] {
   return cache.sessions;
 }
 
-export function readHistory(): HistoryTask[] {
+function readHistory(): HistoryTask[] {
   return cache.history;
 }
 
 /** 条件枚举偏好：纯 UI 习惯，仍走本地实现（不迁服务端，避免为小偏好加往返） */
-export function readCondPref(): CondPref {
+function readCondPref(): CondPref {
   return localReadCondPref();
 }
 
@@ -204,7 +204,7 @@ async function commit(): Promise<void> {
   }
 }
 
-export function writeSessions(list: Session[]): void {
+function writeSessions(list: Session[]): void {
   cache = { ...cache, sessions: list };
   writeCache(cache);
   if (authed) {
@@ -213,18 +213,18 @@ export function writeSessions(list: Session[]): void {
   }
 }
 
-export function writeHistory(list: HistoryTask[]): void {
+function writeHistory(list: HistoryTask[]): void {
   // 历史记录（手动保存快照）暂不迁服务端 —— S1 先只迁任务；仍落本地缓存
   cache = { ...cache, history: list };
   writeCache(cache);
 }
 
-export function writeCondPref(v: CondPref): void {
+function writeCondPref(v: CondPref): void {
   // 偏好类不迁服务端，仍走本地实现
   localWriteCondPref(v);
 }
 
-export function clear(): void {
+function clear(): void {
   cache = { ...EMPTY };
   try {
     localStorage.removeItem(SERVER_CACHE_KEY);
@@ -232,3 +232,16 @@ export function clear(): void {
     /* ignore */
   }
 }
+
+export {
+  setServerAuthed,
+  preload,
+  ensureLoaded,
+  readSessions,
+  readHistory,
+  readCondPref,
+  writeSessions,
+  writeHistory,
+  writeCondPref,
+  clear
+};

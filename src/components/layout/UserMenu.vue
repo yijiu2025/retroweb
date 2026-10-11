@@ -5,12 +5,19 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { ArrowDown } from '@element-plus/icons-vue';
 import { useAuthStore } from '@/stores/auth';
+import { safeRemoteUrl } from '@/utils/safe-url';
 
 const authStore = useAuthStore();
 const router = useRouter();
 
 const username = computed(() => authStore.user?.username || '未登录');
 const initial = computed(() => username.value.charAt(0).toUpperCase());
+/**
+ * 头像地址：`avatar` 是**用户可控**字段（后端 PATCH profile 直接收，不做协议校验），
+ * 直接绑 `:src` 会让 `javascript:` / `data:text/html` 这类值进来 ⇒ 必须过滤协议。
+ * 非法值判空，模板回退到首字母占位。
+ */
+const avatarUrl = computed(() => safeRemoteUrl(authStore.user?.avatar));
 
 async function onLogout(): Promise<void> {
   try {
@@ -38,7 +45,7 @@ function goProfile(): void {
       <el-dropdown trigger="click" @command="(c: string) => (c === 'profile' ? goProfile() : onLogout())">
         <div class="user-menu__trigger">
           <span class="user-menu__avatar">
-            <img v-if="authStore.user?.avatar" :src="authStore.user.avatar" :alt="username" />
+            <img v-if="avatarUrl" :src="avatarUrl" :alt="username" />
             <span v-else>{{ initial }}</span>
           </span>
           <span class="user-menu__name">{{ username }}</span>

@@ -14,7 +14,7 @@
 import { apiClient } from '@/api/http';
 import type { LlmSource, NodeLlmProfile, OfficialLlm, RetrowebSettings } from '@/types/retro';
 
-export const nodeLlmApi = {
+const nodeLlmApi = {
   /** 用户自建配置列表（key 只回掩码） */
   async profiles(): Promise<NodeLlmProfile[]> {
     try {
@@ -82,3 +82,5 @@ export const nodeLlmApi = {
     return data.llm_source;
   }
 };
+
+export { nodeLlmApi };

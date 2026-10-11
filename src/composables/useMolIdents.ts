@@ -24,7 +24,7 @@ import { casState, requestCas, type CasInfo, type CasState } from '@/utils/pubch
 import { copyText } from '@/utils/clipboard';
 
 /** 一行可复制的标识 */
-export interface MolIdent {
+interface MolIdent {
   /** 稳定 key（`el-dropdown` 的 command 用） */
   key: string;
   /** 左侧标签，如 `SMILES` / `CAS` */
@@ -39,7 +39,7 @@ export interface MolIdent {
 }
 
 /** 组装标识所需的原料（都能缺，缺了那一行就不出现） */
-export interface MolIdentSource {
+interface MolIdentSource {
   smiles: string;
   /** 分子式，如 `C9H8O4`（store 节点上有；没有就不列） */
   formula?: string;
@@ -55,7 +55,7 @@ export interface MolIdentSource {
  * 两边各写一份必然分叉：今天卡片只有 SMILES、树里有六项，就是这么来的。
  * 循环里用这份纯函数，配 `casState()` 的响应式缓存照样会自动更新。
  */
-export function buildMolIdents(src: MolIdentSource, cas: CasInfo | null | undefined): MolIdent[] {
+function buildMolIdents(src: MolIdentSource, cas: CasInfo | null | undefined): MolIdent[] {
   const out: MolIdent[] = [];
   if (!src.smiles) return out;
   out.push({ key: 'smiles', label: 'SMILES', value: src.smiles, primary: true });
@@ -73,7 +73,7 @@ export function buildMolIdents(src: MolIdentSource, cas: CasInfo | null | undefi
  * CAS 为什么没出现在列表里 —— 只在**用户已经要过**之后才有意义。
  * 空串 = 不需要解释（没要过，或查到了）。
  */
-export function molCasNote(
+function molCasNote(
   asked: boolean,
   cas: CasInfo | null | undefined
 ): string {
@@ -83,7 +83,7 @@ export function molCasNote(
   return '';
 }
 
-export interface UseMolIdents {
+interface UseMolIdents {
   /** 有值的标识行（已按 SMILES → 分子式 → 分子量 → CAS → 名称 → CID 排好） */
   idents: ComputedRef<MolIdent[]>;
   /** PubChem 那份结果（`undefined`=没查、`null`=查过没有），供调用方显示状态 */
@@ -105,7 +105,7 @@ export interface UseMolIdents {
  * @param opts.copy 注入复制实现（默认走全站唯一入口 `copyText`）——
  *   留这个口子是为了探针能在 Node 里驱动真实逻辑而不必启动浏览器。
  */
-export function useMolIdents(
+function useMolIdents(
   source: () => MolIdentSource,
   opts: { copy?: (text: string, okMsg: string) => Promise<boolean> } = {}
 ): UseMolIdents {
@@ -142,3 +142,7 @@ export function useMolIdents(
 
   return { idents, cas, casNote, askCas, copyIdent };
 }
+
+export { buildMolIdents, molCasNote, useMolIdents };
+
+export type { MolIdent, MolIdentSource, UseMolIdents };

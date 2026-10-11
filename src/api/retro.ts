@@ -11,6 +11,12 @@
  * 所以这里独立建一个实例，不做信封拆包。
  */
 import axios, { type AxiosResponse } from 'axios';
+import {
+  attachUnauthorizedInterceptor,
+  createUnauthorizedError,
+  isUnauthorizedError,
+  notifyUnauthorized
+} from '@/api/http';
 import { RETRO_BASE_URL, API_BASE_URL, RETRO_VIA_NODE } from '@/config/services';
 import type {
   AnalyzeRequest,
@@ -33,6 +39,7 @@ import type {
   ModelsResponse,
   ParseResult,
   PredictResult,
+  SearchAlgorithm,
   StepAnalysis
 } from '@/types/retro';
 
@@ -58,10 +65,21 @@ function unwrapNodeEnvelope<T>(response: AxiosResponse<T>): AxiosResponse<T> {
   return response;
 }
 
-export const retroClient = axios.create({
+/**
+ * 🔴 `withCredentials: true` 必须**无条件**开（三个 axios client 都一样）：
+ *
+ * 走 Node 中转时 baseURL 是 `http://<host>:3000/retroweb/v1` ⇒ 对 5177 页面来说是
+ * **跨源**请求。不开的话浏览器不会带上 `sid` cookie —— 于是**登录成功了也一样 401**，
+ * 模型列表 / 任务 / AI 分析全都拿不到。这是「真实登录后仍然空工作台」的根因。
+ *
+ * 直连 Python 时 baseURL 是 `/retro`（同源相对路径，经 vite proxy），开不带差价，
+ * 所以这里不做条件判断 —— 条件判断本身就容易写错，而两种走法都需要它。
+ */
+const retroClient = axios.create({
   baseURL: retroBaseURL,
   // 首次预测要加载模型 + 起规则子进程，实测可达数十秒 ⇒ 超时放到 10 分钟
   timeout: 600000,
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' }
 });
 retroClient.interceptors.response.use(unwrapNodeEnvelope);
@@ -70,15 +88,17 @@ retroClient.interceptors.response.use(unwrapNodeEnvelope);
  * 轮询专用客户端：进度查询必须「快失败」，否则后端一旦卡顿，前端会干等最久 10 分钟。
  * 单次轮询最多 20s，超时就让上层重试（重试 N 次仍不通才判失败）。
  */
-export const retroJobClient = axios.create({
+const retroJobClient = axios.create({
   baseURL: retroBaseURL,
   timeout: 20000,
+  // 同源 cases: 见 retroClient 处注释（跨源必须带 cookie，否则登录后照样 401）
+  withCredentials: true,
   headers: { 'Content-Type': 'application/json' }
 });
 retroJobClient.interceptors.response.use(unwrapNodeEnvelope);
 
 /** 轮询/接口错误：带状态码与「是否可重试」标记 */
-export class RetroApiError extends Error {
+class RetroApiError extends Error {
   status?: number;
   transient: boolean;
   constructor(message: string, opts: { status?: number; transient?: boolean } = {}) {
@@ -89,14 +109,38 @@ export class RetroApiError extends Error {
   }
 }
 
-/** 统一抛出带上下文的错误 */
+/**
+ * 统一抛出带上下文的错误。
+ *
+ * 🔴 两个字段都要试着取：Python 的失败体是 `{error: "..."}`，而 Node 中转义的是
+ *    `{code, message, data}` 信封（见 http.ts 同口径）。只认 `error` 的话，
+ *    Node 侧拒绝请求时（配额超限、正向模型未就绪、权限不足……）那些**具体的拒因**
+ *    全被丢掉，用户只看到一句 `Request failed with status code 400`。
+ */
 function fail(err: unknown, fallback: string): never {
-  const anyErr = err as { response?: { data?: { error?: string } }; message?: string };
-  const message = anyErr?.response?.data?.error || anyErr?.message || fallback;
+  const res = (err as { response?: { status?: number; data?: Record<string, string> } })?.response;
+  const payload = res?.data;
+  const message = payload?.error || payload?.message || (err as Error)?.message || fallback;
+  // 🔴 先看哨兵：401 若已被 `attachUnauthorizedInterceptor` 接管（续期失败），
+  //    冒泡上来的就是 `createUnauthorizedError` —— 它**没有 `.response`**，
+  //    落到下面的 `res?.status === 401` 会判 false，于是被重新包成普通 Error、
+  //    **把哨兵弄丢**，业务侧的 `isAuthFailure` 就瞎了。必须原样抛出。
+  if (isUnauthorizedError(err)) throw err;
+  // 401 无论从哪个 client 冒出来都归登录流管 —— 与 http.ts 打**同一个哨兵**，
+  // 业务侧才能一视同仁地让位（见 stores/parts/models.ts 的 isAuthFailure）。
+  // 不要在文案上做判据：Node 回的是 `{message}`、Python 回的是 `{error}`，
+  // 一旦哪天措辞变了，正则判据会**静默失效**（这次就是这么红的）。
+  //
+  // ⚠️ 这个分支现在只在「重放后仍 401」（`_retry` 已置位，拦截器不再接管）时才走到。
+  //    此时**没人**打开登录窗（续期那步是成功的），所以这里要主动补一次通知。
+  if (res?.status === 401) {
+    notifyUnauthorized();
+    throw createUnauthorizedError(message);
+  }
   throw new Error(message);
 }
 
-export const retroApi = {
+const retroApi = {
   /**
    * 模型状态矩阵 —— 前端只认这一个入口。
    *
@@ -261,6 +305,8 @@ export const retroApi = {
       maxDepth: number;
       maxHeavyAtoms: number;
       valueFn: string;
+      /** 搜索算法（retro_star / bfs）；缺省后端按默认（Retro*）处理 */
+      algorithm?: SearchAlgorithm;
       purchasable: string[];
       requiredMaterials: string[];
       /** 「可行性过滤」：需模型服务里已加载正向模型，否则后端会先拦下来说清原因 */
@@ -280,6 +326,7 @@ export const retroApi = {
         max_depth: params.maxDepth,
         max_heavy_atoms: params.maxHeavyAtoms,
         value_fn: params.valueFn,
+        algorithm: params.algorithm ?? 'retro_star',
         purchasable: params.purchasable,
         required_materials: params.requiredMaterials,
         use_forward_filter: !!params.useForwardFilter,
@@ -342,14 +389,27 @@ export const retroApi = {
  * 工艺分析专用客户端：LLM 首字可能要等十几秒，超时给到 5 分钟。
  * （流式路径不用 axios —— 见 streamAnalyze。）
  */
-export const retroLlmClient = axios.create({
+const retroLlmClient = axios.create({
   baseURL: retroBaseURL,
   timeout: 300000,
+  withCredentials: true, // 同 retroClient：跨源到 Node 必须带 cookie
   headers: { 'Content-Type': 'application/json' }
 });
 retroLlmClient.interceptors.response.use(unwrapNodeEnvelope);
 
-export const llmApi = {
+/**
+ * 401 统一走 http.ts 那一套（单飞续期 → 失败则弹登录窗）。
+ *
+ * 🔴 三个 client **都要挂**：不挂的话 retro 侧的 401 只会打哨兵、不触发登录流，
+ *    于是会话在**使用中**过期时会被「静默吞掉」—— 业务侧的 `isAuthFailure` 看见哨兵
+ *    就让位（不报错），而登录窗又没人打开，用户面对一个坏了却毫无提示的界面。
+ *    首屏之所以还能弹窗，只是因为 `authStore.init()` 恰好走了 apiClient 路径。
+ *
+ * 集中在这里挂，避免三个 client 处各写一遍。
+ */
+[retroClient, retroJobClient, retroLlmClient].forEach(attachUnauthorizedInterceptor);
+
+const llmApi = {
   /**
    * 大模型是否已配置（未配置时前端把「AI 分析」引导到 .env 说明）。
    * `probe=true` 会让后端**真发一次最小请求**验证 key + 模型，返回 `probe` 字段。
@@ -483,7 +543,7 @@ export const llmApi = {
 };
 
 /** 流式分析的回调（与 SSE 事件一一对应） */
-export interface AnalyzeStreamHandlers {
+interface AnalyzeStreamHandlers {
   onMeta?: (model: string) => void;
   /**
    * 推理模型的「思考」增量。
@@ -499,7 +559,7 @@ export interface AnalyzeStreamHandlers {
 }
 
 /** 追问（自由文本回答）的流式事件 */
-export type FollowupStreamEvent =
+type FollowupStreamEvent =
   | { type: 'meta'; model: string }
   | { type: 'thinking'; text: string }
   | { type: 'thinking_end'; chars: number }
@@ -508,7 +568,7 @@ export type FollowupStreamEvent =
   | { type: 'error'; error: string };
 
 /** 追问的回调（比分析少一个 done 的结构化字段） */
-export interface FollowupStreamHandlers {
+interface FollowupStreamHandlers {
   onMeta?: (model: string) => void;
   onThinking?: (text: string) => void;
   onThinkingEnd?: (chars: number) => void;
@@ -540,6 +600,9 @@ async function postSse<T extends { type: string }>(
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
       body: JSON.stringify(body),
+      // 🔴 与上面三个 axios client 同理：跨源到 Node 中转时必须带上 sid cookie，
+      //    否则 SSE 请求会以 401 失败（连第一条 meta 事件都收不到）。
+      credentials: 'include',
       signal
     });
   } catch (e) {
@@ -548,10 +611,25 @@ async function postSse<T extends { type: string }>(
   }
 
   if (!resp.ok) {
+    // 🔴 401 归登录流管 —— 与 http.ts / 三个 axios client 同一套语义。
+    //    这条是 fetch 路径（SSE 不能用 axios），拦截器覆盖不到，必须显式处理；
+    //    否则登录窗不会打开，而 `onError` 还会再挂一条错误条，跟登录窗吵成一团。
+    if (resp.status === 401) {
+      notifyUnauthorized();
+      return;
+    }
     let detail = `HTTP ${resp.status}`;
     try {
-      const payload = (await resp.json()) as { error?: string };
-      if (payload?.error) detail = payload.error;
+      // 🔴 两种走法的错误字段名**不一样**，必须都认：
+      //   · 直连 Python（Flask）→ `{ error: "..." }`
+      //   · Node 中转 → 统一信封 `{ code, message, data }`，拒因在 `message`
+      //     （见 app/retroweb/services/upstream.service.js 的 forwardStream：
+      //      上游不可用时 reply.result.fail(..., 503)，502 时也是 result.fail）
+      //   原先只读 `error` ⇒ 走 Node 时拿不到任何说明，界面上只剩一个干巴巴的
+      //   「HTTP 502」，用户和排查的人都不知道到底哪里坏了。
+      const payload = (await resp.json()) as { error?: string; message?: string };
+      const msg = payload?.error || payload?.message;
+      if (msg) detail = msg;
     } catch {
       /* 非 JSON 响应，保持 HTTP 状态码 */
     }
@@ -605,7 +683,7 @@ async function postSse<T extends { type: string }>(
 }
 
 /** 流式工艺分析（SSE over fetch） */
-export async function streamAnalyze(
+async function streamAnalyze(
   req: AnalyzeRequest,
   handlers: AnalyzeStreamHandlers,
   signal?: AbortSignal
@@ -632,11 +710,11 @@ export async function streamAnalyze(
  * 与 streamAnalyze 走同一套 SSE 分帧，事件序列也一致 —— 只有 done 的负载不同（条件方案数组
  * 而非工艺分析 JSON），所以回调类型直接复用 AnalyzeStreamHandlers、只换 onDone。
  */
-export type ConditionsStreamHandlers = Omit<AnalyzeStreamHandlers, 'onDone'> & {
+type ConditionsStreamHandlers = Omit<AnalyzeStreamHandlers, 'onDone'> & {
   onDone: (payload: Extract<ConditionsStreamEvent, { type: 'done' }>) => void;
 };
 
-export async function streamConditions(
+async function streamConditions(
   req: ConditionsRequest,
   handlers: ConditionsStreamHandlers,
   signal?: AbortSignal
@@ -661,7 +739,7 @@ export async function streamConditions(
  * 流式「追问」：带着这一步反应的上下文，问它的其他问题。
  * 与 streamAnalyze 走同一套 SSE 分帧，区别只在事件负载（自由文本而非结构化 JSON）。
  */
-export async function streamFollowup(
+async function streamFollowup(
   req: FollowupRequest,
   handlers: FollowupStreamHandlers,
   signal?: AbortSignal
@@ -681,3 +759,22 @@ export async function streamFollowup(
     handlers.onError
   );
 }
+
+export {
+  retroClient,
+  retroJobClient,
+  RetroApiError,
+  retroApi,
+  retroLlmClient,
+  llmApi,
+  streamAnalyze,
+  streamConditions,
+  streamFollowup
+};
+
+export type {
+  AnalyzeStreamHandlers,
+  FollowupStreamEvent,
+  FollowupStreamHandlers,
+  ConditionsStreamHandlers
+};

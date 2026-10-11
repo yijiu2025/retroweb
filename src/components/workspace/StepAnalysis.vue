@@ -1,7 +1,8 @@
 <script setup lang="ts">
 /**
  * AI 工艺分析面板 —— 把「这一步反应」交给大模型，产出可执行的工艺细节：
- * 投料顺序 / 当量 / 条件 / 后处理 / 预期结果与收率 / 可能的副产物 / LCMS / NMR / 安全。
+ * 投料顺序 / 当量 / 条件 / 后处理 / 预期结果与收率 / 可能的副产物 / LCMS / NMR /
+ * 安全（过程安全） / 毒性（物质毒性与防护）。
  *
  * 两条数据线刻意分开：
  *   · **LCMS 的数值**由后端 RDKit 算（`computed`）—— 确定性、可核对，不让模型瞎算；
@@ -21,7 +22,7 @@
  */
 import { computed, ref } from 'vue';
 import { useWorkspaceStore } from '@/stores/workspace';
-import type { ConditionOption, MassRow, StepAnalysis } from '@/types/retro';
+import type { ConditionOption, MassRow, StepAnalysis, StepToxicityItem } from '@/types/retro';
 import MolView from '@/components/mol/MolView.vue';
 
 const props = defineProps<{ nodeId: string }>();
@@ -101,6 +102,30 @@ const tlcEntries = computed(() => {
 
 /** 极性确定性数值（RDKit 算的 logP/TPSA 等）—— 点板模块的「可核对」那一侧 */
 const polarityRows = computed(() => massRows.value.filter((r) => r.ok));
+
+/**
+ * 毒性与防护要点：模型逐物料给出的危害 / 暴露 / 防护 / 替代。
+ * 🔴 与 `safety`（过程安全要点）分开渲染 —— 前者是「物质毒性」表，后者是「过程安全」清单。
+ *    去掉全空的行，避免模型给了空壳对象时渲染出一片「—」。
+ */
+const toxicityRows = computed(() => {
+  const list = analysis.value?.data?.toxicity;
+  if (!Array.isArray(list)) return [] as StepToxicityItem[];
+  return list.filter((t) =>
+    t && ['name', 'role', 'hazard', 'exposure', 'protection', 'substitute', 'regulation'].some((k) =>
+      String((t as Record<string, unknown>)[k] ?? '').trim()
+    )
+  );
+});
+
+/** 风险等级 → 徽标样式类（高=红 / 中=琥珀 / 低=绿）；未识别的不上色 */
+function riskClass(level?: string): string {
+  const s = String(level || '').trim();
+  if (/^(高|high|严重)/i.test(s)) return 'is-high';
+  if (/^(中|mid|medium|moderate)/i.test(s)) return 'is-mid';
+  if (/^(低|low|轻微)/i.test(s)) return 'is-low';
+  return '';
+}
 
 /** 产物 + 各前体的确定性质量（LCMS 数值来源） */
 const massRows = computed<MassRow[]>(() => analysis.value?.computed?.rows ?? []);
@@ -720,6 +745,52 @@ function clearChosen(): void {
         </ul>
       </div>
 
+      <!-- 毒性与防护要点：逐物料列「危害 / 暴露途径 / 风险等级 / 防护 / 可替代 / 合规」。
+           🔴 与上面的「安全与放大提示」分工不同 —— 那个是过程安全（放热/产气/放大失控），
+              这个是物质本身的毒性，两块各自独立渲染、不互相顶掉。 -->
+      <div v-if="toxicityRows.length" class="ana__block">
+        <div class="ana__h">
+          毒性与防护要点
+          <span class="ana__tag-flow">按风险从高到低</span>
+        </div>
+        <ul class="ana__tox">
+          <li v-for="(t, i) in toxicityRows" :key="i" class="ana__tox-item">
+            <div class="ana__tox-head">
+              <span class="ana__tox-name">{{ t.name || '—' }}</span>
+              <span v-if="t.role" class="ana__tox-role">{{ t.role }}</span>
+              <span v-if="t.risk_level" class="ana__tox-risk" :class="riskClass(t.risk_level)">
+                {{ t.risk_level }}
+              </span>
+            </div>
+            <dl class="ana__tox-body">
+              <template v-if="t.hazard">
+                <dt>危害</dt>
+                <dd>{{ t.hazard }}</dd>
+              </template>
+              <template v-if="t.exposure">
+                <dt>暴露途径</dt>
+                <dd>{{ t.exposure }}</dd>
+              </template>
+              <template v-if="t.protection">
+                <dt>防护</dt>
+                <dd>{{ t.protection }}</dd>
+              </template>
+              <template v-if="t.substitute">
+                <dt>可替代</dt>
+                <dd>{{ t.substitute }}</dd>
+              </template>
+              <template v-if="t.regulation">
+                <dt>合规</dt>
+                <dd>{{ t.regulation }}</dd>
+              </template>
+            </dl>
+          </li>
+        </ul>
+        <p class="ana__warn">
+          危害类别为模型基于化学品常识的推断，未逐条核对 GHS 数据库；开工前请以试剂 SDS 与实际法规要求为准。
+        </p>
+      </div>
+
       <div v-if="typeof analysis.data.confidence === 'number'" class="ana__conf">
         模型自评把握度 {{ (analysis.data.confidence * 100).toFixed(0) }}%
         <span class="ana__conf-hint">（低把握度时请务必人工复核）</span>
@@ -1187,6 +1258,93 @@ function clearChosen(): void {
   background: var(--rw-warn-l);
   color: var(--rw-warn);
   font-size: 11.5px;
+}
+
+/* 毒性与防护要点：逐物料的卡片列表 */
+.ana__tox {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ana__tox-item {
+  padding: 8px 10px;
+  border: 1px solid var(--rw-border);
+  border-radius: 6px;
+  background: var(--rw-surface-2);
+}
+
+.ana__tox-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ana__tox-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--rw-text);
+  overflow-wrap: anywhere;
+}
+
+.ana__tox-role {
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--rw-surface-3);
+  color: var(--rw-text-3);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+/* 风险等级徽标：高=红 / 中=琥珀 / 低=绿；未识别等级不套类，走中性灰 */
+.ana__tox-risk {
+  margin-left: auto;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--rw-text-3);
+  background: var(--rw-surface-3);
+}
+
+.ana__tox-risk.is-high {
+  color: var(--rw-bad);
+  background: var(--rw-bad-l);
+}
+
+.ana__tox-risk.is-mid {
+  color: var(--rw-warn);
+  background: var(--rw-warn-l);
+}
+
+.ana__tox-risk.is-low {
+  color: var(--rw-ok);
+  background: var(--rw-ok-l);
+}
+
+.ana__tox-body {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  gap: 3px 10px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.ana__tox-body dt {
+  color: var(--rw-text-3);
+}
+
+.ana__tox-body dd {
+  margin: 0;
+  color: var(--rw-text);
+  overflow-wrap: anywhere;
 }
 
 .ana__conf {

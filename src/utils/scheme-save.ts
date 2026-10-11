@@ -12,7 +12,7 @@ type WsStore = ReturnType<typeof useWorkspaceStore>;
  *      入口就得落在顶部栏里。
  * 两处若各写一份，起名文案 / 默认名 / 校验迟早分叉。
  */
-export async function promptSaveScheme(store: WsStore): Promise<void> {
+async function promptSaveScheme(store: WsStore): Promise<void> {
   if (!store.rootId) {
     ElMessage.warning('还没有路线可保存，请先设定目标分子并拆几步');
     return;
@@ -33,3 +33,5 @@ export async function promptSaveScheme(store: WsStore): Promise<void> {
     /* 用户取消 */
   }
 }
+
+export { promptSaveScheme };

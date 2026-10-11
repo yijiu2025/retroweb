@@ -42,7 +42,7 @@ const MAX_PERSIST = 400;
 /** CAS 登记号的标准形态：2~7 位-2 位-1 位（校验位） */
 const CAS_RE = /^\d{2,7}-\d{2}-\d$/;
 
-export interface CasInfo {
+interface CasInfo {
   /** CAS 登记号，如 `50-78-2` */
   cas: string;
   /** PubChem CID（点进详情页用） */
@@ -52,7 +52,7 @@ export interface CasInfo {
 }
 
 /** `undefined` = 还没查到；`null` = 查过、确实没有 */
-export type CasState = CasInfo | null | undefined;
+type CasState = CasInfo | null | undefined;
 
 /** 查到 CAS 的结果（响应式 + 落盘） */
 const known = ref<Record<string, CasInfo>>(loadPersisted());
@@ -72,7 +72,7 @@ let draining = false;
  * 读查询结果（模板里直接用）。
  * 读 `known` / `absent` 即建立响应式依赖 ⇒ 查完自动重渲染。
  */
-export function casState(smiles: string): CasState {
+function casState(smiles: string): CasState {
   if (!smiles) return undefined;
   const hit = known.value[smiles];
   if (hit) return hit;
@@ -81,12 +81,12 @@ export function casState(smiles: string): CasState {
 }
 
 /** PubChem 上按结构检索的页面 —— 「在哪里可以查 CAS」的直接答案 */
-export function pubchemUrl(smiles: string): string {
+function pubchemUrl(smiles: string): string {
   return `https://pubchem.ncbi.nlm.nih.gov/#query=${encodeURIComponent(smiles)}`;
 }
 
 /** PubChem 化合物详情页（点 CAS 号就去这里） */
-export function cidUrl(cid: number): string {
+function cidUrl(cid: number): string {
   return `https://pubchem.ncbi.nlm.nih.gov/compound/${cid}`;
 }
 
@@ -94,7 +94,7 @@ export function cidUrl(cid: number): string {
  * 排队查一个 SMILES（幂等：已查过 / 已在队列里的直接返回）。
  * 组件对自己的 SMILES 各调一次即可，去重全交给这里。
  */
-export function requestCas(smiles: string): void {
+function requestCas(smiles: string): void {
   if (!smiles || casState(smiles) !== undefined || pending.has(smiles)) return;
   pending.add(smiles);
   queue.push(smiles);
@@ -102,7 +102,7 @@ export function requestCas(smiles: string): void {
 }
 
 /** 批量排队 */
-export function requestCasMany(list: readonly string[]): void {
+function requestCasMany(list: readonly string[]): void {
   for (const s of list) requestCas(s);
 }
 
@@ -218,3 +218,7 @@ function persist(): void {
     }
   }, 400);
 }
+
+export { casState, pubchemUrl, cidUrl, requestCas, requestCasMany };
+
+export type { CasInfo, CasState };

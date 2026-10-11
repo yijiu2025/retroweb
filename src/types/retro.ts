@@ -9,9 +9,9 @@
  *    从前所有模型共用 `loaded`，两个模型都显示「已加载」，实际只有一个真的加载了，
  *    另一个一预测就失败。现在没加载的就是 `idle`，点一下才后启动。
  */
-export type ModelState = 'ready' | 'loading' | 'failed' | 'idle' | 'unavailable';
+type ModelState = 'ready' | 'loading' | 'failed' | 'idle' | 'unavailable';
 
-export interface RetroModel {
+interface RetroModel {
   key: string;
   label: string;
   /** 模型文件在不在（`false` ⇒ state 必为 `unavailable`） */
@@ -31,7 +31,7 @@ export interface RetroModel {
  * 🔴 它和 API 服务（:8000）是**两个进程**：API 秒起，模型在它后面慢慢加载。
  *    所以「API 起来了」不等于「模型能用了」—— 这个对象就是那道区分。
  */
-export interface ModelServiceInfo {
+interface ModelServiceInfo {
   /** HTTP 通 = true。只读 state 文件时为 false（加载早期就是这种） */
   running: boolean;
   /** `stopped | idle | loading | ready | failed` */
@@ -45,6 +45,11 @@ export interface ModelServiceInfo {
   elapsed?: number | null;
   /** 上次加载完成耗时（秒） */
   load_seconds?: number | null;
+  /**
+   * 加载进度（0~100，**估算**）。后端三个阶段（import→30 / model→88 / rules→99）
+   * 给锚点 + elapsed 插值，100 只属于 ready。老后端不返回 ⇒ 前端回落成"阶段文案 + 秒数"。
+   */
+  progress?: number | null;
   /** 状态是怎么读到的：http（权威）/ file（加载早期）/ none */
   source?: 'http' | 'file' | 'none' | string;
 }
@@ -57,7 +62,7 @@ export interface ModelServiceInfo {
  *
  * 状态取值与 `ModelState` 同构（unavailable / idle / loading / ready / failed）。
  */
-export interface ForwardModelInfo {
+interface ForwardModelInfo {
   key: string;
   label: string;
   exists: boolean;
@@ -70,7 +75,7 @@ export interface ForwardModelInfo {
   load_seconds?: number | null;
 }
 
-export interface ModelsResponse {
+interface ModelsResponse {
   ok: boolean;
   models: RetroModel[];
   /** 模型服务概览（老后端没有这个字段 ⇒ 可选） */
@@ -85,7 +90,7 @@ export interface ModelsResponse {
 }
 
 /** /api/parse 成功 */
-export interface ParseSuccess {
+interface ParseSuccess {
   ok: true;
   smiles: string;
   kind: string;
@@ -96,7 +101,7 @@ export interface ParseSuccess {
 }
 
 /** /api/parse 失败（带人话诊断 + 一键修复候选） */
-export interface ParseFailure {
+interface ParseFailure {
   ok: false;
   kind?: string;
   error?: string;
@@ -105,7 +110,7 @@ export interface ParseFailure {
   suggestions?: ParseSuggestion[];
 }
 
-export interface ParseSuggestion {
+interface ParseSuggestion {
   label: string;
   smiles: string;
   valid: boolean;
@@ -113,12 +118,12 @@ export interface ParseSuggestion {
 }
 
 /** 结构解析结果：成功 / 失败二选一（前端 RDKit 与后端 /api/parse 形状一致） */
-export type ParseResult = ParseSuccess | ParseFailure;
+type ParseResult = ParseSuccess | ParseFailure;
 
-export type ProbLevel = 'high' | 'mid' | 'low';
+type ProbLevel = 'high' | 'mid' | 'low';
 
 /** 一次 /api/predict 的一个候选反应 */
-export interface PredictCandidate {
+interface PredictCandidate {
   rank: number;
   /** 前体（反应物侧）SMILES，多组分用 `.` 连接 */
   precursors: string;
@@ -133,7 +138,7 @@ export interface PredictCandidate {
   level: ProbLevel;
 }
 
-export interface PredictOk {
+interface PredictOk {
   ok: true;
   product: string;
   model: string;
@@ -142,24 +147,24 @@ export interface PredictOk {
   infer_seconds: number;
 }
 
-export interface PredictErr {
+interface PredictErr {
   ok: false;
   error?: string;
   reasons?: string[];
   suggestions?: ParseSuggestion[];
 }
 
-export type PredictResult = PredictOk | PredictErr;
+type PredictResult = PredictOk | PredictErr;
 
 /** 后端 search 任务返回的一条合成路线（Retro* 一次搜到底的结果） */
-export interface SearchRouteStep {
+interface SearchRouteStep {
   product: string;
   reactants: string[];
   reactants_joined: string;
   probability: number | null;
 }
 
-export interface SearchRoute {
+interface SearchRoute {
   steps: SearchRouteStep[];
   num_steps: number;
   total_probability: number | null;
@@ -167,7 +172,7 @@ export interface SearchRoute {
 }
 
 /** kind=search 的 job 成功结果 */
-export interface SearchOk {
+interface SearchOk {
   ok: true;
   target: string;
   routes: SearchRoute[];
@@ -208,7 +213,7 @@ export interface SearchOk {
  *    让 HTTP 挂在那儿等，前端只看到一个转圈，也分不清是卡死还是在正常加载。
  *    拿到这个返回后应当继续轮询 `/api/models`，直到该模型 `state === 'ready'`。
  */
-export interface LoadModelOk {
+interface LoadModelOk {
   ok: boolean;
   /** 实际开始加载的模型 key（不传时由后端按 RETRO_PRELOAD / 第一个可用的补上） */
   model?: string;
@@ -224,7 +229,7 @@ export interface LoadModelOk {
 }
 
 /** `POST /api/model-service/<action>` 的返回（start / stop / restart） */
-export interface ModelServiceActionOk {
+interface ModelServiceActionOk {
   ok: boolean;
   action?: string;
   model?: string;
@@ -239,7 +244,7 @@ export interface ModelServiceActionOk {
  * 🔴 但它**不需要重启模型服务**（正向模型是纯 transformer，构造时不 spawn 规则
  *    子进程 ⇒ 可热挂），所以没有 `restarted` 字段，也不会把逆向模型踢掉。
  */
-export interface LoadForwardOk {
+interface LoadForwardOk {
   ok: boolean;
   /** 实际开始加载的正向模型 key */
   key?: string;
@@ -254,10 +259,10 @@ export interface LoadForwardOk {
 
 // ---------- 后台任务（jobhub） ----------
 // 把「同步长任务」改造成可查询、可取消、带阶段时间线与实时日志的 job。
-export type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
-export type JobStageState = 'running' | 'done' | 'skipped' | 'failed';
+type JobState = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+type JobStageState = 'running' | 'done' | 'skipped' | 'failed';
 
-export interface JobStage {
+interface JobStage {
   key: string;
   label: string;
   detail: string;
@@ -268,7 +273,7 @@ export interface JobStage {
   weight: number;
 }
 
-export interface JobLog {
+interface JobLog {
   seq: number;
   /** 相对任务开始的时间（秒） */
   t: number;
@@ -276,7 +281,7 @@ export interface JobLog {
   text: string;
 }
 
-export interface JobSnapshot {
+interface JobSnapshot {
   ok: boolean;
   job_id: string;
   kind: string;
@@ -300,14 +305,14 @@ export interface JobSnapshot {
   error_payload?: PredictErr;
 }
 
-export interface JobCreateResponse {
+interface JobCreateResponse {
   ok: boolean;
   job_id: string;
   error?: string;
 }
 
 /** 前端持有的「某节点正在跑的 job」快照（驱动进度面板渲染） */
-export interface JobProgress {
+interface JobProgress {
   jobId: string;
   state: JobState;
   progress: number;
@@ -322,7 +327,7 @@ export interface JobProgress {
 // ---------- 大模型「工艺分析」 ----------
 
 /** RDKit 算出来的确定性质量信息（不交给大模型算） */
-export interface MassRow {
+interface MassRow {
   smiles: string;
   ok: boolean;
   error?: string;
@@ -342,13 +347,13 @@ export interface MassRow {
   aromatic_rings?: number;
 }
 
-export interface MassInfo {
+interface MassInfo {
   rows: MassRow[];
   by_smiles: Record<string, MassRow>;
 }
 
 /** 一步投料 */
-export interface DoseRow {
+interface DoseRow {
   seq?: number;
   mode?: string;
   reagent?: string;
@@ -357,7 +362,7 @@ export interface DoseRow {
 }
 
 /** 可能的副产物 */
-export interface SideProduct {
+interface SideProduct {
   name?: string;
   source?: string;
   mz?: string;
@@ -365,14 +370,14 @@ export interface SideProduct {
 }
 
 /** 机理里的一个基元步骤（电子转移 + 成断键） */
-export interface MechanismStep {
+interface MechanismStep {
   seq?: number;
   step?: string;
   detail?: string;
 }
 
 /** 机理里的中间体 / 过渡态 */
-export interface MechanismIntermediate {
+interface MechanismIntermediate {
   name?: string;
   note?: string;
 }
@@ -384,7 +389,7 @@ export interface MechanismIntermediate {
  *    真正要回答的是「电子怎么走、中间体是什么、哪一步慢、选择性从哪来」。
  *    后端 prompt 里也写死了这条（硬性要求 7），并要求机理与投料顺序自洽。
  */
-export interface StepMechanism {
+interface StepMechanism {
   /** 机理类型，如 亲核加成-消除（经四面体中间体） */
   type?: string;
   steps?: MechanismStep[];
@@ -402,7 +407,7 @@ export interface StepMechanism {
  *
  * 与 `conditions.workup` 的分工：后者是**一句话概览**，这里要**能照着做**的逐步细节。
  */
-export interface StepWorkup {
+interface StepWorkup {
   /** 淬灭：加入什么、温度、放热与产气风险 */
   quench?: string;
   /** 萃取 / 分液：溶剂、次数、水相 pH 如何调节 */
@@ -427,7 +432,7 @@ export interface StepWorkup {
  * 🔴 logP / TPSA / 氢键供受体等**确定性数值**由后端 RDKit 算好（见 `computed`），
  *    模型只做解读（估 Rf、给洗脱剂梯度），不在 JSON 里另造数值。
  */
-export interface StepTlc {
+interface StepTlc {
   /** 产物在硅胶板上的估算 Rf 范围 + 展开剂，如 "0.3~0.5（PE:EA=4:1）" */
   rf_est?: string;
   /** 柱层析洗脱剂系统与梯度（体积比），如 "PE 冲低极性杂质 → PE:EA=10:1→4:1" */
@@ -440,8 +445,32 @@ export interface StepTlc {
   note?: string;
 }
 
+/**
+ * 单条「毒性与防护要点」—— 与 `safety`（安全与放大提示）分工不同：
+ * `safety` 关注放热 / 产气 / 压力 / 放大失控等**过程安全**；
+ * `toxicity` 关注**物质本身的毒性**（哪个原料 / 溶剂 / 试剂毒、怎么防、能否替代）。
+ */
+interface StepToxicityItem {
+  /** 物质名（原料 / 溶剂 / 试剂 / 催化剂，尽量用常用中文名或英文缩写 + CAS 可选） */
+  name?: string;
+  /** 在本步中的角色：原料 / 溶剂 / 试剂 / 催化剂 / 副产物 */
+  role?: string;
+  /** 危害类别与 GHS 提示（致癌 / 生殖毒性 / 肝肾靶器官 / 腐蚀 / 致敏…） */
+  hazard?: string;
+  /** 主要暴露途径（吸入蒸气 / 皮肤接触 / 眼睛 / 食入） */
+  exposure?: string;
+  /** 风险等级：高 / 中 / 低 */
+  risk_level?: string;
+  /** 必须的防护措施（通风橱 / 手套材质 / 呼吸防护 / 监测 / 禁止事项） */
+  protection?: string;
+  /** 可替代的更安全选项（换溶剂 / 换试剂 / 降浓度；无则写 无） */
+  substitute?: string;
+  /** 受控 / 剧毒化学品管理、废液处置等合规要点（无则留空） */
+  regulation?: string;
+}
+
 /** 大模型返回的结构化工艺分析（字段全部可选 —— 模型可能缺项，缺了就不渲染） */
-export interface StepAnalysisData {
+interface StepAnalysisData {
   summary?: string;
   reaction_type?: string;
   mechanism?: StepMechanism;
@@ -455,11 +484,14 @@ export interface StepAnalysisData {
   byproducts?: SideProduct[];
   lcms?: { mz_theoretical?: string; adduct?: string; note?: string };
   nmr?: { h1?: string; c13?: string; note?: string };
+  /** 安全与放大提示（过程安全：放热 / 产气 / 压力 / 失控） */
   safety?: string[];
+  /** 毒性与防护要点（物质毒性：原料 / 溶剂的危害类别、暴露途径、防护与替代） */
+  toxicity?: StepToxicityItem[];
   confidence?: number;
 }
 
-export type AnalysisStatus = 'idle' | 'streaming' | 'done' | 'failed';
+type AnalysisStatus = 'idle' | 'streaming' | 'done' | 'failed';
 
 /**
  * 一次「追问」的问答 —— 挂在那份工艺分析上（随会话一起落盘）。
@@ -467,7 +499,7 @@ export type AnalysisStatus = 'idle' | 'streaming' | 'done' | 'failed';
  * 追问是**带上下文**的：后端会把这步反应的产物/前体/路线上下文 + 已生成的分析 +
  * 下面的历史问答一起发给模型，所以模型能接着前文答，而不是每次从零开始。
  */
-export interface StepFollowup {
+interface StepFollowup {
   id: string;
   /** 用户问的 */
   q: string;
@@ -487,7 +519,7 @@ export interface StepFollowup {
  *
  * 字段名与后端 CONDITIONS_SYSTEM 的 JSON 结构一一对应，全部可选（模型可能漏字段）。
  */
-export interface ConditionOption {
+interface ConditionOption {
   /** 方案编号 A / B / C…（同一份枚举内唯一），前端选中它回传给分析 */
   id: string;
   /** 简短方案名，如「低温慢加 · DCM 体系」 */
@@ -515,7 +547,7 @@ export interface ConditionOption {
 }
 
 /** 一次候选条件枚举的结果（模型原始输出抽成 JSON 后归一化） */
-export interface ConditionsResult {
+interface ConditionsResult {
   reaction_type?: string;
   /** 这一步为什么会有多套条件：最关键的变量 */
   key_variable?: string;
@@ -527,7 +559,7 @@ export interface ConditionsResult {
 }
 
 /** 一次候选条件枚举的运行态（与 StepAnalysis 同构，前端复用同一套流式解析） */
-export interface StepConditions {
+interface StepConditions {
   status: 'streaming' | 'done' | 'failed';
   raw: string;
   reasoning?: string;
@@ -543,7 +575,7 @@ export interface StepConditions {
  * 一步反应的 AI 工艺分析（挂在节点上，按 reactionId 存 ⇒ 天然「结果保留」）。
  * `raw` 是模型原始输出（流式期间实时追加），`data` 是流结束后抽出来的结构化结果。
  */
-export interface StepAnalysis {
+interface StepAnalysis {
   reactionId: string;
   status: AnalysisStatus;
   /** 模型原始输出（流式期间不断变长，可折叠查看） */
@@ -566,7 +598,7 @@ export interface StepAnalysis {
 }
 
 /** 发起一次工艺分析的请求体 */
-export interface AnalyzeRequest {
+interface AnalyzeRequest {
   product: string;
   precursors: string[];
   probability?: number;
@@ -588,7 +620,7 @@ export interface AnalyzeRequest {
 }
 
 /** 发起一次「候选反应条件枚举」的请求体（上下文与 AnalyzeRequest 完全一致） */
-export interface ConditionsRequest {
+interface ConditionsRequest {
   product: string;
   precursors: string[];
   probability?: number;
@@ -599,7 +631,7 @@ export interface ConditionsRequest {
 }
 
 /** 发起一次「追问」的请求体 —— 带着这一步反应的上下文，问它的其他问题 */
-export interface FollowupRequest {
+interface FollowupRequest {
   product: string;
   precursors: string[];
   probability?: number;
@@ -617,7 +649,7 @@ export interface FollowupRequest {
  * 一条「错误反馈」—— 用户做实验后发现预测与实际偏差较大，把「预测值 vs 实测值」记下来。
  * 后端落盘到 feedback.jsonl，后续可用来微调 / 蒸馏，让模型的点板、收率、条件等预测越用越准。
  */
-export interface FeedbackEntry {
+interface FeedbackEntry {
   /** 反馈类型：tlc（点板/过柱）/ yield（收率）/ condition（条件）… */
   kind?: string;
   /** 目标分子（整条路线上下文，可选） */
@@ -640,15 +672,20 @@ export interface FeedbackEntry {
   module?: string;
 }
 
-export interface FeedbackList {
+interface FeedbackList {
   ok: boolean;
   count: number;
   items: FeedbackEntry[];
   error?: string;
 }
 
-/** 可勾选的分析模块 key（与后端 _MODULE_FIELDS 对齐） */
-export type AnalysisModuleKey =
+/**
+ * 可勾选的分析模块 key（与后端 `_MODULE_FIELDS` 对齐，**顺序即展示顺序**）。
+ *
+ * 🔴 加模块必须**两侧同改**：本联合类型 + `stores/parts/shared.ts` 的两个常量
+ *    ↔ 后端 `F:/retrochimera/web/llm_prompts.py` 的 `_MODULE_FIELDS`（+ `_SYSTEM` 的 JSON 骨架）。
+ */
+type AnalysisModuleKey =
   | 'summary'
   | 'mechanism'
   | 'order'
@@ -659,9 +696,10 @@ export type AnalysisModuleKey =
   | 'lcms'
   | 'nmr'
   | 'tlc'
-  | 'safety';
+  | 'safety'
+  | 'toxicity';
 
-export interface LlmStatus {
+interface LlmStatus {
   ok: boolean;
   configured: boolean;
   /** 当前激活的端点配置（多套配置并存时，用来辨认「现在用的是哪一套」） */
@@ -680,7 +718,7 @@ export interface LlmStatus {
 }
 
 /** /api/llm/status?probe=1 —— 真验证 key + 模型是否可用 */
-export interface LlmProbe {
+interface LlmProbe {
   ok: boolean;
   verified: boolean;
   /** 验的是哪一套端点配置 */
@@ -694,7 +732,7 @@ export interface LlmProbe {
 }
 
 /** key 池里单个 key 的状态（设置面板展示用） */
-export interface LlmKeyState {
+interface LlmKeyState {
   /** 脱敏串：sk-L7w15****ab3f。回传保存时含 `*` = 保留原 key */
   masked: string;
   /** active=使用中 / cooldown=限流冷却（自动恢复）/ bad=失效 / idle=备用 */
@@ -718,7 +756,7 @@ export interface LlmKeyState {
  * 配 MiMo 的模型名，都是无效组合。分开存的时候，换供应商要挨个改三处，改漏一处就得到
  * 一个「看着配好了、一调就 401/404」的状态。现在切换只动一个 id。
  */
-export interface LlmProfile {
+interface LlmProfile {
   id: string;
   name: string;
   base_url: string;
@@ -736,7 +774,7 @@ export interface LlmProfile {
 }
 
 /** GET /api/llm/settings —— 全部端点配置 + 当前激活那套的展开字段 */
-export interface LlmSettings {
+interface LlmSettings {
   ok: boolean;
   active_profile: string;
   profiles: LlmProfile[];
@@ -753,7 +791,7 @@ export interface LlmSettings {
 }
 
 /** 提交一套端点配置：api_keys 元素含 `*` = 保留**该套**原 key，明文 = 新增 */
-export interface LlmProfilePayload {
+interface LlmProfilePayload {
   id: string;
   name: string;
   base_url: string;
@@ -767,7 +805,7 @@ export interface LlmProfilePayload {
 }
 
 /** POST /api/llm/settings —— 整包提交（新建 / 修改 / 删除都走它） */
-export interface LlmSettingsPayload {
+interface LlmSettingsPayload {
   profiles?: LlmProfilePayload[];
   active_profile?: string;
   /** 兼容形态：只改当前激活配置的这几个扁平字段 */
@@ -785,7 +823,7 @@ export interface LlmSettingsPayload {
  * 给 `id` = 已保存的那套；给 `base_url` + `api_keys` = 还没保存的草稿
  * （新建端点时要先看看有哪些模型可选，否则只能盲填模型名）。
  */
-export interface LlmProfileRef {
+interface LlmProfileRef {
   id?: string;
   base_url?: string;
   model?: string;
@@ -793,7 +831,7 @@ export interface LlmProfileRef {
 }
 
 /** /api/llm/models —— 该 key 在 /v1/models 里能看到的模型（不等于套餐内可用） */
-export interface LlmModels {
+interface LlmModels {
   ok: boolean;
   models: string[];
   current?: string;
@@ -803,7 +841,7 @@ export interface LlmModels {
 }
 
 /** SSE 事件（/api/llm/analyze/stream） */
-export type AnalyzeStreamEvent =
+type AnalyzeStreamEvent =
   | { type: 'meta'; model: string; computed: MassInfo }
   /** 推理模型的思考增量（`deepseek-v4-pro` 等会先吐一大段）—— 不显示的话界面像卡死 */
   | { type: 'thinking'; text: string }
@@ -822,7 +860,7 @@ export type AnalyzeStreamEvent =
   | { type: 'error'; error: string };
 
 /** SSE 事件（/api/llm/conditions/stream）—— 与 AnalyzeStreamEvent 同构，只有 done 负载不同 */
-export type ConditionsStreamEvent =
+type ConditionsStreamEvent =
   | { type: 'meta'; model: string; computed: MassInfo }
   | { type: 'thinking'; text: string }
   | { type: 'thinking_end'; chars: number }
@@ -841,12 +879,12 @@ export type ConditionsStreamEvent =
 
 // ---------- 工作台数据模型 ----------
 
-export type MolRole = 'target' | 'intermediate' | 'starting';
+type MolRole = 'target' | 'intermediate' | 'starting';
 
-export type MolStatus = 'idle' | 'loading' | 'expanded' | 'failed' | 'terminated';
+type MolStatus = 'idle' | 'loading' | 'expanded' | 'failed' | 'terminated';
 
 /** 一行 = 一个化合物 */
-export interface MolNode {
+interface MolNode {
   id: string;
   smiles: string;
   role: MolRole;
@@ -909,7 +947,7 @@ export interface MolNode {
  * 🔴 `Reaction.id` 是**确定性**的（由 nodeId + 前体组合哈希而来，见 stores/workspace.reactionIdFor），
  *    所以同一次分析的候选在多次运行间 id 稳定 ⇒ 切换 runs 时已采纳的选择不会丢。
  */
-export interface AnalysisRun {
+interface AnalysisRun {
   id: string;
   at: number;
   model: string;
@@ -926,7 +964,7 @@ export interface AnalysisRun {
  * 同一个起始原料（同一个目标分子）下可以存多条方案，随时切换显示 / 横向对比，
  * 这就是「切换显示同一个起始原料的多条路线」。
  */
-export interface RouteScheme {
+interface RouteScheme {
   id: string;
   name: string;
   createdAt: number;
@@ -953,10 +991,10 @@ export interface RouteScheme {
  * - `model`（缺省） = 单步预测模型给出的；
  * - `manual` = 用户在「编辑这一步」里手工指定的前体组合。
  */
-export type ReactionOrigin = 'model' | 'manual';
+type ReactionOrigin = 'model' | 'manual';
 
 /** 一次单步预测的一个候选反应 */
-export interface Reaction {
+interface Reaction {
   id: string;
   productNodeId: string;
   rank: number;
@@ -986,12 +1024,28 @@ export interface Reaction {
 }
 
 /** 运行参数 */
-export interface RunParams {
+/**
+ * 多步拆分（自动往下拆）用的搜索算法。
+ *
+ * 🔴 取值必须与后端 `model_runtime.SEARCH_ALGORITHMS` 的 key **逐字一致** ——
+ *    后端是唯一判据地，非法值会被静默退回默认（retro_star），前端要是没跟上，
+ *    下拉里选了实际跑的是别的算法，用户完全无从察觉。
+ *    MCTS / PDVN-MCTS 不在其中：它们需要 policy 模型，缺训练产物起不来。
+ */
+type SearchAlgorithm = 'retro_star' | 'bfs';
+
+interface RunParams {
   model: string;
   /** 每步取几个候选（1~20） */
   numResults: number;
   /** 自动拆分的最大深度 */
   maxDepth: number;
+  /**
+   * 自动往下拆用的搜索算法。
+   *
+   * 🔴 **只影响多步拆分**（kind=search）；手动单步展开走 `/api/predict`，不过搜索。
+   */
+  searchAlgorithm: SearchAlgorithm;
   /** 重原子数 ≤ 此值即视为可购买起始物料 */
   heavyAtomThreshold: number;
   /** 用户指定的起始物料（canonical SMILES 列表） */
@@ -1016,7 +1070,7 @@ export interface RunParams {
  *    所以列表渲染必须用 `nodeId` 作 key —— 用 step 会在多分支时撞重复 key
  *    （Vue 会告警，且同一层的第二个分支可能渲染不出来）。
  */
-export interface RouteStep {
+interface RouteStep {
   step: number;
   /** 同一层内的分支序号（从 1 起），仅用于展示区分 */
   branchNo: number;
@@ -1040,7 +1094,7 @@ export interface RouteStep {
 }
 
 /** 历史任务快照 */
-export interface HistoryTask {
+interface HistoryTask {
   id: string;
   name: string;
   target: string;
@@ -1054,10 +1108,10 @@ export interface HistoryTask {
  * 任务会话：一次逆合成工作（一个目标分子 + 它的整棵路线树）。
  * 持久化到 localStorage，刷新网页后能恢复「未完成 / 进行中」的任务。
  */
-export type SessionStatus = 'running' | 'incomplete' | 'done';
+type SessionStatus = 'running' | 'incomplete' | 'done';
 
 /** 可序列化、可恢复的工作台快照 */
-export interface WorkspaceSnapshot {
+interface WorkspaceSnapshot {
   rootId: string | null;
   nodes: Record<string, MolNode>;
   params: RunParams;
@@ -1069,7 +1123,7 @@ export interface WorkspaceSnapshot {
   currentSchemeId?: string | null;
 }
 
-export interface Session {
+interface Session {
   id: string;
   name: string;
   target: string;
@@ -1084,6 +1138,12 @@ export interface Session {
    *    判据见 `sessionSignature()`：签名没变就不刷新。
    */
   updatedAt: number;
+  /**
+   * 任务**创建**（开启）时间 —— 与 `updatedAt`（内容变化）是两回事，
+   *    「目标分析」主页展示的「开启时间」用它。
+   *    🔴 可选：老数据（升级前落盘的会话）没有它 ⇒ 展示端 fallback 到 `updatedAt`。
+   */
+  createdAt?: number;
   snapshot: WorkspaceSnapshot;
   /**
    * 内容签名（落盘一起带走）。
@@ -1097,7 +1157,7 @@ export interface Session {
 /* ---------- LLM 双来源（Node 后端 /retroweb/v1，绑定用户） ---------- */
 
 /** LLM 调用用哪个来源：用户自建 or 系统官方 */
-export type LlmSource = 'user' | 'official';
+type LlmSource = 'user' | 'official';
 
 /**
  * 用户自建的一条端点配置（Node 后端 /llm/profiles 返回）。
@@ -1105,7 +1165,7 @@ export type LlmSource = 'user' | 'official';
  * 🔴 与 Python 直连路径的 `LlmProfile` 是**两套**：这里 key 只回单个掩码
  *    `key_masked`（保尾部、不暴露数量），不含多 Key 轮换状态。
  */
-export interface NodeLlmProfile {
+interface NodeLlmProfile {
   id: number;
   owner: 'user' | 'system';
   name: string;
@@ -1126,7 +1186,7 @@ export interface NodeLlmProfile {
  * 🔴 只含 name / model / quota / enabled，**不含 token 数量与值，也不含 base_url**
  *    —— base_url 是官方凭据的一部分，不出后端。
  */
-export interface OfficialLlm {
+interface OfficialLlm {
   id: string;
   name: string;
   model: string;
@@ -1136,8 +1196,90 @@ export interface OfficialLlm {
 }
 
 /** 用户设置（含 llm_source），Node 后端 /settings 返回 */
-export interface RetrowebSettings {
+interface RetrowebSettings {
   /** LLM 调用用哪个来源（默认 'user'） */
   llm_source?: LlmSource;
   [key: string]: unknown;
 }
+
+export type {
+  ModelState,
+  RetroModel,
+  ModelServiceInfo,
+  ForwardModelInfo,
+  ModelsResponse,
+  ParseSuccess,
+  ParseFailure,
+  ParseSuggestion,
+  ParseResult,
+  ProbLevel,
+  PredictCandidate,
+  PredictOk,
+  PredictErr,
+  PredictResult,
+  SearchRouteStep,
+  SearchRoute,
+  SearchOk,
+  LoadModelOk,
+  ModelServiceActionOk,
+  LoadForwardOk,
+  JobState,
+  JobStageState,
+  JobStage,
+  JobLog,
+  JobSnapshot,
+  JobCreateResponse,
+  JobProgress,
+  MassRow,
+  MassInfo,
+  DoseRow,
+  SideProduct,
+  MechanismStep,
+  MechanismIntermediate,
+  StepMechanism,
+  StepWorkup,
+  StepTlc,
+  StepToxicityItem,
+  StepAnalysisData,
+  AnalysisStatus,
+  StepFollowup,
+  ConditionOption,
+  ConditionsResult,
+  StepConditions,
+  StepAnalysis,
+  AnalyzeRequest,
+  ConditionsRequest,
+  FollowupRequest,
+  FeedbackEntry,
+  FeedbackList,
+  AnalysisModuleKey,
+  LlmStatus,
+  LlmProbe,
+  LlmKeyState,
+  LlmProfile,
+  LlmSettings,
+  LlmProfilePayload,
+  LlmSettingsPayload,
+  LlmProfileRef,
+  LlmModels,
+  AnalyzeStreamEvent,
+  ConditionsStreamEvent,
+  MolRole,
+  MolStatus,
+  MolNode,
+  AnalysisRun,
+  RouteScheme,
+  ReactionOrigin,
+  Reaction,
+  SearchAlgorithm,
+  RunParams,
+  RouteStep,
+  HistoryTask,
+  SessionStatus,
+  WorkspaceSnapshot,
+  Session,
+  LlmSource,
+  NodeLlmProfile,
+  OfficialLlm,
+  RetrowebSettings
+};

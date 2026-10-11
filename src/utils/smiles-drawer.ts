@@ -48,7 +48,7 @@ const BOND_UNIT = 24;
 let loader: Promise<void> | null = null;
 
 /** 按需加载 smiles-drawer 脚本（幂等） */
-export function loadSmilesDrawer(): Promise<void> {
+function loadSmilesDrawer(): Promise<void> {
   if (loader) return loader;
   loader = new Promise<void>((resolve, reject) => {
     if (typeof window === 'undefined') {
@@ -72,7 +72,7 @@ export function loadSmilesDrawer(): Promise<void> {
   return loader;
 }
 
-export interface DrawOptions {
+interface DrawOptions {
   /** 单键屏幕像素长度（分子统一才协调） */
   bondPx?: number;
   minPx?: number;
@@ -230,7 +230,7 @@ function fixMaskRegions(svg: SVGSVGElement): void {
  * 把一个 SMILES 画进容器（自动创建并插入 <svg>）。
  * @returns 是否真的画出了图元
  */
-export async function drawSmiles(
+async function drawSmiles(
   container: HTMLElement,
   smiles: string,
   options: DrawOptions = {}
@@ -298,3 +298,7 @@ export async function drawSmiles(
     }, 4000);
   });
 }
+
+export { loadSmilesDrawer, drawSmiles };
+
+export type { DrawOptions };

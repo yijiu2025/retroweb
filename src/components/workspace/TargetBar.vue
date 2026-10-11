@@ -38,11 +38,24 @@ import { promptSaveScheme } from '@/utils/scheme-save';
 import { copyText } from '@/utils/clipboard';
 import MolView from '@/components/mol/MolView.vue';
 import { routePct } from '@/utils/probability';
+import { relativeTime } from '@/utils/time';
 
 const store = useWorkspaceStore();
 const emit = defineEmits<{ preview: [smiles: string] }>();
 
 const root = computed(() => (store.rootId ? store.nodes[store.rootId] : undefined));
+
+/**
+ * 当前任务的「内容最后变化时间」（相对时间，如「6 分钟前」）。
+ *
+ * 🔴 从任务列表条目挪到这里（用户要求）：任务条目只留结构式认分子，
+ *    元信息（SMILES / 时间）归「目标分析」—— 就在本卡正下方，视线不用跳。
+ *    取的是 `updatedAt`（内容变化才刷新，见 Session 类型的注释），不是"最近打开"。
+ */
+const updatedText = computed(() => {
+  const s = store.sessions.find((x) => x.id === store.currentSessionId);
+  return s ? relativeTime(s.updatedAt) : '';
+});
 
 /** 当前这条路线网络的体检结果（步数 / 分支 / 起始物料 / 最深 / 总概率） */
 const cur = computed(() => store.networkStats);
@@ -104,6 +117,7 @@ async function copySmiles(): Promise<void> {
       <span v-if="root.formula"><i>分子式</i>{{ root.formula }}</span>
       <span v-if="root.mw"><i>MW</i>{{ root.mw }}</span>
       <span v-if="root.atoms"><i>重原子</i>{{ root.atoms }}</span>
+      <span v-if="updatedText"><i>更新</i>{{ updatedText }}</span>
     </div>
 
     <button type="button" class="tan__smiles" title="点击复制 SMILES" @click="copySmiles">
@@ -118,9 +132,11 @@ async function copySmiles(): Promise<void> {
         <span class="tan__route-pct" :title="`各步概率连乘：${totalPct}`">{{ totalPct }}</span>
       </div>
 
-      <!-- 当前这条网络的规模：多步 + 分支才是"网" -->
-      <!-- 4 个指标之间加 `·`：200px 宽的一列里，纯空格分隔会糊成"2 步1 分支2/2 物料" -->
-      <div class="tan__route-stats">
+      <!-- 当前这条网络的规模：多步 + 分支才是"网"。
+           🔴 **零步时不渲染**：还没确认任何路线时「0 步 · 0 分支 · 0/1 物料 · 第 0 层」
+              四个零没有信息量，纯占一行（用户报"目标分析太长"的主要来源之一）。
+              4 个指标之间加 `·`：200px 宽的一列里，纯空格分隔会糊成"2 步1 分支2/2 物料" -->
+      <div v-if="cur.steps" class="tan__route-stats">
         <span><b>{{ cur.steps }}</b> 步</span>
         <i aria-hidden="true">·</i>
         <span><b>{{ cur.branches }}</b> 分支</span>
@@ -151,9 +167,10 @@ async function copySmiles(): Promise<void> {
         </li>
       </ul>
 
-      <p v-else class="tan__hint">
-        还没有确认的路线网络 —— 到「<b>逆合成树</b>」里拆出自己满意的多步路线后，点「确认路线网络」。
-        同一个目标可以确认多条网络，在这里切换查看。
+      <!-- 空态：一句话即可（完整引导放 title 悬浮）—— 侧栏 200px 宽，
+           三行说明会把「目标分析」撑得比「最近的任务」还高。 -->
+      <p v-else class="tan__hint" title="到「逆合成树」里拆出满意的多步路线后点「确认路线网络」；同一个目标可以确认多条网络，在这里切换查看。">
+        还没有路线网络 —— 到「<b>逆合成树</b>」确认后显示在这里。
       </p>
 
       <!-- 各步明细：这就是"长路线"本身。
@@ -198,7 +215,7 @@ async function copySmiles(): Promise<void> {
 .tan {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 6px;
   padding: 0 12px;
 }
 
@@ -216,13 +233,15 @@ async function copySmiles(): Promise<void> {
   font-variant-numeric: tabular-nums;
 }
 
-/* 结构缩略图：与卡片同圆角，hover 变品牌色边提示可点 */
+/* 结构缩略图：与卡片同圆角，hover 变品牌色边提示可点。
+   64px —— 侧栏 200px 宽的等比小图足够认出分子（原 78px 偏高，
+   是「目标分析」块竖向过长的来源之一）。 */
 .tan__mol {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 100%;
-  height: 78px;
+  height: 64px;
   padding: 4px;
   border: 1px solid var(--rw-border);
   border-radius: var(--rw-radius-sm);
@@ -303,8 +322,8 @@ async function copySmiles(): Promise<void> {
 .tan__route {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
+  gap: 5px;
+  padding-top: 6px;
   border-top: 1px dashed var(--rw-border);
 }
 

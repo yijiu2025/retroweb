@@ -19,7 +19,7 @@
 import { ElMessage } from 'element-plus';
 
 /** 提示语（都可不传，有默认值）。把三个可变文案集中在这里，调用方只声明差异 */
-export interface CopyOpts {
+interface CopyOpts {
   /** 成功提示 */
   okMsg?: string;
   /** 写剪贴板失败（非安全上下文 / 被拒权限）时的降级提示 */
@@ -28,7 +28,7 @@ export interface CopyOpts {
   emptyMsg?: string;
 }
 
-export async function copyText(
+async function copyText(
   text: string | number | null | undefined,
   opts: CopyOpts = {}
 ): Promise<boolean> {
@@ -46,3 +46,7 @@ export async function copyText(
     return false;
   }
 }
+
+export { copyText };
+
+export type { CopyOpts };

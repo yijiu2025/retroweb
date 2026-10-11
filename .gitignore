@@ -5,13 +5,15 @@ dist-ssr/
 dist-*/
 .vite-dev.log
 .tmp-*.log
+
+# 🔴 env 文件只认三个，且全部入库（.env.example / .env.development /
+#    .env.production.example）—— 它们只含"地址"与"开关"，没有密钥。
+#    `*.local` 覆盖机制**已废弃**（会静默盖掉团队档，见 .env.example 顶部），
+#    这里继续忽略是为了防止有人从旧习惯里把它加回来。
 *.local
 
 # 版式验收探针脚本（playwright 驱动，跑完即弃，不是产品代码）
 .tmp-probe/
-
-# 集成测试的构建产物（npm run test:store）
-tests/.out/
 
 # 编辑器
 .vscode/

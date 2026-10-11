@@ -88,11 +88,44 @@ function allSessions(): void {
  *    任务列表 = **所有**任务（找一条、看它做到哪了、删掉不要的）。
  *    侧栏「最近的任务」只列前 6 条，是"切回上一个活"的捷径，替代不了整页列表。
  */
+/**
+ * 导航图标 —— 内联 SVG path（lucide 风格）。
+ *
+ * 🔴 为什么不用 emoji / Unicode 字符（⌗ ☰ ⟲ ☺）：跨平台字形不一致
+ *    （Windows 会落到 Segoe UI Emoji 渲染成彩色表情），且项目规范明确
+ *    「UI 禁止 emoji 图标，一律图标库或内联 SVG」。
+ *    圆形全部用两段弧拼（`A` 命令），保证整个映射只有 path 一种元素、模板一个 v-for。
+ */
+const NAV_ICON_PATHS: Record<string, string[]> = {
+  workbench: [
+    'M3 3h7v9H3z',
+    'M14 3h7v5h-7z',
+    'M14 12h7v9h-7z',
+    'M3 16h7v5H3z'
+  ],
+  tasks: [
+    'M8 6h13',
+    'M8 12h13',
+    'M8 18h13',
+    'M3 6h.01',
+    'M3 12h.01',
+    'M3 18h.01'
+  ],
+  history: [
+    'M12 3a9 9 0 1 0 .01 0',
+    'M12 7v5l3 2'
+  ],
+  profile: [
+    'M12 4a4 4 0 1 0 .01 0',
+    'M4 21c0-4 4-6 8-6s8 2 8 6'
+  ]
+};
+
 const navItems = [
-  { path: '/', label: '工作台', icon: '⌗' },
-  { path: '/tasks', label: '任务列表', icon: '☰' },
-  { path: '/history', label: '历史记录', icon: '⟲' },
-  { path: '/profile', label: '个人中心', icon: '☺' }
+  { path: '/', label: '工作台', icon: 'workbench' },
+  { path: '/tasks', label: '任务列表', icon: 'tasks' },
+  { path: '/history', label: '历史记录', icon: 'history' },
+  { path: '/profile', label: '个人中心', icon: 'profile' }
 ];
 
 /**
@@ -163,6 +196,10 @@ function onResize(): void {
 onMounted(() => {
   onResize();
   window.addEventListener('resize', onResize);
+  // 🔴 后端就绪检测放在**应用外壳**而非某个视图：标定态（首次进入）也要知道
+  //    后端连没连上、模型就绪没就绪 —— 否则首页看不到任何异常提示。
+  //    loadModels 失败会 setGlobalError ⇒ 首页顶部的提示条据此显示"后端未就绪"。
+  void store.loadModels();
 });
 
 onUnmounted(() => window.removeEventListener('resize', onResize));
@@ -195,7 +232,18 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
           :title="item.label"
           @click="router.push(item.path)"
         >
-          <span class="app__nav-icon">{{ item.icon }}</span>
+          <span class="app__nav-icon" aria-hidden="true">
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path v-for="d in NAV_ICON_PATHS[item.icon]" :key="d" :d="d" />
+            </svg>
+          </span>
           <span v-show="!collapsed">{{ item.label }}</span>
         </button>
       </nav>
@@ -220,6 +268,35 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
       </div>
 
       <div class="app__aside-foot">
+        <!-- 🔴 「运行设置」入口住在侧栏底部（用户要求），**任何页面都在** ——
+             运行参数是全局的（模型也好、拆分约束也好，不跟着路由走），
+             在「任务列表 / 历史记录 / 个人中心」也一样要能改。
+             点开的是挂在**本组件**里的共享弹窗（store.runSettingsOpen），
+             所以它不依赖任何视图存在：即使当前页面压根没有标定面板也能开。
+             （历史上的 `v-if="route.name === 'workspace'"` 是怕「别的页没地方挂弹窗」——
+              弹窗上移到 AppShell 全局层之后这个约束就没了，那条 v-if 只剩副作用：
+              在别的页里设置按钮整个消失，用户以为入口丢了。） -->
+        <button
+          type="button"
+          class="app__settings"
+          title="模型、拆分约束、大模型、条件方案、分析模块、采购询价"
+          @click="store.runSettingsOpen = true"
+        >
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M12 8.6a3.4 3.4 0 1 0 0 6.8 3.4 3.4 0 0 0 0-6.8Z"
+              stroke="currentColor"
+              stroke-width="1.7"
+            />
+            <path
+              d="M19.3 12c0-.5 0-1-.1-1.4l2-1.6-1.9-3.3-2.4 1a7.6 7.6 0 0 0-2.4-1.4L14.1 2h-3.8l-.4 2.6c-.9.3-1.7.8-2.4 1.4l-2.4-1L3.2 8.3l2 1.6a8 8 0 0 0 0 2.8l-2 1.6 1.9 3.3 2.4-1c.7.6 1.5 1 2.4 1.4l.4 2.6h3.8l.4-2.6c.9-.3 1.7-.8 2.4-1.4l2.4 1 1.9-3.3-2-1.6c.1-.4.1-.9.1-1.4Z"
+              stroke="currentColor"
+              stroke-width="1.7"
+              stroke-linejoin="round"
+            />
+          </svg>
+          <span v-show="!collapsed">设置</span>
+        </button>
         <button type="button" class="app__collapse" @click="collapsed = !collapsed">
           <el-icon><component :is="collapsed ? Expand : Fold" /></el-icon>
           <span v-show="!collapsed">收起侧栏</span>
@@ -265,6 +342,24 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
     </div>
 
     <MolPreviewDialog v-model="previewOpen" :smiles="previewSmiles" />
+
+    <!-- 🔴 全局「运行设置」弹窗：挂在这里而不是 TargetSetupPanel ——
+         标定态与路线态**共用同一份**。侧栏底部的设置按钮点开它
+         （store.runSettingsOpen）；若挂进 TargetSetupPanel，路线态下那个组件
+         v-if 卸载，弹窗跟着消失，侧栏按钮就点开没反应（实测踩过）。
+         el-dialog 默认首次打开前不渲染内容 ⇒ 守门脚本先点按钮再断言。 -->
+    <el-dialog
+      v-model="store.runSettingsOpen"
+      title="运行设置"
+      width="min(880px, 94vw)"
+      align-center
+      class="app__run-settings-dialog"
+    >
+      <RunParams />
+      <template #footer>
+        <el-button @click="store.runSettingsOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -332,7 +427,10 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   display: flex;
   flex-direction: column;
   gap: 4px;
-  padding: 14px 10px 10px;
+  /* 🔴 左右 padding = 8px（不是 0）：给导航留出贴边呼吸，同时**与下方任务区、
+     目标分析卡保持一致的内缩量** —— 三块都加同一份 8px 左右 padding，
+     内部各自的 12px 不变 ⇒ 整体统一往里缩、左右都留白，且不破坏上一轮的对齐。 */
+  padding: 14px 8px 10px;
   /* 导航只占自身高度，"最近的任务"才是可伸缩的那一段 */
   flex: 0 0 auto;
 }
@@ -341,12 +439,12 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 9px 12px;
+  padding: 7px 12px;
   border: 0;
   border-radius: var(--rw-radius-sm);
   background: transparent;
   color: var(--rw-text-2);
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 500;
   cursor: pointer;
   text-align: left;
@@ -367,8 +465,16 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 
 .app__nav-icon {
   width: 18px;
-  text-align: center;
-  font-size: 15px;
+  flex: 0 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* SVG 图标与文字行高对齐（与「收起侧栏」按钮同一套 1.5em 规则） */
+.app__nav-icon svg {
+  width: 16px;
+  height: 16px;
 }
 
 .app__aside-foot {
@@ -414,15 +520,17 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   overflow-y: auto;
 }
 
-/* 「最近的任务」：导航之下的第一段（自己不再滚动，交给上面的容器） */
+/* 「最近的任务」：导航之下的第一段（自己不再滚动，交给上面的容器）。
+   左右 8px 与 `.app__nav` 同一份 —— 整体内缩、左右留白，内部 12px 不变。 */
 .app__recent {
-  padding: 10px 0 8px;
+  /* 顶部 16px：与导航分隔线之间留出呼吸（原 10px 偏贴，用户报"密集"） */
+  padding: 16px 8px 10px;
 }
 
 /* 「目标分析」：紧接其后，同一条滚动流里。只留一条分隔线做视觉分段 ——
    不再有自己的滚动与高度上限（`max-height` 一去掉，"两段各占一半"的机制就没了）。 */
 .app__target {
-  padding: 10px 0 8px;
+  padding: 10px 8px 8px;
   border-top: 1px solid var(--rw-border);
 }
 
@@ -455,6 +563,41 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   color: var(--rw-text);
 }
 
+/* 「设置」入口：与「收起侧栏」同族（住在侧栏底部），只是语义是打开共享弹窗 */
+.app__settings {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  border-radius: var(--rw-radius-sm);
+  background: transparent;
+  color: var(--rw-text-3);
+  font-size: 13px;
+  line-height: 1.5;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.app__settings svg {
+  width: 1.5em;
+  height: 1.5em;
+  flex: 0 0 1.5em;
+}
+
+.app__settings:hover {
+  background: var(--rw-surface-2);
+  color: var(--rw-text);
+}
+
+/* 收起态（64px 图标条）时设置图标也居中，与品牌 logo 同一条竖线 */
+.app.is-collapsed .app__settings {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+
 /* ---------- 主区（顶栏 + 下半部分） ---------- */
 .app__body {
   display: flex;
@@ -462,7 +605,6 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   flex: 1;
   min-width: 0;
 }
-
 .app__header {
   display: flex;
   align-items: center;
@@ -578,5 +720,31 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
     --rw-header-h: 52px;
     --rw-content-pad-y: 12px;
   }
+}
+
+/* ---------- 全局「运行设置」弹窗里的 RunParams ---------- */
+/* 弹窗标题已叫「运行设置」，RunParams 自带卡片头「运行参数」隐藏防重复 */
+.app__run-settings-dialog :deep(.rw-card__head) {
+  display: none;
+}
+
+.app__run-settings-dialog :deep(.rw-card__body) {
+  padding: 0;
+}
+
+/* 弹窗 880 宽：6 组折叠参数按宽度自动分栏。
+   🔴 网格必须落在 `.params__body`（RunParams 卡片体）—— 落外层只有 1 个壳格。 */
+.app__run-settings-dialog :deep(.params__body) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 12px 24px;
+  align-items: start;
+  padding: 2px 2px 0;
+}
+
+/* 弹窗内容超高时内部滚动，footer 关闭按钮不被顶出视口 */
+.app__run-settings-dialog :deep(.el-dialog__body) {
+  max-height: calc(100vh - 220px);
+  overflow: auto;
 }
 </style>

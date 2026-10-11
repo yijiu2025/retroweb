@@ -19,7 +19,7 @@
  * 不在这里重算 —— 统计口径只允许有一个来源。
  */
 import { computed, watch } from 'vue';
-import { ElMessage } from 'element-plus';
+import { ElMessage, ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
 import MolView from '@/components/mol/MolView.vue';
@@ -28,6 +28,7 @@ import CasTag from '@/components/mol/CasTag.vue';
 import { casState, requestCasMany } from '@/utils/pubchem';
 import { copyText } from '@/utils/clipboard';
 import { routePct } from '@/utils/probability';
+import { dateTime, absoluteTime } from '@/utils/time';
 
 const store = useWorkspaceStore();
 const settings = useSettingsStore();
@@ -106,6 +107,44 @@ async function copySmiles(): Promise<void> {
     failMsg: '浏览器不允许自动复制，请手动选中 SMILES 复制'
   });
 }
+
+/* ---------- 任务元信息 + 改名 ---------- */
+
+/** 当前会话（展示「开启时间 / 模型」等元信息） */
+const currentSession = computed(() =>
+  store.sessions.find((s) => s.id === store.currentSessionId)
+);
+
+/** 开启时间：优先 createdAt（创建时刻），老数据 fallback updatedAt。
+ *  显示用「YYYY-MM-DD HH:mm」（短格式不折行），精确到秒的完整值进 title。 */
+const openedText = computed(() => {
+  const s = currentSession.value;
+  if (!s) return '';
+  return dateTime(s.createdAt ?? s.updatedAt);
+});
+const openedFull = computed(() => {
+  const s = currentSession.value;
+  if (!s) return '';
+  return absoluteTime(s.createdAt ?? s.updatedAt);
+});
+
+/** 改名：ElMessageBox.prompt 弹输入框，确认后走 store.renameSession */
+async function renameTask(): Promise<void> {
+  const s = currentSession.value;
+  if (!s) return;
+  try {
+    const { value } = await ElMessageBox.prompt('给这个任务起个名字', '重命名任务', {
+      inputValue: s.name,
+      confirmButtonText: '保存',
+      cancelButtonText: '取消',
+      inputValidator: (v) => (v && v.trim() ? true : '名字不能为空')
+    });
+    store.renameSession(s.id, value);
+    ElMessage.success('已重命名');
+  } catch {
+    /* 用户取消 */
+  }
+}
 </script>
 
 <template>
@@ -113,7 +152,14 @@ async function copySmiles(): Promise<void> {
     <!-- ① 目标分子 -->
     <section class="rw-card ov__target">
       <div class="rw-card__head">
-        <div class="rw-card__title">目标分子</div>
+        <div class="rw-card__title">
+          <span class="ov__task-name" :title="currentSession?.name">{{ currentSession?.name || '目标分子' }}</span>
+          <button type="button" class="ov__rename" title="重命名任务" @click="renameTask">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M11.3 3.1 13 4.8 6 11.8 4 12l.2-2 5.1-6.9Z" />
+            </svg>
+          </button>
+        </div>
         <el-button size="small" type="primary" plain @click="store.openTargetSetup()">切换目标</el-button>
       </div>
       <div class="rw-card__body ov__target-body">
@@ -129,6 +175,10 @@ async function copySmiles(): Promise<void> {
           <span><i>分子式</i>{{ root.formula || '—' }}</span>
           <span><i>分子量</i>{{ root.mw ?? '—' }}</span>
           <span><i>重原子</i>{{ root.atoms ?? '—' }}</span>
+          <!-- 🔴 任务元信息（用户要求：时间等放目标分析主页，不放任务列表）；
+                开启时间占满两列（短格式），完整到秒的值进 title -->
+          <span v-if="openedText" class="ov__prop-wide" :title="`开启时间 ${openedFull}`"><i>开启</i>{{ openedText }}</span>
+          <span v-if="currentSession?.model"><i>模型</i>{{ currentSession.model }}</span>
           <!-- CAS 来自 PubChem（按结构检索）：**查到才有这一格**，查不到就不占位。
                点它去 PubChem 详情页核对 —— 这就是「到哪儿查 CAS」的入口。 -->
           <span v-if="hasCas(root.smiles)"><i>CAS</i><CasTag :smiles="root.smiles" :prefix="false" /></span>
@@ -350,6 +400,49 @@ async function copySmiles(): Promise<void> {
   font-style: normal;
   margin-right: 6px;
   color: var(--rw-text-3);
+}
+
+/* 开启时间占满两列（值较长，塞半列必折行） */
+.ov__prop-wide {
+  grid-column: 1 / -1;
+}
+
+/* 任务名（卡片头左侧）+ 重命名小图标 */
+.ov__task-name {
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ov__rename {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--rw-text-3);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.ov__rename:hover {
+  color: var(--rw-brand);
+  background: var(--rw-surface-3);
+}
+
+.ov__rename svg {
+  width: 12px;
+  height: 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 .ov__smiles {

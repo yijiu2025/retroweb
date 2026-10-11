@@ -5,10 +5,10 @@
 
 **两条起跑线**（这是最容易被搞混的一点）：
 
-| 起跑线 | 走什么 | 语义 |
-| --- | --- | --- |
-| **手动逐步挑** | `POST /api/jobs` `kind=predict` | 一次只拆**一步**，人在候选里挑，采纳后前体各新增一行 |
-| **自动往下拆** | `POST /api/jobs` `kind=search` | 一次**搜到底**（Retro\* 吃满调用预算），返回多条完整路线，再建树 |
+| 起跑线         | 走什么                          | 语义                                                             |
+| -------------- | ------------------------------- | ---------------------------------------------------------------- |
+| **手动逐步挑** | `POST /api/jobs` `kind=predict` | 一次只拆**一步**，人在候选里挑，采纳后前体各新增一行             |
+| **自动往下拆** | `POST /api/jobs` `kind=search`  | 一次**搜到底**（Retro\* 吃满调用预算），返回多条完整路线，再建树 |
 
 两条都会长成同一棵树，只是"谁来挑"不同。早期 README 里那句「刻意**不**调用
 多步搜索」已经不成立 —— 多步搜索现在是正式入口之一。
@@ -35,28 +35,28 @@ npm run dev          # http://localhost:5177
 
 ### 依赖的后端（另开终端）
 
-| 服务 | 地址 | 用途 | 是否必须 |
-| --- | --- | --- | --- |
-| 逆合成模型服务（Flask） | `127.0.0.1:8000` | 见下方接口清单 | ✅ 必需 |
-| 账号服务（Fastify） | `localhost:3000` | `userinfo` / `bind-session` | 仅**真实登录**时需要 |
-| oauth21 登录页 | `localhost:5174` | iframe 登录 UI | 仅**真实登录**时需要 |
-| 大模型 API（OpenAI 兼容） | 外部 | `/api/llm/*` 工艺分析 | 仅**用 AI 分析**时需要 |
+| 服务                      | 地址             | 用途                        | 是否必须               |
+| ------------------------- | ---------------- | --------------------------- | ---------------------- |
+| 逆合成模型服务（Flask）   | `127.0.0.1:8000` | 见下方接口清单              | ✅ 必需                |
+| 账号服务（Fastify）       | `localhost:3000` | `userinfo` / `bind-session` | 仅**真实登录**时需要   |
+| oauth21 登录页            | `localhost:5174` | iframe 登录 UI              | 仅**真实登录**时需要   |
+| 大模型 API（OpenAI 兼容） | 外部             | `/api/llm/*` 工艺分析       | 仅**用 AI 分析**时需要 |
 
 **模型服务接口清单**（`F:\retrochimera\web\app.py`）：
 
-| 路径 | 用途 |
-| --- | --- |
-| `GET /api/models` | 模型就绪矩阵（主模型 / 正向模型各自的加载状态与耗时） |
-| `POST /api/jobs` | **主入口**：`kind=predict`（单步）/ `kind=search`（多步搜到底） |
-| `GET /api/jobs/<job_id>` · `POST /api/jobs/<job_id>/cancel` | 任务轮询与取消 |
-| `POST /api/parse` | 结构解析（**CDXML 专用**：浏览器端 RDKit 读不了 CDXML） |
-| `POST /api/depict` | RDKit 算 2D 坐标，用来把已有结构载入画板 |
-| `POST /api/load` · `POST /api/forward/load` | 加载逆向模型 / **热挂**正向模型（可行性过滤用，不重启服务） |
-| `POST /api/model-service/<action>` | 模型常驻进程的控制（start / stop / restart） |
-| `GET·POST /api/llm/*` | 大模型设置、端点配置、模型列表、分析与 SSE 流式 |
-| `POST /api/feedback` · `GET /api/feedback` | 错误反馈与学习 |
-| `GET /api/_threads` | 线程诊断 |
-| `POST /api/predict` · `POST /api/search` | **旧接口，兼容保留**；新代码统一走 `/api/jobs` |
+| 路径                                                        | 用途                                                            |
+| ----------------------------------------------------------- | --------------------------------------------------------------- |
+| `GET /api/models`                                           | 模型就绪矩阵（主模型 / 正向模型各自的加载状态与耗时）           |
+| `POST /api/jobs`                                            | **主入口**：`kind=predict`（单步）/ `kind=search`（多步搜到底） |
+| `GET /api/jobs/<job_id>` · `POST /api/jobs/<job_id>/cancel` | 任务轮询与取消                                                  |
+| `POST /api/parse`                                           | 结构解析（**CDXML 专用**：浏览器端 RDKit 读不了 CDXML）         |
+| `POST /api/depict`                                          | RDKit 算 2D 坐标，用来把已有结构载入画板                        |
+| `POST /api/load` · `POST /api/forward/load`                 | 加载逆向模型 / **热挂**正向模型（可行性过滤用，不重启服务）     |
+| `POST /api/model-service/<action>`                          | 模型常驻进程的控制（start / stop / restart）                    |
+| `GET·POST /api/llm/*`                                       | 大模型设置、端点配置、模型列表、分析与 SSE 流式                 |
+| `POST /api/feedback` · `GET /api/feedback`                  | 错误反馈与学习                                                  |
+| `GET /api/_threads`                                         | 线程诊断                                                        |
+| `POST /api/predict` · `POST /api/search`                    | **旧接口，兼容保留**；新代码统一走 `/api/jobs`                  |
 
 启动后端（后端在另一个仓库 → [**retro**](https://github.com/yijiu2025/retro)，
 本机路径为 `F:\retrochimera`）：
@@ -76,6 +76,19 @@ python app.py                 # 默认 8000；用 RETRO_PORT 改端口
 > 换机器部署后端时，模型权重（9GB）与依赖都要重新准备，
 > 别只看这一节 —— 以 [retro 仓库的 README](https://github.com/yijiu2025/retro) 为准。
 
+### 环境变量：只有三个 env 文件
+
+| 文件                      | 作用                                                                                                | 入库                              |
+| ------------------------- | --------------------------------------------------------------------------------------------------- | --------------------------------- |
+| `.env.example`            | 完整字段文档（模板，**不参与构建**）                                                                | ✅                                |
+| `.env.development`        | 开发档。默认「免登录 + 直连 Python」；切「真实登录 + Node 中转」的写法作为**档位 B** 写在它的注释里 | ✅                                |
+| `.env.production.example` | 正式档模板 → 复制为 `.env.production` 使用                                                          | ✅（模板）/ ❌（.env.production） |
+
+> 🔴 `*.local` 覆盖机制**已废弃** —— 它排在最后会静默盖掉团队档，
+> 典型症状是「改了 `.env.development` 却不起作用」。切档位请直接改该文件。
+> 改完**必须重启 dev server**（Vite 只在启动时读 env）。
+> 后端机器/端口要换，用 `DEV_API_TARGET` / `DEV_RETRO_TARGET`（不带 `VITE_` 前缀，只被 proxy 读取）。
+
 ### 开发阶段免登录（默认开）
 
 `.env.development` 里 `VITE_AUTH_BYPASS=true`：
@@ -83,15 +96,15 @@ python app.py                 # 默认 8000；用 RETRO_PORT 改端口
 - 路由守卫全放行、注入 `开发者` 用户、顶栏显示橙色「开发模式 · 免登录」角标
 - **不创建 iframe、不调 userinfo、不发任何登录请求**
 
-要验证真实登录闭环：把该变量改成 `false`，并保证 3000 与 5174 都在跑。
+要验证真实登录闭环：按 `.env.development` 里的「档位 B」把 5 行开关换掉，
+并保证 3000 与 5174 都在跑。
 
-### 四道关卡（改完必须全绿）
+### 三道关卡（改完必须全绿）
 
 ```bash
 npm run type-check   # vue-tsc -b（🔴 必须是 -b，裸 vue-tsc 恒返回 0，是假绿）
 npm run lint         # eslint .
 npm run build        # 先 type-check 再 vite build
-npm run test:store   # 真实 store 集成测试（唯一自动化测试入口）
 ```
 
 > `vite build` 若要落到已存在的 `dist/`，会被 safe-delete shim 拦住 ——
@@ -123,10 +136,10 @@ if (!iframeRef.value || event.source !== iframeRef.value.contentWindow) return;
 
 ### 🔴 两处跨项目配置（漏了就调不通）
 
-| 文件 | 改动 | 漏了的症状 |
-| --- | --- | --- |
+| 文件                       | 改动                                                                             | 漏了的症状                                                                                      |
+| -------------------------- | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | `oauth21/.env.development` | `VITE_ALLOWED_PARENT_ORIGINS` 追加 `http://localhost:5177,http://127.0.0.1:5177` | 弹窗「正在加载安全登录」等满 3s 兜底；oauth21 控制台 `[SSO] 拒绝 postMessage：父 origin 未授权` |
-| 后端生产 `CORS_ORIGINS` | 追加前端生产 origin | 生产 `bind-session` 403「来源不在允许列表」（**dev 白名单为空时放行，本地无感、上线才炸**） |
+| 后端生产 `CORS_ORIGINS`    | 追加前端生产 origin                                                              | 生产 `bind-session` 403「来源不在允许列表」（**dev 白名单为空时放行，本地无感、上线才炸**）     |
 
 > 第一处已在本仓改好；第二处见根 `.env.production` 的注释。
 
@@ -192,6 +205,7 @@ retroweb/
 > 中间**四个页签**，右侧运行参数栏**可收起**（收起后主区独占整宽）。
 >
 > 🔴 两条容易踩的语义约定：
+>
 > - **解析成功 ≠ 开跑**。解析完只是「目标填好了」，用户可能还要改模型参数，
 >   所以卡片不会自动消失；只有显式点「确定目标，开始分析」才收起面板并走第一步。
 > - **换目标 = 开一个新任务**。点「换目标」会清空当前树并回到标定态
@@ -200,6 +214,7 @@ retroweb/
 > 运行参数按 **预测设置 / 拆分约束 / AI 工艺分析** 分三组折叠（原生 `<details>`，
 > 无额外依赖、键盘可开合），组头直接显示关键值（模型名、深度·预算、大模型状态）。
 > 任务有两个入口，分工不同：
+>
 > - **侧栏「最近的任务」** 常驻在导航之下，占满剩余高度 —— 它是"切回上一个活"的捷径，
 >   只列前 6 条（其余进折叠的「更早的任务」），每条含状态圆点 + 相对时间 + hover 删除；
 >   侧栏收起时该列表自动隐藏。任务超过 6 条时末尾出现「查看全部 N 个任务 →」。
@@ -208,17 +223,17 @@ retroweb/
 >   层数 / 方案数，可打开接着做或删除。
 >
 > 🔴 任务（`store.sessions`）≠ 历史记录（`store.history`）：前者是还在手上的活，
->    带整棵路线树与未跑完的 job，点开是**接着做**；后者是手动「保存」沉淀的快照，
->    点开是**回看 / 载入**。
+> 带整棵路线树与未跑完的 job，点开是**接着做**；后者是手动「保存」沉淀的快照，
+> 点开是**回看 / 载入**。
 
 ### 四个页签
 
-| 页签 | 组件 | 看什么 |
-| --- | --- | --- |
-| **目标分析** | `TargetOverview` | 目标分子性质、CAS、可购买性、统计 chips |
-| **逆合成树** | `StepTree` / `StepRow` | 一行一化合物，展开 / 采纳 / 复用 |
-| **路线网络** | `RouteCanvas` / `SchemeBar` | 已确认的路线网、多条方案并列对比 |
-| **步骤详情** | `RouteFlow` / `StepAnalysis` | 每步工艺流程 + 单步 AI 分析 |
+| 页签         | 组件                         | 看什么                                  |
+| ------------ | ---------------------------- | --------------------------------------- |
+| **目标分析** | `TargetOverview`             | 目标分子性质、CAS、可购买性、统计 chips |
+| **逆合成树** | `StepTree` / `StepRow`       | 一行一化合物，展开 / 采纳 / 复用        |
+| **路线网络** | `RouteCanvas` / `SchemeBar`  | 已确认的路线网、多条方案并列对比        |
+| **步骤详情** | `RouteFlow` / `StepAnalysis` | 每步工艺流程 + 单步 AI 分析             |
 
 1. **目标分子**（在标定卡左栏）：**点「画结构式」开 Ketcher 画板手画**（画完即解析出结构），
    或粘贴 ChemDraw 复制的 CDXML / MOL / SDF，或选文件，或直接填 SMILES —— **一个输入框吃四种格式**，
@@ -237,6 +252,7 @@ retroweb/
    > 想多拆几层就把阈值调小（苯环量级 6 是常用口径）。
    > ⚠️ 「每步候选数」**只作用于单步预测**：syntheseus 的 `DEFAULT_NUM_RESULTS=100`，
    > 多步搜索主循环调 `reaction_model(mols)` 时不带 `num_results` ⇒ 改它对多步无效。
+
 3. **逆合成树**：点行内「展开」走一步预测 → 候选卡片里「采纳」→ 前体各新增一行。
    - 终止判定：手动标记可购买 / 重原子数 ≤ 阈值 / 命中指定起始物料
    - 防环：同分支出现过的 SMILES 标「同分支重复」并禁止再展开
@@ -255,7 +271,8 @@ retroweb/
      切回来时**原样接回**，不重跑、不丢既有分析
    - 改一条**已保存**方案的选择 → 自动 **fork 出新方案**，旧方案永不被改写
    - 方案对比表：并排列出各方案的步数、总概率、起始物料数、标记终止步数
-   - 🔴 方案切换的正确性靠**真实 store** 集成测试守住：`npm run test:store`
+   - 🔴 方案切换的正确性靠**真实 store** 守住（`applySearchRoutes` 只铺 candidates、
+     禁逐路线 adopt —— 共享节点互覆会让树只剩根）
 5. **步骤详情（RouteFlow）**：把选定路线渲染成流水线 —— 每步一张卡
    「前体 (原料) →〔条件 / 试剂 / 当量〕→ 产物」，条件来自该步的 AI 分析结果（未分析则空着）。
    卡片内可展开单步分析、可单步触发 AI 分析；顶部「一键分析全路线」串行跑完所有步。
@@ -314,10 +331,10 @@ retroweb/
 
 `MolView` 走 smiles-drawer 画 SVG，尺寸有**两种**模式，选错就是「图被裁掉」或「塌成 0」：
 
-| 模式 | 用法 | 适用容器 |
-| --- | --- | --- |
-| 定像素（默认） | `:bond-px :min-px :maxPx` 算出明确 px 写回 SVG | **auto 尺寸**容器（候选卡、路线行、预览弹窗）—— 容器跟着图长 |
-| `fit` | 宽高 100% + `viewBox` 等比缩放 | **定尺寸**容器（`.step-row__mol` 104×64、`.target__mol` 150×120、`.history-item__mol` 120×88） |
+| 模式           | 用法                                           | 适用容器                                                                                       |
+| -------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| 定像素（默认） | `:bond-px :min-px :maxPx` 算出明确 px 写回 SVG | **auto 尺寸**容器（候选卡、路线行、预览弹窗）—— 容器跟着图长                                   |
+| `fit`          | 宽高 100% + `viewBox` 等比缩放                 | **定尺寸**容器（`.step-row__mol` 104×64、`.target__mol` 150×120、`.history-item__mol` 120×88） |
 
 🔴 定尺寸容器都是 `overflow: hidden`，不开 `fit` 大分子会被切掉一半；
 反过来，auto 高度的容器开 `fit` 会让 SVG 塌成 0 高 —— **两种模式不能互换**。
@@ -366,27 +383,27 @@ curl -sI "https://<你的端点>/v1/models" -H "Authorization: Bearer <key>"   #
 
 **三条实测踩过的坑**：
 
-| 坑 | 症状 | 处置 |
-| --- | --- | --- |
-| `/v1/models` 会骗人 | 列出 9 个模型，其中 3 个一调就 `model is not available in the current token plan` / `model is not found` | **以 `probe` 为准**，不以列表为准 |
-| 限流**按模型端点**算 | 把某端点打到 `429 RateLimitExceeded.EndpointTPMExceeded` 后，连 `"hi"` 都发不出去，**同一时刻换个模型完全正常** | 换模型（换模型 = 换一条独立配额）|
-| `max_tokens` 不给就踩截断 | 推理模型的**思考 token 也计入输出额度** ⇒ 给太小则正文一个字没出就 `finish_reason=length`，JSON 抽不出来 | 显式下发；后端检测到 `length` 且抽不出 JSON 时**直接报「输出被截断」**，而不是含混的「解析失败」 |
+| 坑                        | 症状                                                                                                            | 处置                                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `/v1/models` 会骗人       | 列出 9 个模型，其中 3 个一调就 `model is not available in the current token plan` / `model is not found`        | **以 `probe` 为准**，不以列表为准                                                                |
+| 限流**按模型端点**算      | 把某端点打到 `429 RateLimitExceeded.EndpointTPMExceeded` 后，连 `"hi"` 都发不出去，**同一时刻换个模型完全正常** | 换模型（换模型 = 换一条独立配额）                                                                |
+| `max_tokens` 不给就踩截断 | 推理模型的**思考 token 也计入输出额度** ⇒ 给太小则正文一个字没出就 `finish_reason=length`，JSON 抽不出来        | 显式下发；后端检测到 `length` 且抽不出 JSON 时**直接报「输出被截断」**，而不是含混的「解析失败」 |
 
 > `max_tokens=0` = **无限制**（后端会整个字段不下发），别误当成"输出 0 个字"。
 
 ### 6.2 接口
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| GET | `/api/llm/status` | 是否配置（**永不返回 api_key**，只回 `has_key` 布尔）。`?probe=1` 附加真实验证结果 |
-| GET | `/api/llm/models` | 列出该 key 可见的模型 id（**仅列出，不代表套餐内可用**） |
-| GET·POST | `/api/llm/settings` | 端点配置（多套 profiles）读写 |
-| POST | `/api/llm/settings/active` | 切换生效的那套 |
-| POST | `/api/llm/keys/reset` | 重置某套的 key 轮换状态 |
-| POST | `/api/llm/analyze` | 一次性返回完整 JSON |
-| POST | `/api/llm/analyze/stream` | **SSE 流式**（见下） |
-| POST | `/api/llm/conditions/stream` | 候选反应条件流式生成 |
-| POST | `/api/llm/followup/stream` | 追问（自由文本，**必须关掉 `response_format`**） |
+| 方法     | 路径                         | 说明                                                                               |
+| -------- | ---------------------------- | ---------------------------------------------------------------------------------- |
+| GET      | `/api/llm/status`            | 是否配置（**永不返回 api_key**，只回 `has_key` 布尔）。`?probe=1` 附加真实验证结果 |
+| GET      | `/api/llm/models`            | 列出该 key 可见的模型 id（**仅列出，不代表套餐内可用**）                           |
+| GET·POST | `/api/llm/settings`          | 端点配置（多套 profiles）读写                                                      |
+| POST     | `/api/llm/settings/active`   | 切换生效的那套                                                                     |
+| POST     | `/api/llm/keys/reset`        | 重置某套的 key 轮换状态                                                            |
+| POST     | `/api/llm/analyze`           | 一次性返回完整 JSON                                                                |
+| POST     | `/api/llm/analyze/stream`    | **SSE 流式**（见下）                                                               |
+| POST     | `/api/llm/conditions/stream` | 候选反应条件流式生成                                                               |
+| POST     | `/api/llm/followup/stream`   | 追问（自由文本，**必须关掉 `response_format`**）                                   |
 
 请求体：`{product_smiles, precursors[], conditions?, context?}`。
 服务端会**先用 RDKit 把精确质量算好**（`[M+H]+` / `[M-H]-` / `[M+Na]+`）塞进 prompt，
@@ -405,10 +422,10 @@ error        → {error}
 
 ⚠️ 推理模型的时间分布很悬殊 —— 实测阿司匹林一步：
 
-| 模型 | meta | 首个 thinking | 思考结束 | done | 思考体量 |
-| --- | --- | --- | --- | --- | --- |
-| `deepseek-v4-flash` | 0.7s | 2.6s | 27.8s | 40.3s | 1984 事件 / 3139 字 |
-| `glm-5.2` | 0.01s | 6.2s | 55.5s | 57.8s | 427 事件 / 4646 字 |
+| 模型                | meta  | 首个 thinking | 思考结束 | done  | 思考体量            |
+| ------------------- | ----- | ------------- | -------- | ----- | ------------------- |
+| `deepseek-v4-flash` | 0.7s  | 2.6s          | 27.8s    | 40.3s | 1984 事件 / 3139 字 |
+| `glm-5.2`           | 0.01s | 6.2s          | 55.5s    | 57.8s | 427 事件 / 4646 字  |
 
 **前 30~55 秒正文一个字都没有**，这就是为什么 `thinking` 事件不能省。
 SSE 经 **Vite dev proxy 是真流式透传**，不需要为 dev 做额外配置。

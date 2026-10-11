@@ -45,6 +45,15 @@ const parsed = ref<ParseSuccess | null>(null);
 const failure = ref<ParseFailure | null>(null);
 const fileInput = ref<HTMLInputElement | null>(null);
 
+/**
+ * 输入区是否收起（解析成功后置 true，让位给紧凑胶囊）。
+ *
+ * 🔴 只归本组件管、**不进 store**：它是纯界面态 —— 面板由外层 `v-if` 控制
+ *    挂载/销毁，每次打开天然回到输入态；换目标重挂载同理。进 store 反而要
+ *    处理「换目标后要不要复位」的额外状态同步，没有必要。
+ */
+const collapsed = ref(false);
+
 
 const EXAMPLES: Array<{ label: string; smiles: string }> = [
   { label: '阿司匹林', smiles: 'CC(=O)Oc1ccccc1C(=O)O' },
@@ -85,11 +94,15 @@ async function runParse(input?: string): Promise<void> {
     const res = useBackend ? await retroApi.parse(payload) : await parseStructure(payload);
     if (res.ok) {
       parsed.value = res;
+      // 🔴 解析成功 ⇒ 输入区收起（用户要求：输入完成就可以隐藏，点胶囊可替换）
+      collapsed.value = true;
       store.setTarget(res);
       ElMessage.success('已解析并设为目标分子');
     } else {
       parsed.value = null;
       failure.value = res;
+      // 失败必须停在输入态：用户要对着诊断改输入
+      collapsed.value = false;
     }
   } catch (e) {
     ElMessage.error((e as Error).message);
@@ -213,6 +226,8 @@ async function confirmEditor(): Promise<void> {
     text.value = res.smiles;
     // 画板里此刻就是 res.smiles ⇒ 记下来，下次打开才不会无谓地重灌一遍
     editorSeeded.value = res.smiles;
+    // 与粘贴路径同口径：结构确定即收起输入区
+    collapsed.value = true;
     store.setTarget(res);
     ElMessage.success('已用绘制的结构设为目标分子');
     editorOpen.value = false;
@@ -225,23 +240,16 @@ async function confirmEditor(): Promise<void> {
   }
 }
 
-function clearAll(): void {
-  text.value = '';
-  parsed.value = null;
-  failure.value = null;
-}
-
 /**
- * 「确定目标，开始分析」—— 标定阶段唯一的出口。
+ * 把「起跑」这个动作**交给父组件**去摆版式。
  *
- * 🔴 语义：**一个目标分析 = 一个任务**。点下这个按钮 = 任务正式开始：
- *   ① 保证根节点已经在树上（画板路径已经 setTarget 过了，这里兜住直接粘贴的路径）；
- *   ② 关掉整张标定面板（store.closeTargetSetup）→ 工作台切到路线态，
- *      参数跑到右栏、目标降级成顶部窄条；
- *   ③ 顺手对根节点**展开一步**，不让用户再去找那个「展开」按钮。
- *
- * 之所以把「关面板」放在这里而不是 setTarget 里：解析成功 ≠ 要开始分析 ——
- * 用户可能想换个模型参数再开跑。只有**显式点这个按钮**才代表"任务开始"。
+ * 🔴 为什么 `startAnalysis` 从模板里的按钮搬到这里用 defineExpose 暴露：
+ *   标定卡片有**两条平级起跑线**（手动逐步 / 自动往下拆 N 层），它们必须并排出现在
+ *   卡片底部同一条动作栏里 —— 视觉上才读得出"二选一"。而手动那条的实现（守卫
+ *   rootId → 关面板 → 切页签 → 展开第一步）在本组件里最自然（它最清楚解析状态）。
+ *   于是：**逻辑留在这儿，位置交给 TargetSetupPanel**。
+ *   父组件用模板 ref 调 `startAnalysis()`，按钮的 class 仍是 `.target__start-btn`
+ *   （守门脚本按这个类名定位，见 .tmp-probe/verify-workbench.cjs）。
  */
 function startAnalysis(): void {
   if (!store.rootId) {
@@ -256,8 +264,13 @@ function startAnalysis(): void {
   void store.predictNode(store.rootId);
 }
 
-/** 这个目标是不是已经可以开跑了（根节点在树上） */
-const canStart = computed(() => !!store.rootId);
+defineExpose({ startAnalysis });
+
+function clearAll(): void {
+  text.value = '';
+  parsed.value = null;
+  failure.value = null;
+}
 
 /**
  * 挂载时若已有目标分子（从历史/会话恢复回来），把 SMILES 回填进输入框，
@@ -273,23 +286,53 @@ void nextTick(seedFromCurrent);
 
 <template>
   <section class="rw-card target">
-    <div class="rw-card__head">
-      <div class="rw-card__title">目标分子</div>
-      <div class="target__head-ops">
-        <el-tag v-if="currentSmiles" type="success" size="small" effect="light">已设定</el-tag>
-      </div>
-    </div>
-
     <div class="rw-card__body target__body">
-      <!-- ① 输入行：**一个**输入框 + 右侧内联主操作。
-             照 Reaxys 的 `[ 输入框 ][ Find > ]` —— 动作按钮贴着输入框右边缘，
-             而不是另起一行排在下面（那样视线要往下跳一次才能找到怎么提交）。
-             🔴 结构式粘贴与 SMILES 已合并成一个框：格式交给 `needsBackendParse` /
-                `parseStructure` 自动识别，不再让用户先声明"我要粘的是哪种"——
-             那一行单选框是多余的负担，两套占位文案也白占了两行高度。
-             输入框走 autosize：SMILES 两行足够，粘 CDXML 会自动长高。
-             ② 的格式提示紧贴其下，所以两者包在同一个 entry 里用更小的间距。 -->
+      <!-- 收起态：解析成功后输入区整块让位给一条紧凑胶囊。
+           🔴 这是「输入完成就可以隐藏」的落地：标定页此后真正挡视线的只有
+              起跑线，结构信息压成一行。点胶囊任意处 / 点「替换」回到输入态重填；
+              「编辑结构式」带着当前结构开画板（resolveSeed 优先取已解析结果）。
+              面板每次打开都是重新挂载（外层 v-if）⇒ collapsed 天然回输入态。 -->
+      <div
+        v-if="collapsed && parsed"
+        class="target__pill"
+        role="button"
+        tabindex="0"
+        title="点一下重新展开输入区，可替换结构"
+        @click="collapsed = false"
+        @keyup.enter="collapsed = false"
+      >
+        <div class="target__pill-mol">
+          <MolView :smiles="parsed.smiles" fit />
+        </div>
+        <div class="target__pill-info">
+          <div class="target__pill-tag">
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <path d="M8 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13Z" />
+              <path d="m5.5 8 2 2 3.2-3.8" />
+            </svg>
+            已解析目标
+          </div>
+          <code class="rw-mono">{{ parsed.smiles }}</code>
+          <div class="target__pill-props">
+            <span v-if="parsed.formula">分子式 <b>{{ parsed.formula }}</b></span>
+            <span v-if="parsed.mw != null">MW <b>{{ parsed.mw }}</b></span>
+            <span>重原子 <b>{{ parsed.atoms }}</b></span>
+            <span>类型 <b>{{ parsed.kind }}</b></span>
+          </div>
+        </div>
+        <div class="target__pill-ops" @click.stop>
+          <el-button link size="small" @click="copySmiles">复制</el-button>
+          <el-button link size="small" type="primary" @click="openEditor">编辑结构式</el-button>
+          <el-button link size="small" @click="collapsed = false">替换</el-button>
+        </div>
+      </div>
+
+      <template v-else>
+      <!-- ① 输入行：label + 输入框拼块（参考稿的 "目标分子结构 (Search / Paste Structure)"）。
+             照 Reaxys 的 `[ 输入框 ][ Find > ]` —— 动作按钮贴着输入框右边缘。
+             🔴 结构式粘贴与 SMILES 已合并成一个框：格式自动识别，不用先声明类型。 -->
       <div class="target__entry">
+        <div class="target__entry-label">目标分子结构</div>
         <div class="target__field">
           <el-input
             v-model="text"
@@ -305,58 +348,61 @@ void nextTick(seedFromCurrent);
           </div>
         </div>
 
-        <!-- ② 格式提示 + 次级操作：Reaxys 的 "Substance Molecular Formula, e.g. …" 那一行 -->
+        <!-- ② 格式提示行（参考稿的 "支持 CDXML / MOL / SDF…" 一行小字） -->
         <div class="target__hint">
           <span class="target__hint-text">{{ hintText }}</span>
-          <span class="target__hint-ops">
-            <el-button link size="small" @click="fileInput?.click()">选择文件</el-button>
-            <i aria-hidden="true">·</i>
-            <el-button link size="small" @click="clearAll">清空</el-button>
-          </span>
-          <input
-            ref="fileInput"
-            type="file"
-            accept=".mol,.sdf,.sd,.cdxml,.txt,.smi,.smiles"
-            hidden
-            @change="onFile"
-          />
         </div>
       </div>
 
+      <!-- ③ 「或者」分隔 + 居中的绘制入口 —— Reaxys 的 `AND` + `Draw`：
+             「粘贴 / 手绘」是两条**等价**路径，居中并排才读得出平级。 -->
+      <div class="target__or"><span>或者</span></div>
+      <div class="target__draw">
+        <el-tooltip :content="seedHint || '打开 Ketcher 画板，手绘一个结构'" placement="top" :show-after="200">
+          <button type="button" class="target__draw-btn" @click="openEditor">
+            <svg class="target__draw-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <!-- 六元环（左上）：尖顶六边形 -->
+              <path
+                d="M13.62 5.7V11.5L8.6 14.4L3.58 11.5V5.7L8.6 2.8Z"
+                stroke="currentColor"
+                stroke-width="1.7"
+                stroke-linejoin="round"
+              />
+              <!-- 铅笔（右下）：笔尖朝左下，与环错开，小尺寸下不会糊成一块 -->
+              <path d="M13 21 14.06 22.06 21.06 15.06 18.94 12.94 11.94 19.94 Z" fill="currentColor" />
+            </svg>
+            {{ seedHint ? '编辑结构式' : '绘制结构式' }}
+          </button>
+        </el-tooltip>
+      </div>
+
+      <!-- ④ 次级操作：选择文件 / 清空 —— 居中独立一行（参考稿位置），
+             不与格式提示混排（提示是"说明"，这是"动作"，性质不同）。 -->
+      <div class="target__aux">
+        <el-button link size="small" @click="fileInput?.click()">选择文件</el-button>
+        <i aria-hidden="true">·</i>
+        <el-button link size="small" :disabled="!text" @click="clearAll">清空</el-button>
+        <input
+          ref="fileInput"
+          type="file"
+          accept=".mol,.sdf,.sd,.cdxml,.txt,.smi,.smiles"
+          hidden
+          @change="onFile"
+        />
+      </div>
+
+      <!-- ⑤ 示例：居中一行灰 chip（参考稿的"示例分子"行） -->
       <div class="target__examples">
-        <span class="target__examples-label">示例：</span>
-        <el-tag
+        <span class="target__examples-label">示例</span>
+        <button
           v-for="ex in EXAMPLES"
           :key="ex.smiles"
-          size="small"
-          effect="plain"
+          type="button"
           class="target__chip"
           @click="applySuggestion(ex.smiles)"
         >
           {{ ex.label }}
-        </el-tag>
-      </div>
-
-      <!-- ③ 「或者」分隔 + 居中的绘制入口 —— 学 Reaxys 的 `AND` + 居中 `Draw` 按钮：
-             它把「输入 / 画图」两条等价路径摆成平级选项，而不是把画板塞进按钮堆里。 -->
-      <div class="target__or"><span>或者</span></div>
-      <div class="target__draw">
-        <button type="button" class="target__draw-btn" @click="openEditor">
-          <svg class="target__draw-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-            <!-- 六元环（左上）：尖顶六边形，边长 5.8 -->
-            <path
-              d="M13.62 5.7 V11.5 L8.6 14.4 L3.58 11.5 V5.7 L8.6 2.8 Z"
-              stroke="currentColor"
-              stroke-width="1.7"
-              stroke-linejoin="round"
-            />
-            <!-- 铅笔（右下）：笔尖朝左下，与环错开，小尺寸下也不会糊成一块 -->
-            <path d="M13 21 14.06 22.06 21.06 15.06 18.94 12.94 11.94 19.94 Z" fill="currentColor" />
-          </svg>
-          {{ seedHint ? '编辑结构式' : '绘制结构式' }}
         </button>
-        <!-- 已经粘了 / 点过示例 / 解析过 ⇒ 说清「点进去会带着这个结构」，别让人以为要重画 -->
-        <span v-if="seedHint" class="target__draw-hint">{{ seedHint }}</span>
       </div>
 
       <!-- 解析失败：人话诊断 + 一键修复 -->
@@ -378,58 +424,7 @@ void nextTick(seedFromCurrent);
           </el-button>
         </div>
       </el-alert>
-
-      <!-- 解析成功：目标信息卡 -->
-      <div v-if="parsed" class="target__result">
-        <!-- 点结构图 = 带着这个结构打开画板（resolveSeed 优先取已解析结果） -->
-        <div class="target__mol" role="button" tabindex="0" title="点一下带着这个结构打开画板" @click="openEditor" @keyup.enter="openEditor">
-          <MolView :smiles="parsed.smiles" fit clickable />
-        </div>
-        <div class="target__meta">
-          <div class="target__smiles">
-            <code class="rw-mono">{{ parsed.smiles }}</code>
-            <el-button link size="small" @click="copySmiles">复制</el-button>
-            <!-- 粘完/选完示例不用重画：直接进画板改这个结构 -->
-            <el-button link size="small" type="primary" @click="openEditor">编辑结构</el-button>
-          </div>
-          <div class="target__props">
-            <span><i>分子式</i>{{ parsed.formula || '—' }}</span>
-            <span><i>分子量</i>{{ parsed.mw ?? '—' }}</span>
-            <span><i>重原子</i>{{ parsed.atoms }}</span>
-            <span><i>类型</i>{{ parsed.kind }}</span>
-          </div>
-        </div>
-      </div>
-
-      <div v-else-if="!failure" class="target__blank">
-        <div class="target__blank-mol">
-          <MolView :smiles="'CCO'" fit />
-        </div>
-        <p class="target__blank-text">
-          这里会显示解析后的结构：<br />
-          先<strong>粘贴</strong> ChemDraw 结构 / SMILES，或点<strong>「绘制结构式」</strong>手绘一个
-        </p>
-      </div>
-
-      <!-- 标定阶段的唯一出口：确认目标 ⇒ 收起整张面板、开跑第一个任务 -->
-      <div class="target__start">
-        <el-button
-          type="primary"
-          size="large"
-          :disabled="!canStart"
-          class="target__start-btn"
-          @click="startAnalysis"
-        >
-          确定目标，开始分析
-        </el-button>
-        <span class="target__start-hint">
-          {{
-            canStart
-              ? '参数已按右侧设置生效；开始后本面板收起，参数移到右栏可随时调'
-              : '先粘贴/画一个结构并点「解析结构」，或直接点上面的示例'
-          }}
-        </span>
-      </div>
+      </template>
     </div>
 
     <!-- 结构式画板（Ketcher 内核）：画完点下面的「用此结构搜索」 -->
@@ -474,7 +469,15 @@ void nextTick(seedFromCurrent);
 .target__body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  /* 🔴 `flex: 1` 是「提示行吸到底」的前提：本组件在标定卡片里被放进一个
+     `align-self: stretch` 的栏容器（见 TargetSetupPanel 的 `.setup__target`），
+     若 body 不撑满那根栏的高度，它内部的 `margin-top: auto`（.target__tip）
+     就找不到可分配的多余空间 —— 表现为卡片下方挂一条空白带。
+     flex-basis 保持 0：内容自然高度仍由子元素决定，flex:1 只负责"填满剩余"。 */
+  flex: 1 1 0;
+  /* 10px：输入框 / 工具行 / 示例行 / 结果卡 四段之间统一的呼吸。
+     原来 12px 偏松，而这个面板要在同一屏里塞下左右两栏 + 底部动作栏。 */
+  gap: 10px;
 }
 
 .target__head-ops {
@@ -483,22 +486,116 @@ void nextTick(seedFromCurrent);
   gap: 6px;
 }
 
-.target__input :deep(textarea) {
-  font-family: var(--rw-font-mono);
-  font-size: 12px;
+/* ---------- 收起态：目标胶囊 ----------
+   解析成功后输入区整块让位给这一条。**品牌色高亮**（蓝描边 + 已解析徽标）
+   与灰暗的输入态形成对比，明确这是"已确认的成果"。可点（回输入态替换），
+   但「复制/编辑/替换」三个链接要点穿 —— @click.stop 已隔离。 */
+.target__pill {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1.5px solid color-mix(in srgb, var(--rw-brand) 45%, transparent);
+  border-radius: var(--rw-radius);
+  background: var(--rw-brand-l);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
 }
 
-/* ---------- ① 输入行（学 Reaxys：输入框 + 右侧内联动作） ---------- */
+.target__pill:hover {
+  border-color: var(--rw-brand);
+  background: color-mix(in srgb, var(--rw-brand-l) 70%, var(--rw-surface));
+}
+
+.target__pill-mol {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 72px;
+  height: 60px;
+  flex: 0 0 72px;
+  border: 1px solid var(--rw-border);
+  border-radius: var(--rw-radius-sm);
+  background: var(--rw-surface);
+  overflow: hidden;
+}
+
+.target__pill-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+/* 「已解析目标」徽标：品牌色小胶囊，带对勾图标 */
+.target__pill-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  width: fit-content;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rw-brand) 12%, transparent);
+  color: var(--rw-brand-d);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.target__pill-tag svg {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.target__pill-props {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 14px;
+  font-size: 12px;
+  color: var(--rw-text-3);
+}
+
+.target__pill-props b {
+  color: var(--rw-text-2);
+  font-weight: 600;
+}
+
+.target__pill-ops {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.target__input :deep(textarea) {
+  font-family: var(--rw-font-mono);
+  font-size: 13px;
+}
+
+/* ---------- ① 输入行（搜索框体量） ----------
+   参考设计：label + 大输入框 + 右侧色块按钮，输入框是绝对主角。 */
 .target__entry {
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 8px;
+}
+
+/* 「目标分子结构」小 label（参考稿的 Search / Paste Structure 行） */
+.target__entry-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--rw-text-2);
 }
 
 .target__field {
   display: flex;
-  align-items: flex-end;
-  gap: 8px;
+  align-items: stretch;
+  /* 让输入框+按钮连成一块圆角搜索框 */
 }
 
 .target__field .target__input {
@@ -506,46 +603,55 @@ void nextTick(seedFromCurrent);
   min-width: 0;
 }
 
-.target__field-act {
-  flex: 0 0 auto;
+/* 输入框：左圆角，去掉右圆角让按钮贴合；加深边框聚焦态 */
+.target__field .target__input :deep(.el-textarea__inner) {
+  border-radius: var(--rw-radius-sm) 0 0 var(--rw-radius-sm);
+  border: 1.5px solid var(--rw-border-strong);
+  box-shadow: none;
+  transition: border-color 0.15s;
 }
 
-/* ---------- ② 格式提示行（学 Reaxys 的 "Substance Molecular Formula, e.g. …"） ---------- */
+.target__field .target__input :deep(.el-textarea__inner:focus) {
+  border-color: var(--rw-brand);
+}
+
+/* 解析按钮：右侧色块，贴住输入框右缘 */
+.target__field-act {
+  flex: 0 0 auto;
+  display: flex;
+}
+
+.target__field-act :deep(.el-button) {
+  height: 100%;
+  min-height: 48px;
+  border-radius: 0 var(--rw-radius-sm) var(--rw-radius-sm) 0;
+  border: 1.5px solid var(--rw-brand);
+  font-weight: 600;
+}
+
+/* ---------- ② 格式提示行 ---------- */
 .target__hint {
   display: flex;
   align-items: center;
-  gap: 8px;
   font-size: 12px;
   color: var(--rw-text-3);
 }
 
 .target__hint-text {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.target__hint-ops {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-}
-
-.target__hint-ops i {
-  font-style: normal;
-  opacity: 0.45;
-}
-
-/* ---------- ③ 「或者」分隔 + 居中的绘制入口（学 Reaxys 的 AND + Draw） ---------- */
+/* ---------- ③ 「或者」分隔 + 居中绘制入口（Reaxys 的 AND + Draw） ---------- */
 .target__or {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   font-size: 11px;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.14em;
   color: var(--rw-text-3);
 }
 
@@ -564,24 +670,16 @@ void nextTick(seedFromCurrent);
   gap: 6px;
 }
 
-/* 「打开画板会带上这个结构」的说明 —— 只在真带得进去时才出现 */
-.target__draw-hint {
-  font-size: 11.5px;
-  line-height: 1.5;
-  color: var(--rw-text-3);
-  text-align: center;
-}
-
 .target__draw-btn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 9px 22px;
+  padding: 8px 22px;
   border: 1px solid var(--rw-border-strong);
   border-radius: var(--rw-radius-sm);
   background: var(--rw-surface);
   color: var(--rw-text-2);
-  font-size: 13.5px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
   transition: color 0.15s, border-color 0.15s, background 0.15s, box-shadow 0.15s;
@@ -595,9 +693,9 @@ void nextTick(seedFromCurrent);
 }
 
 .target__draw-icon {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 20px;
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
   color: var(--rw-brand);
 }
 
@@ -605,42 +703,56 @@ void nextTick(seedFromCurrent);
   color: var(--rw-brand-d);
 }
 
+/* ---------- ④ 次级操作行：选择文件 / 清空（居中独立一行，参考稿位置） ---------- */
+.target__aux {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.target__aux i {
+  font-style: normal;
+  opacity: 0.45;
+}
+
+/* ---------- ⑤ 示例：居中一行灰 chip（参考稿的"示例分子"行） ---------- */
 .target__examples {
   display: flex;
   align-items: center;
+  justify-content: center;
   gap: 6px;
-  /* 左栏收窄到 340px 后 5 个示例会折成两行 ⇒ 改单行横向滚动，
-     既不撑高卡片，也不丢任何一个示例 */
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-  padding-bottom: 2px;
-  /* 右侧渐隐：提示"还能往右滚"（否则用户不知道咖啡因/利多卡因藏在后面） */
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
-  mask-image: linear-gradient(to right, #000 calc(100% - 26px), transparent 100%);
+  flex-wrap: wrap;
 }
 
-.target__examples::-webkit-scrollbar {
-  display: none;
-}
-
-/* 内容没超出时不要渐隐（避免末尾 chip 无谓变淡） */
-@media (min-width: 1400px) {
-  .target__examples {
-    -webkit-mask-image: none;
-    mask-image: none;
-  }
-}
-
-.target__examples-label,
-.target__fixes-label {
+.target__examples-label {
   font-size: 12px;
   color: var(--rw-text-3);
   flex-shrink: 0;
+  margin-right: 2px;
 }
 
 .target__chip {
+  flex: 0 0 auto;
+  padding: 3px 11px;
+  border: 1px solid var(--rw-border);
+  border-radius: 999px;
+  background: var(--rw-surface-2);
+  color: var(--rw-text-2);
+  font-size: 12px;
   cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.target__chip:hover {
+  color: var(--rw-brand-d);
+  border-color: var(--rw-brand);
+  background: var(--rw-brand-l);
+}
+
+.target__fixes-label {
+  font-size: 12px;
+  color: var(--rw-text-3);
   flex-shrink: 0;
 }
 
@@ -662,55 +774,6 @@ void nextTick(seedFromCurrent);
   gap: 6px;
 }
 
-.target__result {
-  display: flex;
-  gap: 14px;
-  padding: 12px;
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface-2);
-}
-
-.target__mol {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 150px;
-  height: 120px;
-  flex: 0 0 150px;
-  background: var(--rw-surface);
-  border: 1px solid var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  overflow: hidden;
-}
-
-.target__meta {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.target__smiles {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.target__smiles code {
-  flex: 1;
-  color: var(--rw-text);
-}
-
-.target__props {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
-  font-size: 12px;
-  color: var(--rw-text-2);
-}
-
 /* 画板 dialog：内容再高也不能把底部按钮顶出视口 */
 .target__dialog :deep(.el-dialog) {
   max-width: 96vw;
@@ -727,83 +790,16 @@ void nextTick(seedFromCurrent);
   gap: 8px;
 }
 
-.target__auto {
-  margin-right: auto;
-}
-
-.target__props i {
-  font-style: normal;
-  color: var(--rw-text-3);
-  margin-right: 6px;
-}
-
-/* ---------- 未设定目标时的占位（不用 el-empty：那个默认 180+px 高，
-   标定卡里会撑出一大片死白，把整个卡片拉得又高又空） ---------- */
-.target__blank {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  border: 1px dashed var(--rw-border);
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface-2);
-}
-
-.target__blank-mol {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 56px;
-  flex: 0 0 64px;
-  border-radius: var(--rw-radius-sm);
-  background: var(--rw-surface);
-  border: 1px solid var(--rw-border);
-  overflow: hidden;
-  /* 占位图压暗，明确告诉用户"这不是你的分子，只是示意" */
-  opacity: 0.55;
-}
-
-.target__blank-text {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.7;
-  color: var(--rw-text-3);
-}
-
-.target__blank-text strong {
-  color: var(--rw-text-2);
-  font-weight: 600;
-}
-
-/* ---------- 标定面板底部的「开始分析」 ---------- */
-.target__start {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-top: 4px;
-  padding-top: 14px;
-  border-top: 1px dashed var(--rw-border);
-}
-
-.target__start-btn {
-  flex: 0 0 auto;
-  font-weight: 600;
-}
-
-.target__start-hint {
-  font-size: 12px;
-  color: var(--rw-text-3);
-  line-height: 1.5;
-}
-
-@media (max-width: 768px) {
-  .target__start {
+/* 窄屏：工具行（提示 + 绘制/文件/清空）折成两行，别把提示文字挤成省略号 */
+@media (max-width: 560px) {
+  .target__hint {
     flex-direction: column;
-    align-items: stretch;
+    align-items: flex-start;
+    gap: 4px;
   }
 
-  .target__start-btn {
+  .target__hint-text {
+    flex: 0 0 auto;
     width: 100%;
   }
 }

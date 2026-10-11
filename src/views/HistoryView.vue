@@ -5,16 +5,13 @@ import { useRouter } from 'vue-router';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { Delete } from '@element-plus/icons-vue';
 import { useWorkspaceStore } from '@/stores/workspace';
+import { absoluteTime } from '@/utils/time';
 import MolView from '@/components/mol/MolView.vue';
 
 const store = useWorkspaceStore();
 const router = useRouter();
 
 const tasks = computed(() => store.history);
-
-function formatTime(ts: number): string {
-  return new Date(ts).toLocaleString('zh-CN', { hour12: false });
-}
 
 async function onLoad(id: string): Promise<void> {
   try {
@@ -64,7 +61,7 @@ async function onRemove(id: string): Promise<void> {
             <div class="history-item__name">{{ task.name }}</div>
             <code class="rw-mono history-item__smiles">{{ task.target }}</code>
             <div class="history-item__meta">
-              <span>{{ formatTime(task.createdAt) }}</span>
+              <span>{{ absoluteTime(task.createdAt) }}</span>
               <span>模型 {{ task.params.model }}</span>
               <span>节点 {{ Object.keys(task.nodes).length }}</span>
             </div>

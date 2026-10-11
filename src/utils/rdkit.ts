@@ -36,7 +36,7 @@ let loader: Promise<MainModule> | null = null;
 let ready = false;
 
 /** 懒加载 WASM 引擎（幂等；失败后允许重试） */
-export function loadRdkit(): Promise<MainModule> {
+function loadRdkit(): Promise<MainModule> {
   if (!loader) {
     loader = initRDKitModule({ locateFile: () => wasmUrl })
       .then((mod) => {
@@ -57,7 +57,7 @@ export function loadRdkit(): Promise<MainModule> {
  * WASM 引擎是否**已加载完成**（只读，不会触发加载）。
  * 用途：告诉用户"首次解析正在下载引擎"，而不是让界面看起来卡住。
  */
-export function isRdkitReady(): boolean {
+function isRdkitReady(): boolean {
   return ready;
 }
 
@@ -65,7 +65,7 @@ export function isRdkitReady(): boolean {
  * 这类输入浏览器版 RDKit 读不了，必须回落后端 `/api/parse`。
  * 目前只有 CDXML 一种。
  */
-export function needsBackendParse(text: string): boolean {
+function needsBackendParse(text: string): boolean {
   return CDXML_RE.test((text || '').trim());
 }
 
@@ -73,7 +73,7 @@ export function needsBackendParse(text: string): boolean {
  * 解析一段结构文本（SMILES / 反应式 SMILES / MOL / SDF）为规范 SMILES + 分子信息。
  * 失败时返回人话诊断 + 一键修复候选，与后端 `/api/parse` 的响应形状一致。
  */
-export async function parseStructure(text: string): Promise<ParseResult> {
+async function parseStructure(text: string): Promise<ParseResult> {
   const input = (text || '').trim();
   if (!input) return failWith('没有收到内容');
 
@@ -136,7 +136,7 @@ export async function parseStructure(text: string): Promise<ParseResult> {
  * SMILES → 带 2D 坐标的 molfile（画板载入已有结构用）。
  * 坐标由 RDKit 的 `set_new_coords()` 生成，前端不自己算布局。
  */
-export async function depictMolfile(smiles: string): Promise<string | null> {
+async function depictMolfile(smiles: string): Promise<string | null> {
   const input = (smiles || '').trim();
   if (!input) return null;
   const rdkit = await loadRdkit();
@@ -356,3 +356,5 @@ function okWith(patch: Partial<ParseSuccess> & { smiles: string; kind: string })
 function failWith(error: string, kind = ''): ParseFailure {
   return { ok: false, kind, error, reasons: [error] };
 }
+
+export { loadRdkit, isRdkitReady, needsBackendParse, parseStructure, depictMolfile };

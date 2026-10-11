@@ -10,8 +10,7 @@
     "preview": "vite preview --port 5177 --strictPort",
     "type-check": "vue-tsc -b",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix",
-    "test:store": "vite build --config tests/vite.harness.config.ts && node tests/.out/store-harness.js"
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

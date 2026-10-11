@@ -28,7 +28,7 @@ import type {
   WorkspaceSnapshot
 } from '@/types/retro';
 import { countHeavyAtoms, levelOf, uid } from '@/utils/smiles';
-import { LOCAL_SESSIONS_LIMIT, persist, isServerPersist } from '@/stores/persist';
+import { LOCAL_SESSIONS_LIMIT, persist, isServerPersist, refreshPersist } from '@/stores/persist';
 import { createModelsPart } from '@/stores/parts/models';
 import { createLlmPart } from '@/stores/parts/llm';
 import {
@@ -41,15 +41,11 @@ import {
   sleep
 } from '@/stores/parts/shared';
 
-// 组件仍从 `@/stores/workspace` 拿这几个（见 RunParams.vue）—— 在这里统一再导出，
-// 免得同一个常量出现两个来源（改一处忘一处）。
-export { ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS, reactionIdFor };
-
 const HISTORY_LIMIT = 30;
 /** 每个节点最多保留几次分析结果（多了 localStorage 会撑爆） */
 const MAX_RUNS = 6;
 /** 一条路线方案的「体检结果」（用于多条路线横向对比） */
-export interface SchemeStat {
+interface SchemeStat {
   schemeId: string;
   name: string;
   /** 已采纳的步骤数 */
@@ -83,7 +79,7 @@ export interface SchemeStat {
   manualSteps: number;
 }
 
-export const useWorkspaceStore = defineStore('workspace', () => {
+const useWorkspaceStore = defineStore('workspace', () => {
   // ---------- 状态 ----------
   const rootId = ref<string | null>(null);
   const nodes = ref<Record<string, MolNode>>({});
@@ -236,6 +232,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const targetSetupOpen = ref(true);
   /** 本次标定是否被用户动过（用于「换目标」后提示"改动未保存"之类的场景） */
   const targetSetupDirty = ref(false);
+  /**
+   * 「运行设置」弹窗的开合 —— **跨组件共享**。
+   *
+   * 🔴 为什么在 store 而不在某个组件里：设置按钮住在**侧栏底部**（AppShell），
+   *    而弹窗本体在 TargetSetupPanel 里（那里有完整的 RunParams 与 `:deep` 样式）。
+   *    两个组件隔着路由，谁也不能靠 prop 触发谁 ⇒ 弹窗开关提为共享状态，
+   *    侧栏点按钮 `store.runSettingsOpen = true`，面板里的 el-dialog `v-model` 绑它。
+   */
+  const runSettingsOpen = ref(false);
   /** 运行参数栏是否收起（路线态的右栏，可伸缩） */
   const paramsCollapsed = ref(false);
   /** 请求取消句柄（长任务可取消） */
@@ -1224,6 +1229,7 @@ export const useWorkspaceStore = defineStore('workspace', () => {
         maxDepth: params.value.maxDepth,
         maxHeavyAtoms: params.value.heavyAtomThreshold,
         valueFn: 'complexity',
+        algorithm: params.value.searchAlgorithm,
         purchasable: params.value.startingMaterials,
         requiredMaterials: [],
         useForwardFilter: params.value.forwardFilter,
@@ -1493,6 +1499,8 @@ function persistSession(): void {
         model: params.value.model,
         status,
         updatedAt: Date.now(),
+        // 🔴 createdAt 记「任务创建那一刻」，与 updatedAt（内容变化）分开。
+        createdAt: Date.now(),
         snapshot: snap,
         sig
       };
@@ -1766,12 +1774,51 @@ function persistSession(): void {
   }
 
   /**
+   * 给一条任务改名。
+   *
+   * 🔴 为什么独立成一个 action 而不是让组件直接改 `s.name`：
+   *    改完要**立即落盘**（persist.writeSessions），否则刷新就丢；
+   *    集中在这里还能顺带做「空名兜底」—— 清空则回退默认名。
+   *    不改 `updatedAt`（改名不算"内容变化"，见 Session.updatedAt 的注释）。
+   */
+  function renameSession(id: string, name: string): void {
+    const s = sessions.value.find((x) => x.id === id);
+    if (!s) return;
+    const trimmed = name.trim();
+    s.name = trimmed || `任务 ${new Date().toLocaleString('zh-CN')}`;
+    persist.writeSessions(sessions.value);
+  }
+
+  /**
    * 清空本用户的任务数据（切换账号 / 登出 / 401 时由 auth store 调用）。
    *
    * 🔴 数据绑定用户后，这是「串号」的最后一道防线：上一个用户的任务若残留在
    *    内存与本地缓存里，会出现在新用户的工作台里，甚至被写回污染云端。
    *    所以这里同时清内存态与持久化层（persist.clear），两者缺一不可。
    */
+  /**
+   * 登录成功后由 auth store 调用：补拉那些「没登录时注定拿不到」的数据。
+   *
+   * 🔴 为什么必须有这一步（真实调试踩到）：页面挂载时 `loadModels` / `loadLlmStatus` /
+   *    `resumeSessions` 全都已经跑过一轮了 —— 那时还没有 cookie，结果全是 401 或空。
+   *    登录只是补上了凭证，**不会重放**那批请求。没有这里，用户登录完看到的仍是
+   *    「没有模型 / 没有历史任务」的空工作台，只能手动刷新页面。
+   *
+   * 🔴 顺序不能反：① 重灌会话缓存（服务端才是权威）→ ② 清掉过期告警 → ③ 补拉各域数据
+   *    → ④ 最后恢复会话（它依赖前一步刚写进 ref 的 sessions）。
+   */
+  async function refreshAfterLogin(): Promise<void> {
+    clearGlobalError();
+    try {
+      await refreshPersist();
+      sessions.value = persist.readSessions();
+    } catch {
+      /* 重读失败不该挡住后面的补拉 */
+    }
+    await Promise.allSettled([loadModels(), loadLlmStatus()]);
+    resumeSessions();
+  }
+
   function clearLocalData(): void {
     sessions.value = [];
     history.value = [];
@@ -1803,7 +1850,6 @@ function persistSession(): void {
    *
    * 🔴 这条区分是必需的：早先「任何改动都写回当前方案」的实现会让用户在方案 A 上
    *    「试着换个候选看看」时**静默把方案 A 改掉** —— 已保存的路线就没了。
-   *    （集成测试 .harness/store-harness.ts 逮到过这个）。
    */
   function currentSchemeConflicted(): boolean {
     const id = currentSchemeId.value;
@@ -2262,6 +2308,7 @@ function persistSession(): void {
     setTarget,
     targetSetupOpen,
     targetSetupDirty,
+    runSettingsOpen,
     paramsCollapsed,
     openTargetSetup,
     closeTargetSetup,
@@ -2288,7 +2335,9 @@ function persistSession(): void {
     resumeSessions,
     loadSession,
     removeSession,
+    renameSession,
     clearLocalData,
+    refreshAfterLogin,
     persistSession,
     exportJson,
     exportCsv,
@@ -2296,3 +2345,11 @@ function persistSession(): void {
     heavyAtoms
   };
 });
+
+// 组件仍从 `@/stores/workspace` 拿这几个（见 RunParams.vue）—— 在这里统一再导出，
+// 免得同一个常量出现两个来源（改一处忘一处）。
+export { ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS, reactionIdFor };
+
+export { useWorkspaceStore };
+
+export type { SchemeStat };

@@ -41,7 +41,7 @@ const routes: RouteRecordRaw[] = [
   }
 ];
 
-export const router = createRouter({
+const router = createRouter({
   history: createWebHistory(),
   routes
 });
@@ -54,5 +54,7 @@ router.beforeEach(async (to) => {
   }
   return true;
 });
+
+export { router };
 
 export default router;

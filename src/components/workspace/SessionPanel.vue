@@ -23,8 +23,8 @@
 import { computed, ref } from 'vue';
 import { ElMessageBox } from 'element-plus';
 import { useWorkspaceStore } from '@/stores/workspace';
-import type { Session, SessionStatus } from '@/types/retro';
-import { relativeTime } from '@/utils/time';
+import type { SessionStatus } from '@/types/retro';
+import MolView from '@/components/mol/MolView.vue';
 
 const store = useWorkspaceStore();
 
@@ -49,10 +49,6 @@ const STATUS_META: Record<SessionStatus, { label: string; cls: string }> = {
   incomplete: { label: '未完成', cls: 'is-incomplete' },
   done: { label: '已完成', cls: 'is-done' }
 };
-
-function shortTarget(s: Session): string {
-  return s.target.length > 22 ? s.target.slice(0, 22) + '…' : s.target;
-}
 
 const confirming = ref<string | null>(null);
 
@@ -88,8 +84,8 @@ async function onRemove(id: string, name: string): Promise<void> {
       </button>
     </div>
 
-    <p v-if="!all.length" class="recent__empty">
-      还没有任务。点上方「＋ 新任务」设定目标分子即可开始。
+    <p v-if="!all.length" class="recent__empty" title="点上方「＋ 新任务」设定目标分子即可开始">
+      还没有任务，点「＋ 新任务」开始。
     </p>
 
     <template v-else>
@@ -107,13 +103,13 @@ async function onRemove(id: string, name: string): Promise<void> {
               @keyup.enter="emit('open', s.id)"
             >
               <span class="recent__dot" :class="STATUS_META[s.status].cls" />
+              <!-- 🔴 条目只显示**结构式**（用户要求）：SMILES 和时间这些元信息
+                   移到「目标分析」页/卡，任务列表就做一件事——让人认出这是哪个分子。 -->
+              <span class="recent__mol" aria-hidden="true">
+                <MolView :smiles="s.target" fit />
+              </span>
               <div class="recent__body">
                 <span class="recent__name">{{ s.name }}</span>
-                <span class="recent__sub">
-                  <code class="rw-mono">{{ shortTarget(s) }}</code>
-                  <i>·</i>
-                  <span>{{ relativeTime(s.updatedAt) }}</span>
-                </span>
               </div>
               <button
                 type="button"
@@ -147,13 +143,13 @@ async function onRemove(id: string, name: string): Promise<void> {
               @keyup.enter="emit('open', s.id)"
             >
               <span class="recent__dot" :class="STATUS_META[s.status].cls" />
+              <!-- 🔴 条目只显示**结构式**（用户要求）：SMILES 和时间这些元信息
+                   移到「目标分析」页/卡，任务列表就做一件事——让人认出这是哪个分子。 -->
+              <span class="recent__mol" aria-hidden="true">
+                <MolView :smiles="s.target" fit />
+              </span>
               <div class="recent__body">
                 <span class="recent__name">{{ s.name }}</span>
-                <span class="recent__sub">
-                  <code class="rw-mono">{{ shortTarget(s) }}</code>
-                  <i>·</i>
-                  <span>{{ relativeTime(s.updatedAt) }}</span>
-                </span>
               </div>
               <button
                 type="button"
@@ -335,6 +331,26 @@ async function onRemove(id: string, name: string): Promise<void> {
   gap: 1px;
 }
 
+/* 结构式缩略图：条目里唯一的"认分子"信息。
+   40px 高 —— 侧栏 200px 宽下足够辨认骨架，又不把列表撑高。 */
+.recent__mol {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 40px;
+  padding: 2px;
+  border: 1px solid var(--rw-border);
+  border-radius: 6px;
+  background: var(--rw-surface);
+  overflow: hidden;
+}
+
+.recent__item.is-current .recent__mol {
+  border-color: var(--rw-brand);
+}
+
 .recent__name {
   font-size: 13px;
   color: var(--rw-text);
@@ -346,27 +362,6 @@ async function onRemove(id: string, name: string): Promise<void> {
 .recent__item.is-current .recent__name {
   font-weight: 600;
   color: var(--rw-brand-d);
-}
-
-.recent__sub {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  color: var(--rw-text-3);
-  white-space: nowrap;
-  overflow: hidden;
-}
-
-.recent__sub code {
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.recent__sub i {
-  font-style: normal;
-  opacity: 0.5;
 }
 
 .recent__del {

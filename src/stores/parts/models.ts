@@ -12,6 +12,7 @@
  * 不能挂在某个组件上（模型状态是全局的、跨页签的）。
  */
 import { computed, ref, type Ref } from 'vue';
+import { isUnauthorizedError } from '@/api/http';
 import { retroApi } from '@/api/retro';
 import type {
   ForwardModelInfo,
@@ -26,12 +27,12 @@ const MODELS_POLL_MS = 1500;
 const MODELS_POLL_MAX_FAILS = 3;
 
 /** 零件需要的外部东西 —— 只这两样，多一点都不给（防它长回成第二个 store） */
-export interface ModelsPartCtx {
+interface ModelsPartCtx {
   params: Ref<RunParams>;
   setGlobalError: (msg: string, retry?: (() => void) | null) => void;
 }
 
-export function createModelsPart(ctx: ModelsPartCtx) {
+function createModelsPart(ctx: ModelsPartCtx) {
   const models = ref<RetroModel[]>([]);
   const modelsLoading = ref(false);
   /**
@@ -58,6 +59,34 @@ export function createModelsPart(ctx: ModelsPartCtx) {
   let modelsPollTimer: ReturnType<typeof setInterval> | null = null;
   /** 轮询连续失败次数 */
   let modelsPollFails = 0;
+
+  /**
+   * 认不出来的失败才叫「错误」——**登录态缺失不算**。
+   *
+   * 两条路都会走到这里：
+   *   · `apiClient`（http.ts）侧的 401 ⇒ `handle401` 已置过期 + 弹出 iframe 登录窗，
+   *     并给 reject 出来的 Error 打了哨兵（见 `isUnauthorizedError`）；
+   *   · `retroClient`（api/retro.ts）侧没有 401 拦截器，401 以
+   *     「Request failed with status code 401」的 axios 原生 message 冒泡上来。
+   *
+   * 🔴 为什么必须拦掉：本零件在**页面挂载时就拉模型**（AppShell / WorkspaceView 都拉），
+   *    而那一刻用户多半还没登录 ⇒ 首屏必然吃一个 401。若照常 `setGlobalError`，
+   *    用户看到的是「登录已过期，请重新登录」——他根本没登录过，这句话既误导，
+   *    又和同时弹出的登录窗吵成一团。401 的**唯一**呈现方式应该是登录窗本身。
+   */
+  function isAuthFailure(e: unknown): boolean {
+    // ① 哨兵（唯一可靠判据）：两条 http 客户端都会给 401 打同一个标记
+    if (isUnauthorizedError(e)) return true;
+    // ② 兜底：万一还有第三方出口没打标记。🔴 只作为**最后一道**，主判据必须是哨兵 ——
+    //    在文案上做判据意味着"后端措辞一变，判据就静默失效"（实测已红过一次）。
+    return /status code 401/i.test((e as Error)?.message ?? '');
+  }
+
+  /** 报错出口：401 让位给登录流，其余照常进全局错误条 */
+  function reportError(e: unknown, retry: (() => void) | null = null): void {
+    if (isAuthFailure(e)) return;
+    ctx.setGlobalError((e as Error).message, retry);
+  }
 
   /**
    * 真拉一次模型状态矩阵（内部件，不负责 loading 态与错误提示）。
@@ -89,7 +118,8 @@ export function createModelsPart(ctx: ModelsPartCtx) {
     try {
       await fetchModels();
     } catch (e) {
-      ctx.setGlobalError((e as Error).message, () => void loadModels());
+      // 🔴 未登录时这里必然失败，且失败信息已经被登录窗接管 ⇒ 不占错误条
+      reportError(e, () => void loadModels());
       models.value = [];
       modelService.value = null;
       forwardModel.value = null;
@@ -162,7 +192,7 @@ export function createModelsPart(ctx: ModelsPartCtx) {
       }
       await fetchModels();
     } catch (e) {
-      ctx.setGlobalError((e as Error).message, () => void warmModel(target));
+      reportError(e, () => void warmModel(target));
     } finally {
       modelLoadingKey.value = null;
     }
@@ -179,7 +209,7 @@ export function createModelsPart(ctx: ModelsPartCtx) {
       }
       await fetchModels();
     } catch (e) {
-      ctx.setGlobalError((e as Error).message, () => void stopModelService());
+      reportError(e, () => void stopModelService());
     } finally {
       modelStopping.value = false;
     }
@@ -203,7 +233,7 @@ export function createModelsPart(ctx: ModelsPartCtx) {
       }
       await fetchModels();
     } catch (e) {
-      ctx.setGlobalError((e as Error).message, () => void loadForward());
+      reportError(e, () => void loadForward());
     } finally {
       forwardLoadingKey.value = null;
     }
@@ -258,3 +288,7 @@ export function createModelsPart(ctx: ModelsPartCtx) {
     stopModelsPolling
   };
 }
+
+export { createModelsPart };
+
+export type { ModelsPartCtx };

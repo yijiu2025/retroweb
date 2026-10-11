@@ -12,7 +12,7 @@
  * 只声明真正读到的字段：`InformationList.Information[0]` 的 `CID` 与
  * `Synonym[]` —— **CAS 号就混在 synonyms 列表里**（不在单独字段上）。
  */
-export interface PubChemSynonymsResponse {
+interface PubChemSynonymsResponse {
   InformationList?: {
     Information?: Array<{
       CID?: number;
@@ -22,7 +22,7 @@ export interface PubChemSynonymsResponse {
 }
 
 /** smiles-drawer 的绘制器实例（我们只需要 draw 这一个方法） */
-export interface SmiDrawerLike {
+interface SmiDrawerLike {
   draw(
     smiles: string,
     target: SVGElement | null,
@@ -41,3 +41,5 @@ declare global {
     };
   }
 }
+
+export type { PubChemSynonymsResponse, SmiDrawerLike };

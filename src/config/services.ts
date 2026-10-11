@@ -3,16 +3,16 @@
  */
 
 /** API 服务（Fastify 3000）。留空 → 走同源相对路径（由 vite proxy 转发） */
-export const API_BASE_URL: string = import.meta.env.VITE_API_URL || '';
+const API_BASE_URL: string = import.meta.env.VITE_API_URL || '';
 
 /** SSO 登录服务（oauth21 dev server） */
-export const SSO_URL: string = import.meta.env.VITE_SSO_URL || 'http://localhost:5174';
+const SSO_URL: string = import.meta.env.VITE_SSO_URL || 'http://localhost:5174';
 
 /** SSO 登录页路径：紧凑版，适合弹窗 */
-export const SSO_LOGIN_PATH = '/mini-login';
+const SSO_LOGIN_PATH = '/mini-login';
 
 /** 逆合成模型服务：dev 为 /retro（vite proxy → Flask 8000 的 /api） */
-export const RETRO_BASE_URL: string = import.meta.env.VITE_RETRO_URL || '/retro';
+const RETRO_BASE_URL: string = import.meta.env.VITE_RETRO_URL || '/retro';
 
 /**
  * 算法调用是否改走 Node 中转（S3）。
@@ -21,20 +21,20 @@ export const RETRO_BASE_URL: string = import.meta.env.VITE_RETRO_URL || '/retro'
  * 🔴 开：baseURL 指向 `API_BASE_URL + '/retroweb/v1'`，响应拆 `{code,message,data}` 信封，
  *    Python 从公网下线（只在 Node 后端内网可见，`RETRO_PYTHON_URL`）。
  */
-export const RETRO_VIA_NODE: boolean = import.meta.env.VITE_RETRO_VIA_NODE === 'true';
+const RETRO_VIA_NODE: boolean = import.meta.env.VITE_RETRO_VIA_NODE === 'true';
 
 /** 应用名（透传给 oauth21，登录页会显示"正在登录 XX"） */
-export const APP_NAME = 'retroweb';
+const APP_NAME = 'retroweb';
 
 /** 登录弹窗文案 */
-export const LOGIN_COPY = {
+const LOGIN_COPY = {
   title: '登录 RetroWeb 逆合成工作台',
   subtitle: '选择账号一键登录，或登录其他账号',
   ssoLoading: '正在加载安全登录…'
 };
 
 /** SSO 登录默认参数 */
-export const SSO_LOGIN_PARAMS: Record<string, string> = {
+const SSO_LOGIN_PARAMS: Record<string, string> = {
   lang: 'zh_cn',
   appName: APP_NAME,
   appEntrance: 'web',
@@ -53,7 +53,7 @@ export const SSO_LOGIN_PARAMS: Record<string, string> = {
  *
  * 不需要 client_id：iframe 内走 directLogin，与 OAuth client 注册解耦。
  */
-export function buildSsoLoginUrl(theme?: 'dark' | 'light'): string {
+function buildSsoLoginUrl(theme?: 'dark' | 'light'): string {
   const base: Record<string, string> = {
     ...SSO_LOGIN_PARAMS,
     rnd: String(Math.random())
@@ -64,4 +64,17 @@ export function buildSsoLoginUrl(theme?: 'dark' | 'light'): string {
 }
 
 /** dev 阶段免登录开关（生产严禁开启） */
-export const AUTH_BYPASS: boolean = import.meta.env.VITE_AUTH_BYPASS === 'true';
+const AUTH_BYPASS: boolean = import.meta.env.VITE_AUTH_BYPASS === 'true';
+
+export {
+  API_BASE_URL,
+  SSO_URL,
+  SSO_LOGIN_PATH,
+  RETRO_BASE_URL,
+  RETRO_VIA_NODE,
+  APP_NAME,
+  LOGIN_COPY,
+  SSO_LOGIN_PARAMS,
+  buildSsoLoginUrl,
+  AUTH_BYPASS
+};

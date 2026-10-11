@@ -12,7 +12,6 @@
 | 类型检查 | `npx vue-tsc -b` | ✅ exit 0（裸 `vue-tsc` 恒 0，口径必须是 `-b`） |
 | Lint | `npx eslint .` | ✅ exit 0 |
 | 生产构建 | `npx vite build --outDir <全新目录>` | ✅ 3.34s，exit 0 |
-| Store 试验台 | `npm run test:store` | ✅ ALL PASS |
 | 后端语法自检 | `python -m compileall web core bootstrap scripts` | ✅ exit 0（仅 1 条上游 SyntaxWarning） |
 
 > 构建必须落到**全新 outDir**：写已有的 `dist/` 会被 safe-delete shim 拦住。
@@ -26,15 +25,14 @@
 | `retroweb/dist-*`（12 个） | 278 MB | 已移出 |
 | `retroweb/shot-*.png`（9 张） | 420 KB | 已移出 |
 | `.tmp-dev.log` / `.tmp-preview.log` / `.vite-dev.log` | 112 KB | 已移出 |
-| `tests/.out/`（旧试验台产物） | — | 已移出 |
 
 暂存区（同盘改名、可原样还原）：`C:\Users\22701\.trash\2026-10-09-retroweb\`
 
-清理后仓库根目录只剩 `src public tests docs dist node_modules` + 配置文件，
+清理后仓库根目录只剩 `src public docs node_modules` + 配置文件，
 `git status --porcelain` **完全干净**（77 个受版本控制的文件一个没动）。
 
-**未动**（本轮没勾）：`retroweb/tests/`（已入库的 store 试验台，唯一的自动化测试入口）、
-后端 `F:\retrochimera` 的临时文件。
+**后续（2026-10-10）**：`retroweb/tests/`（store 试验台）与 `dist/`、`dist-s0-check/` 已一并删除 ——
+`test:store` 不再作为关卡，构建产物不进仓库（见 `.gitignore` 的 `dist-*/`）。
 
 ## 三、不需要改的（已核实，别再折腾）
 

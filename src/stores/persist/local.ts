@@ -21,14 +21,14 @@ const SESSIONS_KEY = 'retroweb_sessions';
 const COND_PREF_KEY = 'retroweb_cond_pref';
 
 /** 与服务端配额无关：这是**本地缓存**的容量上限（浏览器 localStorage 很金贵） */
-export const SESSIONS_LIMIT = 10;
+const SESSIONS_LIMIT = 10;
 
-export interface CondPref {
+interface CondPref {
   planFirst: boolean;
   count: number;
 }
 
-export function readHistory(): HistoryTask[] {
+function readHistory(): HistoryTask[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
@@ -39,7 +39,7 @@ export function readHistory(): HistoryTask[] {
   }
 }
 
-export function writeHistory(list: HistoryTask[]): void {
+function writeHistory(list: HistoryTask[]): void {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
   } catch {
@@ -47,7 +47,7 @@ export function writeHistory(list: HistoryTask[]): void {
   }
 }
 
-export function readSessions(): Session[] {
+function readSessions(): Session[] {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
     if (!raw) return [];
@@ -58,7 +58,7 @@ export function readSessions(): Session[] {
   }
 }
 
-export function writeSessions(list: Session[]): void {
+function writeSessions(list: Session[]): void {
   try {
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, SESSIONS_LIMIT)));
     return;
@@ -97,7 +97,7 @@ export function writeSessions(list: Session[]): void {
   }
 }
 
-export function readCondPref(): CondPref {
+function readCondPref(): CondPref {
   const def = { planFirst: true, count: 4 };
   try {
     const raw = localStorage.getItem(COND_PREF_KEY);
@@ -114,7 +114,7 @@ export function readCondPref(): CondPref {
   }
 }
 
-export function writeCondPref(v: CondPref): void {
+function writeCondPref(v: CondPref): void {
   try {
     localStorage.setItem(COND_PREF_KEY, JSON.stringify(v));
   } catch {
@@ -123,7 +123,7 @@ export function writeCondPref(v: CondPref): void {
 }
 
 /** 清空本地缓存（🔴 切换账号 / 登出 / 401 时必须调，否则上一个用户的任务会串台） */
-export function clearAll(): void {
+function clearAll(): void {
   try {
     localStorage.removeItem(HISTORY_KEY);
     localStorage.removeItem(SESSIONS_KEY);
@@ -131,3 +131,16 @@ export function clearAll(): void {
     /* 清不掉也要继续：内存态由调用方负责清 */
   }
 }
+
+export {
+  SESSIONS_LIMIT,
+  readHistory,
+  writeHistory,
+  readSessions,
+  writeSessions,
+  readCondPref,
+  writeCondPref,
+  clearAll
+};
+
+export type { CondPref };
