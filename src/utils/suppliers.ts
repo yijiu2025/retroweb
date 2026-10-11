@@ -25,6 +25,9 @@
  *    绘图板入口）URL 带不了词，跳固定查询页，标识只走剪贴板。
  *
  * 🔴 一律新标签页打开（noopener,noreferrer），不打断当前路线分析。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { copyText } from '@/utils/clipboard';
 import { casState } from '@/utils/pubchem';
@@ -159,12 +162,18 @@ const SUPPLIERS: Supplier[] = [
 /** 找不到 id 时的兜底供应商（清单被改/老 localStorage 里存着已删除的 id） */
 const DEFAULT_SUPPLIER_ID = SUPPLIERS[0].id;
 
-/** 这个 id 是否在清单里 */
+/** 这个 id 是否在清单里
+ * @param id 待判定的字符串
+ * @returns 是否是本模块认得的供应商 id（白名单判定，不做模糊匹配）
+ */
 function isSupplierId(id: string): boolean {
   return SUPPLIERS.some((x) => x.id === id);
 }
 
-/** 取一家供应商（无效 id 返回 undefined，调用方决定怎么兜底） */
+/** 取一家供应商（无效 id 返回 undefined，调用方决定怎么兜底）
+ * @param id 供应商 id
+ * @returns 供应商定义；不认识返回 `undefined`（调用方须容错）
+ */
 function supplierById(id: string): Supplier | undefined {
   return SUPPLIERS.find((x) => x.id === id);
 }
@@ -180,6 +189,12 @@ function supplierById(id: string): Supplier | undefined {
  *
  * 🔴 第 ④ 条刻意**不等待** PubChem：查不到 CAS 是外部的正常状态（内网、限流、
  *    结构没收录），拿它去堵「查价」这个动作是本末倒置。回落 SMILES 并如实标注即可。
+ * @param id        供应商 id（不认识则返回 null）
+ * @param smiles    目标结构（为空则返回 null）
+ * @param preferCas 是否优先用 CAS 查（用户开关）
+ * @returns 查询参数（供应商 + 标识 + 值 + 落地 URL + 采用原因）。
+ *          🔴 `reason` 会告诉调用方**为什么没用 CAS**（`cas-off`/`cas-missing`/
+ *          `smiles-native`），界面据此标注"按结构查"
  */
 function resolveSupplierQuery(
   id: string,
@@ -219,6 +234,12 @@ function resolveSupplierQuery(
  *    （剪贴板写入是异步的）会让部分浏览器判定成「非用户触发」而拦掉弹窗 ——
  *    那用户看到的就是「点了没反应」，正是最难排查的那种。
  *    复制失败只影响「到站能不能直接粘」，由 `copyText` 自己弹降级提示。
+ * @param id        供应商 id
+ * @param smiles    目标结构
+ * @param preferCas 是否优先用 CAS 查
+ * @returns 查询参数（同 `resolveSupplierQuery`）；同时**已开新标签页并复制好标识**。
+ *          🔴 开页在前、复制不 await —— 中间夹 await 会被判为非用户手势而拦掉弹窗。
+ *          参数不合法时返回 null 且**不做任何副作用**
  */
 function querySupplier(id: string, smiles: string, preferCas: boolean): SupplierQuery | null {
   const q = resolveSupplierQuery(id, smiles, preferCas);

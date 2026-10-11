@@ -15,6 +15,9 @@
  *    结果**降级话术三种、成功话术五种**，连"是不是安全上下文"这件事都要在 5 个地方各想一次。
  *
  * 返回是否复制成功：调用方需要"失败就不改 UI 状态"（例如按钮切到"已复制"）时用它。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { ElMessage } from 'element-plus';
 
@@ -28,6 +31,12 @@ interface CopyOpts {
   emptyMsg?: string;
 }
 
+/**
+ * @param text 待复制内容；`null`/`undefined` 视为空 → 走 `emptyMsg` 提示并返回 false
+ * @param opts 三条可定制文案（成功/失败/空内容），都不传则用内置默认
+ * @returns 是否复制成功。⚠️ 返回 false 的两种常见原因：非安全上下文（http）、
+ *          或用户拒绝剪贴板权限 —— 调用方应据此不切换按钮状态
+ */
 async function copyText(
   text: string | number | null | undefined,
   opts: CopyOpts = {}

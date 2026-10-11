@@ -10,6 +10,9 @@
  *    store 那两份是**下载文件**用的（要能被 Excel / 外部工具读），
  *    这里的是**粘进聊天框/文献笔记**用的（要人眼能读）。
  *    共用一份反而会把两边都弄成四不像。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import type { RouteStep } from '@/types/retro';
 import type { CasInfo } from '@/utils/pubchem';
@@ -86,7 +89,11 @@ function ordered(input: RouteCopyInput): RouteStep[] {
   return [...input.route].sort((a, b) => b.step - a.step);
 }
 
-/** 复制成功时该报什么（"已复制 3 步反应式 SMILES"这种量化提示，别只说"已复制"） */
+/** 复制成功时该报什么（"已复制 3 步反应式 SMILES"这种量化提示，别只说"已复制"）
+ * @param mode  复制模式（决定"复制了什么"的说法）
+ * @param input 路线数据（取步骤数 / 物料数做量化提示）
+ * @returns 成功提示文案，如「已复制 3 步反应式 SMILES」
+ */
 function routeCopyOkMsg(mode: RouteCopyMode, input: RouteCopyInput): string {
   const n = input.route.length;
   switch (mode) {
@@ -119,6 +126,10 @@ function tsvCell(v: unknown): string {
  * 按模式生成要写进剪贴板的文本。
  * 🔴 路线为空一律返回空串 —— 由调用方提示"还没有采纳任何一步"，
  *    别在这里编一段"第 0 步"之类的占位内容。
+ * @param mode  复制模式（rxn / steps / smiles / table / csv / json / materials）
+ * @param input 路线数据（步骤、物料、CAS 缓存等）
+ * @returns 要写进剪贴板的文本。🔴 路线为空一律返回**空串** ——
+ *          由调用方提示"还没有采纳任何一步"，不在这里编占位内容
  */
 function buildRouteCopy(mode: RouteCopyMode, input: RouteCopyInput): string {
   const steps = ordered(input);

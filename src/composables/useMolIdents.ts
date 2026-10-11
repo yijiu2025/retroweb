@@ -18,6 +18,9 @@
  *
  * 🔴 `value` 就是**原样**写进剪贴板的字符串（复制时不做任何加工）——
  *    "看着一样、粘出来不一样"是最难查的一类 bug，宁可原样也别替用户修饰。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { computed, ref, watch, type ComputedRef } from 'vue';
 import { casState, requestCas, type CasInfo, type CasState } from '@/utils/pubchem';
@@ -54,6 +57,10 @@ interface MolIdentSource {
  * composable（一个循环就是几十份订阅），但又要显示同一份标识列表。
  * 两边各写一份必然分叉：今天卡片只有 SMILES、树里有六项，就是这么来的。
  * 循环里用这份纯函数，配 `casState()` 的响应式缓存照样会自动更新。
+ * @param src 分子结构来源（SMILES 等）
+ * @param cas 该分子的 CAS 查询状态（`undefined`=没查、`null`=查过没有）
+ * @returns 标识行数组，**已按 SMILES → 分子式 → 分子量 → CAS → 名称 → CID 排好序**；
+ *          空值项不产出（所以复制时不会复制到空串）
  */
 function buildMolIdents(src: MolIdentSource, cas: CasInfo | null | undefined): MolIdent[] {
   const out: MolIdent[] = [];
@@ -72,6 +79,10 @@ function buildMolIdents(src: MolIdentSource, cas: CasInfo | null | undefined): M
 /**
  * CAS 为什么没出现在列表里 —— 只在**用户已经要过**之后才有意义。
  * 空串 = 不需要解释（没要过，或查到了）。
+ * @param asked 用户是否已经要过一次 CAS
+ * @param cas   CAS 查询状态
+ * @returns 说明文案；**空串 = 不需要解释**（没问过，或查到了）。
+ *          🔴 区分 `undefined`/`null`：前者是"查询中"、后者是"PubChem 未收录"
  */
 function molCasNote(
   asked: boolean,
@@ -104,6 +115,11 @@ interface UseMolIdents {
  *   所以分子换了标识列表会自动跟着换（🔴 否则会显示上一个分子的 CAS）。
  * @param opts.copy 注入复制实现（默认走全站唯一入口 `copyText`）——
  *   留这个口子是为了探针能在 Node 里驱动真实逻辑而不必启动浏览器。
+ * @param source 反应式来源（getter/ref/computed 皆可，内部 watch）
+ * @param opts.copy 注入复制实现（默认走全站唯一入口 `copyText`）；
+ *   留这个口子是为了探针能在 Node 里驱动真实逻辑而不必启动浏览器
+ * @returns 标识行、CAS 状态、说明文案与 askCas/copyIdent 方法。
+ *          🔴 **必须在 setup 里调**（内部有 watch 与请求入队）
  */
 function useMolIdents(
   source: () => MolIdentSource,

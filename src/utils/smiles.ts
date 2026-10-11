@@ -1,4 +1,9 @@
-/** SMILES 轻量工具（无需 RDKit，纯前端可用） */
+/**
+ * SMILES 轻量工具（无需 RDKit，纯前端可用）
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
+ */
 
 /** 有机子集原子（两字符优先匹配） */
 const TWO_CHAR = ['Cl', 'Br'];
@@ -15,6 +20,8 @@ function isHydrogenToken(token: string): boolean {
  *
  * 仅用于「是否可当作起始物料」的阈值判定与展示 —— 精确值以 /api/parse 返回的
  * `atoms` 为准（根节点用解析结果，子节点用本估算）。
+ * @param smiles 待统计的 SMILES
+ * @returns 重原子个数（排除氢）；SMILES 解析失败按 0 处理，不抛
  */
 function countHeavyAtoms(smiles: string): number {
   const s = smiles.trim();
@@ -58,13 +65,20 @@ function countHeavyAtoms(smiles: string): number {
 }
 
 let seq = 0;
-/** 本地唯一 id（节点 / 反应） */
+/** 本地唯一 id（节点 / 反应）
+ * @param prefix id 前缀（默认 `n`），用于在调试输出里辨认来源
+ * @returns 本进程内唯一的短 id（时间戳36进制 + 自增序号）
+ */
 function uid(prefix = 'n'): string {
   seq += 1;
   return `${prefix}_${Date.now().toString(36)}_${seq.toString(36)}`;
 }
 
-/** 读文本文件（.mol/.sdf/.cdxml/.txt）内容 */
+/** 读文本文件（.mol/.sdf/.cdxml/.txt）内容
+ * @param file 用户选择的文件（.mol/.sdf/.cdxml/.txt）
+ * @returns 文件文本内容
+ * @throws 读取失败时 reject `Error('文件读取失败')`，调用方需提示
+ */
 function readFileAsText(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -74,7 +88,10 @@ function readFileAsText(file: File): Promise<string> {
   });
 }
 
-/** 概率分级配色 key */
+/** 概率分级配色 key
+ * @param p 单步概率（0~1）
+ * @returns 配色档位 key：`>0.5`→`high`、`>0.1`→`mid`、其余 `low`
+ */
 function levelOf(p: number): 'high' | 'mid' | 'low' {
   if (p > 0.5) return 'high';
   if (p > 0.1) return 'mid';

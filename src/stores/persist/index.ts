@@ -15,6 +15,9 @@
  *    ③ 任何网络失败都**静默降级**为本地，绝不抛给调用方 —— 写入失败不该打断用户改树。
  *
  * 当前阶段（S0）：只用本地实现，**行为与改造前完全一致**。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import type { HistoryTask, Session } from '@/types/retro';
 import * as local from './local';
@@ -90,6 +93,7 @@ let useServer = SERVER_PERSIST;
  * 当前是否走服务端实现（供 store 判断「打开任务要不要先异步拉详情」）。
  * 🔴 local 模式必须保持**完全同步**（测试与历史代码都假设 loadSession 同步生效），
  *    只有 server 模式才需要异步 ensureLoaded。
+ * @returns 当前是否走服务端持久化（由 `VITE_PERSIST_SERVER` 决定）
  */
 function isServerPersist(): boolean {
   return useServer;
@@ -99,6 +103,8 @@ function isServerPersist(): boolean {
  * 登录 / 登出时调用：切到服务端实现并预热，或切回本地并清缓存。
  * 🔴 由 auth store 挂钩子调用（applyLogin / markExpired / logout / switchAccount），
  *    业务代码不要直接碰这个函数。
+ * @param authed 是否已登录（未登录时服务端持久化无意义）
+ * @returns 无（void）；内部会在开启/关闭时切换适配器并重灌本地数据
  */
 async function activateServerPersist(authed: boolean): Promise<void> {
   useServer = authed && SERVER_PERSIST;
@@ -121,6 +127,8 @@ async function activateServerPersist(authed: boolean): Promise<void> {
  *
  * 调用方在它返回后**必须重新读** `persist.readSessions()` —— 同步接口只认缓存，
  * 缓存换了不代表已经看过它的 ref 也跟着换了。
+ * @returns 无（void）；🔴 会**重灌** `sessions` 等 ref（不只是拉数据）——
+ *          调用方不要在渲染期间调用，否则已渲染的列表会跳变
  */
 async function refreshPersist(): Promise<void> {
   await (useServer ? serverAdapter.refresh() : localAdapter.refresh());

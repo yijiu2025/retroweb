@@ -15,6 +15,13 @@
  *    黑名单永远漏 —— `java\nscript:`、大小写、前导空白变体太多。
  *
  * @returns 合法则返回原串（已 trim），否则返回 null（调用方应回退到默认占位）
+ * @param raw 待校验的 URL（后端字段，如用户可控的 `avatar`）
+ * @returns 合法则返回**trim 后的原串**，否则返回 `null` —— 调用方应回退到默认占位，
+ *          🔴 判据是**协议白名单**（http/https + 站内相对路径），
+  *          `javascript:` / `data:` / `blob:` 一律判废（见文件头的 XSS 说明）
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 function safeRemoteUrl(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
@@ -33,7 +40,11 @@ function safeRemoteUrl(raw: unknown): string | null {
   return parsed.protocol === 'http:' || parsed.protocol === 'https:' ? parsed.href : null;
 }
 
-/** 便捷版：只要不是合法远端 URL 就返回 fallback（用于直接绑模板的场景） */
+/** 便捷版：只要不是合法远端 URL 就返回 fallback（用于直接绑模板的场景）
+ * @param raw      待校验的 URL
+ * @param fallback 判废时的替代值（用于直接绑模板的场景）
+ * @returns 合法则原串，否则 `fallback`
+ */
 function safeRemoteUrlOr(raw: unknown, fallback: string): string {
   return safeRemoteUrl(raw) ?? fallback;
 }

@@ -17,6 +17,9 @@
  *    · Session.updatedAt   → 服务端 updated_at（列表排序）
  *
  * @since 2026-10-09
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { apiClient } from '@/api/http';
 import type { HistoryTask, Session } from '@/types/retro';
@@ -66,7 +69,13 @@ let clientIdMap: Record<string, number> = {};
 /** 是否已登录（由 index.ts 注入：登录后才走服务端，否则切回本地实现） */
 let authed = false;
 
-/** 供 index.ts 设置登录态；切换账号/登出时传 false 并清内存 */
+/**
+ * 供 index.ts 设置登录态。
+ *
+ * @param next true=走服务端；false=登出/换号，**同时清空内存缓存与 id 映射**
+ *   （不清的话下一个账号会看到上一个账号的任务列表）
+ * @returns 无（void）
+ */
 function setServerAuthed(next: boolean): void {
   authed = next;
   if (!next) {
@@ -81,6 +90,8 @@ function setServerAuthed(next: boolean): void {
  * 🔴 列表接口只回元数据（不含 snapshot，见后端设计），所以这里拉到的每个 session 的
  *    snapshot 是空占位。真正打开任务时由 `ensureLoaded(id)` 按需拉全量详情。
  * 🔴 只在登录那一刻调一次；失败静默（本地缓存保持原样，下次读仍是旧的）。
+ *
+ * @returns 无（void）
  */
 async function preload(): Promise<void> {
   if (!authed) return;
@@ -130,6 +141,7 @@ async function preload(): Promise<void> {
  * 🔴 失败静默：缓存里已有的（可能来自上次写回）继续用，不让"详情拉不到"挡住打开。
  *
  * @param id 前端 Session.id（= client_id）
+ * @returns 无（void）；未登录 / 没有服务端 id（本地新建未同步）/ 拉取失败 —— 均静默跳过
  */
 async function ensureLoaded(id: string): Promise<void> {
   if (!authed) return;
@@ -153,15 +165,31 @@ async function ensureLoaded(id: string): Promise<void> {
 
 // ---- 同步读（返回本地缓存） ----
 
+/**
+ * 读最近任务（**同步**，不发请求）。
+ *
+ * @returns 内存缓存里的最近任务数组。
+ *          🔴 刚 `preload()` 完时每条的 snapshot 是**空占位** ——
+ *          打开任务前必须先 `await ensureLoaded(id)` 拉详情
+ */
 function readSessions(): Session[] {
   return cache.sessions;
 }
 
+/**
+ * 读历史任务（**同步**，不发请求）。
+ *
+ * @returns 内存缓存里的历史任务数组
+ */
 function readHistory(): HistoryTask[] {
   return cache.history;
 }
 
-/** 条件枚举偏好：纯 UI 习惯，仍走本地实现（不迁服务端，避免为小偏好加往返） */
+/**
+ * 条件枚举偏好：纯 UI 习惯，仍走本地实现（不迁服务端，避免为小偏好加往返）。
+ *
+ * @returns 偏好设置
+ */
 function readCondPref(): CondPref {
   return localReadCondPref();
 }
@@ -204,6 +232,16 @@ async function commit(): Promise<void> {
   }
 }
 
+/**
+ * 写最近任务：同步更新内存缓存 + **后台异步提交**到服务端。
+ *
+ * 🔴 同步返回是接口契约（store 里改一个节点就落一次盘，全是同步调用），
+ *    所以真正的网络提交走 `flushSoon()` 合并；提交失败会把列表塞回 `pending`
+ *    下次重试 —— **不丢数据**。
+ *
+ * @param list 完整的最近任务列表
+ * @returns 无（void）
+ */
 function writeSessions(list: Session[]): void {
   cache = { ...cache, sessions: list };
   writeCache(cache);
@@ -213,17 +251,40 @@ function writeSessions(list: Session[]): void {
   }
 }
 
+/**
+ * 写历史任务。
+ *
+ * 🔴 历史记录（S1 阶段）**刻意不迁服务端**，只落本地缓存 ——
+ *    要跨设备的是任务列表，不是历史快照。
+ *
+ * @param list 完整的历史任务列表
+ * @returns 无（void）
+ */
 function writeHistory(list: HistoryTask[]): void {
   // 历史记录（手动保存快照）暂不迁服务端 —— S1 先只迁任务；仍落本地缓存
   cache = { ...cache, history: list };
   writeCache(cache);
 }
 
+/**
+ * 写「候选条件偏好」。纯 UI 习惯，**不迁服务端**，走本地实现。
+ *
+ * @param v 偏好设置
+ * @returns 无（void）
+ */
 function writeCondPref(v: CondPref): void {
   // 偏好类不迁服务端，仍走本地实现
   localWriteCondPref(v);
 }
 
+/**
+ * 清空服务端模式的内存缓存与它自己的 localStorage 缓存键。
+ *
+ * 🔴 **不清 local.ts 那套的键** —— 登出只是关掉服务端通道，
+ *    本地兜底数据必须留着（免登录档全靠它）。
+ *
+ * @returns 无（void）；清不掉 localStorage 也不抛（隐私模式）
+ */
 function clear(): void {
   cache = { ...EMPTY };
   try {

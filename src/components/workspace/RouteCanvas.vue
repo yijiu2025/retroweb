@@ -474,6 +474,140 @@ function onWheel(e: WheelEvent): void {
   zoomAt(zoom.value * Math.exp(-dy * 0.0016), e.clientX - rect.left, e.clientY - rect.top);
 }
 
+/* ---------- ③-b 触摸手势：单指平移 + 双指捏合缩放 ----------
+ *
+ * 🔴 为什么不能用 Pointer Events 一把搞定：现有 `onPointerDown` 里有
+ *    `if (e.pointerType !== 'mouse') return;` —— 触屏**根本进不来**，
+ *    而这行是有意的（注释写「触屏交给原生滚动 / 双指缩放，别把人家的手势吃掉」）。
+ *    但实际查下来：**没有任何 touch 监听器**，`touch-action` 也没设。
+ *    ⇒ 上一条注释描述的是一个**并不存在**的实现：手机上单指拖不动、双指也缩不了。
+ *
+ * 🔴 为什么 pinch 要单独用 touch 事件而不是 Pointer Events：
+ *    双指在 Pointer Events 里是**两个独立 pointerId**，要自己维护活跃指针集合、
+ *    算两点距离、自己判断"第二根手指落下 ⇒ 从缩放模式切入"。用 `touchstart/move`
+ *    的 `touches` 数组直接就是"当前所有触点"，少一层状态机、少一类竞态。
+ *
+ * 🔴 `touch-action: none` 是**前提**：不设的话浏览器会先按自己的规则滚页面 /
+ *    双击缩放，我们的事件处理会被 `passive` 化（无法 preventDefault）⇒ 手势被抢。
+ *    这条写在 CSS 的 `.rcanvas__wrap` 上。
+ */
+
+/**
+ * 🔴 这两个**必须是 ref 而不是 let**：`touching` 那个 computed 读它们来决定
+ *    `.is-touching` 类。`let` 不是响应式，computed 只会在首次求值时算一次、
+ *    此后永不更新 ⇒ 类永远停在初始值（表现为"手势进行中没有任何视觉反馈"）。
+ */
+const touchPinch = ref<{ dist: number; cx: number; cy: number } | null>(null);
+/** 单指平移的起点（与鼠标 pan 同口径：偏移从最初按下点算） */
+const touchPanFrom = ref<{ x: number; y: number; left: number; top: number } | null>(null);
+
+/** 两个触点之间的距离与中点（相对容器左上角） */
+function touchGeom(touches: TouchList, rect: DOMRect): { dist: number; cx: number; cy: number } | null {
+  const a = touches[0];
+  const b = touches[1];
+  if (!a || !b) return null;
+  return {
+    dist: Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY),
+    cx: (a.clientX + b.clientX) / 2 - rect.left,
+    cy: (a.clientY + b.clientY) / 2 - rect.top
+  };
+}
+
+function onTouchStart(e: TouchEvent): void {
+  const el = wrap.value;
+  if (!el) return;
+  // 交互元素上的触摸不接管（按钮/链接的点击要正常生效）
+  if ((e.target as HTMLElement | null)?.closest('button, a, input, textarea, select')) return;
+  const rect = el.getBoundingClientRect();
+
+  if (e.touches.length >= 2) {
+    // 🔴 进入双指：清掉单指平移状态，否则抬手时会按"单指拖动"结算一次 scroll
+    const g = touchGeom(e.touches, rect);
+    touchPinch.value = g;
+    touchPanFrom.value = null;
+    panning.value = false;
+    return;
+  }
+  if (e.touches.length !== 1) return;
+  const t = e.touches[0];
+  touchPanFrom.value = { x: t.clientX, y: t.clientY, left: el.scrollLeft, top: el.scrollTop };
+  downCard = (e.target as HTMLElement | null)?.closest('.rcanvas__card') as HTMLElement | null;
+}
+
+function onTouchMove(e: TouchEvent): void {
+  const el = wrap.value;
+  if (!el) return;
+  const rect = el.getBoundingClientRect();
+
+  // ---- 双指：捏合缩放（以两指中点为锚点，与滚轮同一套 zoomAt）----
+  if (e.touches.length >= 2) {
+    const g = touchGeom(e.touches, rect);
+    if (!g) return;
+    // 🔴 必须 preventDefault：不设 touch-action:none 时浏览器会同时滚页面
+    const prev = touchPinch.value;
+    if (prev && prev.dist > 0) {
+      // 距离比 = 目标缩放倍率；用**倍数**而非加法，与滚轮的 exp 手感一致
+      zoomAt(zoom.value * (g.dist / prev.dist), g.cx, g.cy);
+    }
+    touchPinch.value = g;
+    e.preventDefault();
+    return;
+  }
+
+  // ---- 单指：平移（与鼠标 pan 完全同一套 scroll 坐标）----
+  const from = touchPanFrom.value;
+  if (!from || e.touches.length !== 1) return;
+  const t = e.touches[0];
+  const dx = t.clientX - from.x;
+  const dy = t.clientY - from.y;
+  if (!panning.value && Math.hypot(dx, dy) <= PAN_SLOP) return;
+  panning.value = true;
+  el.scrollLeft = from.left - dx;
+  el.scrollTop = from.top - dy;
+  e.preventDefault();
+}
+
+function onTouchEnd(e: TouchEvent): void {
+  const el = wrap.value;
+  // 双指抬起一根 ⇒ 剩余那根**重新起算**起点，否则会跳一下
+  // （起点还是两指刚分开时的位置，scroll 会被一次性拽回去）。
+  if (e.touches.length === 1 && el) {
+    const t = e.touches[0];
+    touchPanFrom.value = { x: t.clientX, y: t.clientY, left: el.scrollLeft, top: el.scrollTop };
+    touchPinch.value = null;
+    panning.value = false;
+    return;
+  }
+  if (e.touches.length > 0) return;
+
+  // 位移取最后一个抬手触点相对起点的欧氏距离（与鼠标路径同一口径）
+  const from = touchPanFrom.value;
+  const last = e.changedTouches[e.changedTouches.length - 1];
+  const moved =
+    from && last ? Math.hypot(last.clientX - from.x, last.clientY - from.y) : 0;
+  const card = downCard;
+  const wasPanning = panning.value;
+  touchPinch.value = null;
+  touchPanFrom.value = null;
+  downCard = null;
+  panning.value = false;
+
+  // 与 onPointerUp 同一套「双击改这一步」判定
+  if (!card || wasPanning || moved > TAP_SLOP) return;
+  const id = card.dataset.nodeId ?? '';
+  if (!id) return;
+  const now = Date.now();
+  if (lastTap && lastTap.id === id && now - lastTap.at < TAP_GAP) {
+    lastTap = null;
+    store.openStepEditor(id);
+  } else {
+    lastTap = { id, at: now };
+  }
+}
+
+/** 触摸手势是否正在进行（给 `.is-touching` 一个视觉反馈；🔴 必须读 ref 才对） */
+const touching = computed(() => touchPinch.value !== null || touchPanFrom.value !== null);
+
 /* ③ 按住拖动平移（pan）—— 改的是 scrollLeft/Top，与 sizer / 滚动条完全兼容：
       原生滚动条、滚轮（未命中缩放时）走的是同一套坐标，不会出现两套偏移互相打架。 */
 const panning = ref(false);
@@ -1050,12 +1184,16 @@ const dirHint = computed(() =>
         v-else
         ref="wrap"
         class="rcanvas__wrap rw-scroll"
-        :class="{ 'is-panning': panning }"
-        title="拖动平移 · 滚轮缩放"
+        title="拖动平移 · 滚轮缩放（触屏：单指拖动 · 双指缩放）"
+        :class="{ 'is-panning': panning, 'is-touching': touching }"
         @pointerdown="onPointerDown"
         @pointermove="onPointerMove"
         @pointerup="onPointerUp"
         @pointercancel="onPointerUp"
+        @touchstart="onTouchStart"
+        @touchmove="onTouchMove"
+        @touchend="onTouchEnd"
+        @touchcancel="onTouchEnd"
       >
         <!-- 🔴 sizer 的尺寸由 syncSizer() 直接写 style（宽高 = max(画布×缩放, 容器) + 四周余量）。
              不在这里用 :style 绑 —— 两处来源会打架，而且缩放时必须**同步**写，
@@ -1414,6 +1552,19 @@ const dirHint = computed(() =>
 /* ---------- 画布 ---------- */
 .rcanvas__wrap {
   position: relative;
+  /* 🔴 触摸手势的前提：`none` = 浏览器**不要**自己做手势（滚动 / 双击缩放），
+     完全交给本组件（单指平移 + 双指缩放由 onTouch* 实现）。
+     不设的话在真机上浏览器会先按自己的规则滚页面，手势被抢、且与页面滚动打架。
+     ⚠️ 只在 .rcanvas__wrap 上设，卡片内部不受影响（步骤条的横向滚动仍可用）。
+     ⚠️⚠️ 这条**在 headless 里测不出来**：CDP 的 `Input.dispatchTouchEvent` 直接把
+        事件投递给渲染进程，绕过了合成器的手势判定 —— 实测把它改成 `auto`，
+        单指平移/双指缩放**照样**全绿。所以「去掉它会坏」这件事只能在真机复现，
+        别拿 headless 的绿去反推它可有可无（反向证明在此环境下**不成立**）。
+        能验的是另一半：`preventDefault` 确实生效（事件 cancelable=true），
+        见 `.tmp-probe/passive-check.cjs`。 */
+  touch-action: none;
+  /* 关掉移动端的点击高亮与双击缩放残留 */
+  -webkit-tap-highlight-color: transparent;
   /* 🔴 高度交给 flex 分配（吃掉卡片剩余空间），**不再写** `max-height: calc(100vh - 330px)`：
       那个魔法数把画布上限钉死在一个跟"上方有几块"无关的值上，
       上面每多一行（通知条 / 方案栏 / 页签）它就失准一次，窗口越小越吃亏。

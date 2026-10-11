@@ -4,6 +4,9 @@
  * 用 zod 判别联合收敛，避免 `event.data as any` —— 外部输入必须过窄接口。
  * 消息类型与 posecraft / firewall 的实现完全一致（SSO_READY / LOGIN_SUCCESS /
  * MAX_SESSIONS / SSO_DENIED），oauth21 侧的发送方在 `oauth21/src/utils/parent.ts`。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { z } from 'zod';
 
@@ -51,7 +54,11 @@ interface ThemeChangeMessage {
   isDark: boolean;
 }
 
-/** 解析一条 postMessage；非法消息返回 null（宿主静默丢弃，不崩） */
+/** 解析一条 postMessage；非法消息返回 null（宿主静默丢弃，不崩）
+ * @param data iframe 收到的原始 `MessageEvent.data`（任意值）
+ * @returns 经 zod 校验后的消息体；**形状不认识返回 null**（不是抛错）——
+ *          调用方只需判空。🔴 这只是形状校验，**来源可信性由调用方用 origin+source 判定**
+ */
 function parseSsoMessage(data: unknown): SsoMessage | null {
   const parsed = SsoMessageSchema.safeParse(data);
   return parsed.success ? parsed.data : null;

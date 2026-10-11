@@ -9,6 +9,9 @@
  *     SVG 没有 width/height 属性时会被 flex 压成 20 多像素 ⇒ 画完必须按
  *     「恒定键长」写回明确像素尺寸（fitSvg）。
  *  3. 个别版本 successCallback 不触发 ⇒ 统一加兜底。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import type { SmiDrawerLike } from '@/types/external';
 
@@ -47,7 +50,10 @@ const BOND_UNIT = 24;
 
 let loader: Promise<void> | null = null;
 
-/** 按需加载 smiles-drawer 脚本（幂等） */
+/** 按需加载 smiles-drawer 脚本（幂等）
+ * @returns 加载完成的 Promise（`window.SmilesDrawer` 就绪）。
+ *          内部已缓存：并发调用共用同一次加载，重复调用不会重复下载脚本
+ */
 function loadSmilesDrawer(): Promise<void> {
   if (loader) return loader;
   loader = new Promise<void>((resolve, reject) => {
@@ -229,6 +235,10 @@ function fixMaskRegions(svg: SVGSVGElement): void {
 /**
  * 把一个 SMILES 画进容器（自动创建并插入 <svg>）。
  * @returns 是否真的画出了图元
+ * @param container 目标容器（函数内自动创建并插入 `<svg>`）
+ * @param smiles   要绘制的结构
+ * @param options  绘制选项（键长/最小最大尺寸/主题等，缺省用内置值）
+ * @returns 是否真的画出了图元（非法 SMILES / 脚本未就绪时返回 false，**不抛**）
  */
 async function drawSmiles(
   container: HTMLElement,

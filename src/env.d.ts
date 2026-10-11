@@ -56,6 +56,13 @@ interface ImportMetaEnv {
   readonly VITE_RETRO_VIA_NODE?: string;
   /** 任务持久化走服务端（'true'）；未登录 / 离线自动回落 localStorage */
   readonly VITE_PERSIST_SERVER?: string;
+  /**
+   * 前端**是否有权启停模型**（加载 / 切换 / 停止模型服务、热挂正向模型）。
+   *  · `auto`（默认）—— 直连 Python 允许；走 Node 中转禁止（模型加载归 Node 管）
+   *  · `on` / `off` —— 强制允许 / 强制禁止
+   * 见 `src/config/services.ts` 的 `MODEL_CONTROL_MODE`。
+   */
+  readonly VITE_RETRO_MODEL_CONTROL?: string;
 }
 
 interface ImportMeta {

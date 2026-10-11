@@ -16,6 +16,9 @@
  *
  * 加载策略：WASM 7.4MB，**首次用到才拉**（单例 Promise）。别在首屏 import 里 await 它，
  * 否则每个只看历史记录的用户都要白下 7MB。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import initRDKitModule from '@rdkit/rdkit';
 import type { MainModule, Mol } from '@rdkit/rdkit';
@@ -35,7 +38,10 @@ const SUGGESTION_LIMIT = 4;
 let loader: Promise<MainModule> | null = null;
 let ready = false;
 
-/** 懒加载 WASM 引擎（幂等；失败后允许重试） */
+/** 懒加载 WASM 引擎（幂等；失败后允许重试）
+ * @returns WASM 引擎实例。**幂等**：并发调用共用同一次加载；
+ *          失败会把缓存的 loader 清空，允许下次重试（否则会永远拿到同一个 rejected promise）
+ */
 function loadRdkit(): Promise<MainModule> {
   if (!loader) {
     loader = initRDKitModule({ locateFile: () => wasmUrl })
@@ -56,6 +62,8 @@ function loadRdkit(): Promise<MainModule> {
 /**
  * WASM 引擎是否**已加载完成**（只读，不会触发加载）。
  * 用途：告诉用户"首次解析正在下载引擎"，而不是让界面看起来卡住。
+ * @returns 引擎是否**已加载完成**。只读状态、**不会触发加载** ——
+ *          用途是提示"首次解析正在下载引擎"，而不是让界面看起来卡住
  */
 function isRdkitReady(): boolean {
   return ready;
@@ -64,6 +72,8 @@ function isRdkitReady(): boolean {
 /**
  * 这类输入浏览器版 RDKit 读不了，必须回落后端 `/api/parse`。
  * 目前只有 CDXML 一种。
+ * @param text 用户粘贴/上传的结构文本
+ * @returns 是否必须回落后端解析。目前**只有 CDXML**（浏览器版 `get_mol()` 读不了）
  */
 function needsBackendParse(text: string): boolean {
   return CDXML_RE.test((text || '').trim());
@@ -72,6 +82,9 @@ function needsBackendParse(text: string): boolean {
 /**
  * 解析一段结构文本（SMILES / 反应式 SMILES / MOL / SDF）为规范 SMILES + 分子信息。
  * 失败时返回人话诊断 + 一键修复候选，与后端 `/api/parse` 的响应形状一致。
+ * @param text SMILES / 反应式 SMILES / MOL / SDF 文本
+ * @returns 规范 SMILES + 分子信息；**失败不抛**，返回人话诊断（`reasons`）
+ *          + 一键修复候选（`suggestions`），形状与后端 `/api/parse` 一致
  */
 async function parseStructure(text: string): Promise<ParseResult> {
   const input = (text || '').trim();
@@ -135,6 +148,10 @@ async function parseStructure(text: string): Promise<ParseResult> {
 /**
  * SMILES → 带 2D 坐标的 molfile（画板载入已有结构用）。
  * 坐标由 RDKit 的 `set_new_coords()` 生成，前端不自己算布局。
+ * @param smiles 要出图的 SMILES
+ * @returns 带 2D 坐标的 molfile 文本（画板载入已有结构用）。
+ *          坐标由 RDKit 的 `set_new_coords()` 生成，前端不自己算布局；
+ *          输入为空或解析失败返回 null
  */
 async function depictMolfile(smiles: string): Promise<string | null> {
   const input = (smiles || '').trim();

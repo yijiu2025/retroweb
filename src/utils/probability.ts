@@ -9,9 +9,16 @@
  * 🔴 连乘口径：手动步按 **1** 计入（见 `stores/workspace.ts` 的 `simulateScheme`），
  *    所以含手动步的"总概率"与纯模型路线**不可比** —— `routePct` 会把这件事
  *    直接写在文案里，不留给使用者去猜。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 
-/** 单步概率文案：手动步给「手动」两个字，其余按百分比 */
+/** 单步概率文案：手动步给「手动」两个字，其余按百分比
+ * @param probability 该步概率（0~1；`NaN`/`Infinity` 显示为「—」）
+ * @param manual       是否为手动步（手动步显示「手动」两字，**不显示百分比**）
+ * @returns 单步概率文案
+ */
 function stepPct(probability: number, manual?: boolean): string {
   if (manual) return '手动';
   if (!Number.isFinite(probability)) return '—';
@@ -29,6 +36,10 @@ function stepPct(probability: number, manual?: boolean): string {
  * 实际里面有几步是用户自己定的，两者不可比。
  *
  * @param digits 小数位。默认 2；只有 1 位小数历史的调用点传 1，避免改变既有显示。
+ * @param probability 整条路线概率（连乘值，0~1）
+ * @param manualSteps 含手动步的数量；> 0 时文案追加「（含 N 步手动）」
+ * @param digits      小数位。默认 2；只有 1 位小数历史的调用点传 1，避免改变既有显示。
+ * @returns 路线总概率文案；`manualSteps > 0` 时必带后缀（否则数字会被误读为模型整体评估）
  */
 function routePct(probability: number, manualSteps = 0, digits = 2): string {
   if (!Number.isFinite(probability)) return '—';

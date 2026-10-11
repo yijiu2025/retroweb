@@ -25,6 +25,15 @@
  *   <1180px  辅助面板堆到主区下方（横向空间不够，收成竖条反而更挤）
  *   <1024px  侧栏自动收成图标条
  *   <768px   顶栏压到 52px、副标题隐藏
+ *
+ * 🔴 挂在 `App.vue` 而不是某个页面里：它持有**唯一的 `router-view`**，
+ *    5 个页面共用这一套壳；挂进页面会在路由切换时被卸载（侧栏/顶栏跟着闪）。
+ *
+ * 🔴 根元素是 `overflow:hidden` 的 flex 容器 ⇒ 任何需要不被裁剪的浮层
+ *    （登录弹窗等 Teleport 到 body 的组件）必须挂在**它外面**，别往里塞。
+ *
+ * @author yijiu2025
+ * @since 2026-10-05
  */
 import { computed, onMounted, onUnmounted, ref, type Component } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
@@ -46,15 +55,61 @@ const store = useWorkspaceStore();
 const route = useRoute();
 const router = useRouter();
 
+/**
+ * 手机端档（<768）：侧栏**整个不渲染**，改用底部固定页签。
+ *
+ * 🔴 为什么不用「收成图标条」：64px 图标条在 390 宽的屏上要占掉 1/6 宽度，
+ *    而且 4~5 个入口只剩图标、没有文字，得靠记忆 —— 手机上尤其难认。
+ *    底部页签在拇指热区，且天然带文字。
+ */
 const isMobile = ref(false);
 /** 窄屏（<1180）时辅助面板堆到下方，此时收起态没有意义 → 强制展开显示 */
 const narrow = ref(false);
 
 const collapsed = computed({
-  get: () => settings.sidebarCollapsed || isMobile.value,
+  // 🔴 isMobile 下侧栏压根不渲染，收起态对它没有意义 ⇒ 不参与计算，
+  //    否则「切回桌面宽度时会莫名是收起态」（sidebarCollapsed 已被 isMobile 污染过）。
+  get: () => (isMobile.value ? false : settings.sidebarCollapsed),
   set: (v: boolean) => {
     settings.sidebarCollapsed = v;
   }
+});
+
+/** 底部页签的第四格：「设置」不走路由，是弹运行设置 */
+const settingsOpen = computed({
+  get: () => store.runSettingsOpen,
+  set: (v: boolean) => {
+    store.runSettingsOpen = v;
+  }
+});
+
+/**
+ * dev 自检用：CSS 的 `max-width` **包含**阈值本身，而 JS 用 `<=`。
+ * 若日后有人把 CSS 改成 `max-width: 767px` 之类，两者就会错开 ⇒ 两套导航都没了。
+ * 这里直接问 CSS「此刻侧栏是不是被隐藏了」，与 JS 的判断对照。
+ */
+const asideHiddenByCss = ref(false);
+
+function checkNavConsistency(): void {
+  if (!import.meta.env.DEV) return;
+  const el = asideRef.value;
+  if (!el) return;
+  asideHiddenByCss.value = getComputedStyle(el).display === 'none';
+}
+
+/**
+ * 🔴 只在 dev 生效。`import.meta.env.DEV` **不能写在模板表达式里**
+ *    （Vue 编译模板时 sourceType 不是 module，构建期直接报
+ *    "import.meta may appear only with 'sourceType: module'"）⇒ 必须经脚本侧的 computed。
+ */
+const showNavSelfCheck = computed(
+  () => import.meta.env.DEV && !isMobile.value && asideHiddenByCss.value
+);
+
+/** 当前激活的是哪个一级入口（404 不属于任何一个 → 全部不高亮） */
+const activeNavPath = computed(() => {
+  const hit = navItems.find((i) => i.path === route.path);
+  return hit ? hit.path : '';
 });
 
 /** 打开某个历史任务：恢复它的路线树 + 收起标定面板，必要时跳回工作台 */
@@ -188,26 +243,47 @@ const asideContent = computed<AsideComp | null>(() => {
   return null;
 });
 
+/** 手机端档的宽度阈值。CSS 侧是 `@media (max-width: 768px)`（**含** 768）。 */
+const MOBILE_MAX_W = 768;
+
 function onResize(): void {
-  isMobile.value = window.innerWidth < 768;
+  // 🔴 阈值必须与 CSS 断点**逐字一致**（见 style 里的 `@media (max-width: 768px)`）。
+  //    ⚠️ 这里必须是 `<=` 而不是 `<`：CSS 的 `max-width: 768px` **包含** 768 整，
+  //    若 JS 用 `<`，则在 768 整这一档会同时出现
+  //    「CSS 判手机 ⇒ 侧栏 display:none」+「JS 判非手机 ⇒ 不渲染底部页签」
+  //    ⇒ **侧栏与页签同时消失、导航整个不见了**（实测在 768×1024 复现）。
+  //    两处不同步就是这个 bug 的根，改任何一边都要同时改另一边。
+  isMobile.value = window.innerWidth <= MOBILE_MAX_W;
   narrow.value = window.innerWidth < 1180;
 }
 
-onMounted(() => {
+const asideRef = ref<HTMLElement | null>(null);
+
+/**
+ * 🔴 必须是**具名**函数：内联箭头传给 addEventListener 的话，
+ *    `removeEventListener(…, onResize)` 移除的是**另一个引用** ⇒ 监听器泄漏，
+ *    组件卸载后再改窗口尺寸仍会跑 onResize（对已卸载的 ref 赋值、访问已销毁的 store）。
+ */
+function handleResize(): void {
   onResize();
-  window.addEventListener('resize', onResize);
+  checkNavConsistency();
+}
+
+onMounted(() => {
+  handleResize();
+  window.addEventListener('resize', handleResize);
   // 🔴 后端就绪检测放在**应用外壳**而非某个视图：标定态（首次进入）也要知道
   //    后端连没连上、模型就绪没就绪 —— 否则首页看不到任何异常提示。
   //    loadModels 失败会 setGlobalError ⇒ 首页顶部的提示条据此显示"后端未就绪"。
   void store.loadModels();
 });
 
-onUnmounted(() => window.removeEventListener('resize', onResize));
+onUnmounted(() => window.removeEventListener('resize', handleResize));
 </script>
 
 <template>
   <div class="app" :class="{ 'is-collapsed': collapsed, 'is-narrow': narrow }">
-    <aside class="app__aside">
+    <aside ref="asideRef" class="app__aside">
       <div class="app__brand">
         <span class="app__logo" aria-label="RetroWeb">
           <svg viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
@@ -360,6 +436,78 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
         <el-button @click="store.runSettingsOpen = false">关闭</el-button>
       </template>
     </el-dialog>
+
+    <!--
+      🔴 自检：侧栏与页签是**互斥**的两套导航。若某处把 JS 阈值与 CSS 断点改得不一致，
+        会出现「两套都不显示 ⇒ 整个导航消失」且**没有任何报错**。
+        这里在 dev 下把这种情况显式暴露出来，别让它变成"用户说找不到菜单"这种难查的问题。
+    -->
+    <p v-if="showNavSelfCheck" class="app__nav-selfcheck">
+      导航自检失败：CSS 已按手机档隐藏侧栏，但 JS 判为非手机 ⇒ 两套导航都没了。
+      请核对 MOBILE_MAX_W 与 @media (max-width: …) 是否一致。
+    </p>
+
+    <!--
+      🔴 手机端底部页签（<768 才渲染，见 style 的 @media）。
+
+      为什么用 `v-if="isMobile"` 而不是纯 CSS 隐藏：
+        · 侧栏那条路上还有「最近的任务」「目标分析」「运行设置」等大量节点，
+          CSS 隐藏只是看不见，**DOM 仍在、组件仍 mount**，手机端的内存与初始化开销白付；
+        · 底部页签是**新增**的导航入口，纯 CSS 做不出来（它是条件渲染出来的）。
+
+      第五格「设置」不走路由：它打开的是本组件里那个共享的「运行设置」弹窗
+      （`store.runSettingsOpen`），所以在侧栏不渲染时依然可用 ——
+      🔴 这正是它必须放在这里的原因：侧栏的设置齿轮在手机端整个没了，
+      少了这一格就等于手机端**完全没有**运行参数的入口。
+    -->
+    <nav v-if="isMobile" class="app__tabbar" aria-label="主导航">
+      <button
+        v-for="item in navItems"
+        :key="item.path"
+        type="button"
+        class="app__tab"
+        :class="{ 'is-active': activeNavPath === item.path }"
+        :aria-current="activeNavPath === item.path ? 'page' : undefined"
+        @click="router.push(item.path)"
+      >
+        <span class="app__tab-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <path v-for="d in NAV_ICON_PATHS[item.icon]" :key="d" :d="d" />
+          </svg>
+        </span>
+        <span class="app__tab-label">{{ item.label }}</span>
+      </button>
+
+      <button
+        type="button"
+        class="app__tab"
+        :class="{ 'is-active': settingsOpen }"
+        :aria-expanded="settingsOpen"
+        @click="settingsOpen = true"
+      >
+        <span class="app__tab-icon" aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.8"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+          >
+            <circle cx="12" cy="12" r="3" />
+            <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1" />
+          </svg>
+        </span>
+        <span class="app__tab-label">设置</span>
+      </button>
+    </nav>
   </div>
 </template>
 
@@ -697,8 +845,23 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
 }
 
 @media (max-width: 768px) {
+  /* 🔴 手机端：侧栏**整个不渲染**（结构层 `v-if` 已保证不 mount，这里是兜底）。
+     底部页签接管导航。 */
+  .app__aside {
+    display: none;
+  }
   .app__content {
     padding: var(--rw-content-pad-y) 12px;
+  }
+  /* 🔴 底部页签占位：给**滚动区**留出高度，否则最后一块内容被 fixed 页签盖住。
+     🔴 必须挂在 .app__content（`flex:1` 的那个滚动容器）——不是 .app__body：
+        .app__body 是 flex 列，padding 加在它上面不会让内部滚动区变短。
+     🔴🔴 **必须放在上面那条 `padding` 简写之后**：简写会把 padding-bottom 重置回
+        上下值（实测 767/768 两档留白只有 12px，内容被页签盖住；480 档因为顺序
+        恰好在后面才"碰巧"正常 —— 这种靠顺序侥幸是对的，最该修）。
+        高度与 .app__tabbar 的 min-height 一致（56px）+ 安全区。 */
+  .app__content {
+    padding-bottom: calc(56px + env(safe-area-inset-bottom, 0px));
   }
   .app__heading p {
     display: none;
@@ -719,6 +882,109 @@ onUnmounted(() => window.removeEventListener('resize', onResize));
   :global(html:root) {
     --rw-header-h: 52px;
     --rw-content-pad-y: 12px;
+  }
+}
+
+/* dev 自检条：只在开发模式出现，且刻意用刺眼的配色（别让它被当成正常 UI 忽略掉） */
+.app__nav-selfcheck {
+  margin: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #fde8e8;
+  color: #a32d2d;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* ---------- 底部页签（手机端） ----------
+   🔴 与 .app__aside 是**互斥**的两套导航，靠 768 断点切换；
+      模板侧还有 `v-if="isMobile"` 保证 isMobile 时侧栏不 mount。
+   🔴 高度固定 56px：.app__content 的 padding-bottom 必须与它一致，否则内容被盖。 */
+.app__tabbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 60;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 1fr;
+  align-items: stretch;
+  background: var(--rw-surface);
+  border-top: 1px solid var(--rw-border);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* 🔴 单格 ≥44px 高（触摸目标下限）；图标 22 + 文字 11 上下排开 */
+.app__tab {
+  appearance: none;
+  border: none;
+  background: none;
+  min-height: 56px;
+  padding: 6px 2px 7px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  color: var(--rw-text-3);
+  cursor: pointer;
+  font-family: inherit;
+}
+.app__tab.is-active {
+  color: var(--rw-brand);
+}
+.app__tab-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+}
+.app__tab-icon svg {
+  width: 22px;
+  height: 22px;
+}
+.app__tab-label {
+  font-size: 11px;
+  line-height: 1.1;
+  /* 标签最长 4 个字（「任务列表」），窄屏下别让它换行把格子撑高 */
+  white-space: nowrap;
+}
+
+/* ---------- 480：小屏（iPhone SE 等）收紧间距与字号 ----------
+   🔴 此前**没有**这一档：390 宽的手机会直接命中 768 那条最粗的规则，
+      结果是元素按 768 的尺寸铺在 390 的屏上 —— 留白过大、一行放不下几项。 */
+@media (max-width: 480px) {
+  .app__content {
+    padding: var(--rw-content-pad-y) 10px;
+  }
+  .app__header {
+    padding: 0 10px;
+    gap: 6px;
+  }
+  .app__actions {
+    gap: 4px;
+  }
+  .app__heading h1 {
+    font-size: 14px;
+  }
+  .app__tab {
+    min-height: 52px;
+  }
+  .app__tab-icon,
+  .app__tab-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  .app__tab-label {
+    font-size: 10px;
+  }
+  /* 与上面 .app__tabbar 在 480 档的 52px 保持一致 */
+  .app__content {
+    padding-bottom: calc(52px + env(safe-area-inset-bottom, 0px));
+  }
+  :global(html:root) {
+    --rw-content-pad-y: 10px;
   }
 }
 

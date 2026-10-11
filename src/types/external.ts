@@ -4,6 +4,9 @@
  * 规则：
  *  - 第三方注入到 window 上的全局（smiles-drawer）→ `declare global` 窄接口
  *  - 后端响应 → 见 `types/retro.ts`（本仓库后端）与 `types/sso.ts`（oauth21 postMessage）
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 
 /**

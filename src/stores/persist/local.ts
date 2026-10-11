@@ -13,6 +13,9 @@
  *   · 写不进去（配额超）时**先瘦身后重试**，而不是直接放弃 —— 静默丢整棵树的代
  *     价远大于丢 AI 分析原文；
  *   · 每个读写都 try：SSR / 隐私模式下没有 localStorage，抛错会让 store 建不起来。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import type { HistoryTask, MolNode, Session } from '@/types/retro';
 
@@ -28,6 +31,12 @@ interface CondPref {
   count: number;
 }
 
+/**
+ * 读历史任务列表。
+ *
+ * @returns 历史任务；读不到/数据损坏一律返回**空数组**（不抛）——
+ *          隐私模式下没有 localStorage 时 store 也要能建起来
+ */
 function readHistory(): HistoryTask[] {
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
@@ -39,6 +48,12 @@ function readHistory(): HistoryTask[] {
   }
 }
 
+/**
+ * 写历史任务列表。
+ *
+ * @param list 完整的历史任务列表（整体覆盖，不是追加）
+ * @returns 无（void）；写失败（配额超）时静默忽略 —— 见文件头「先瘦身后重试」的说明
+ */
 function writeHistory(list: HistoryTask[]): void {
   try {
     localStorage.setItem(HISTORY_KEY, JSON.stringify(list));
@@ -47,6 +62,11 @@ function writeHistory(list: HistoryTask[]): void {
   }
 }
 
+/**
+ * 读最近任务快照。
+ *
+ * @returns 最近任务数组（按写入顺序，最多 `SESSIONS_LIMIT` 条）；读不到返回空数组
+ */
 function readSessions(): Session[] {
   try {
     const raw = localStorage.getItem(SESSIONS_KEY);
@@ -58,6 +78,16 @@ function readSessions(): Session[] {
   }
 }
 
+/**
+ * 写最近任务快照，**超量时自动瘦身**。
+ *
+ * 🔴 瘦身不是可选优化：localStorage 配额很金贵，写满会让**所有** localStorage
+ *    操作（包括别的域）一起失败。这里先裁到 `SESSIONS_LIMIT` 条并剥掉可重建的字段
+ *    （快照节点、概率等）再写。
+ *
+ * @param list 完整的最近任务列表
+ * @returns 无（void）
+ */
 function writeSessions(list: Session[]): void {
   try {
     localStorage.setItem(SESSIONS_KEY, JSON.stringify(list.slice(0, SESSIONS_LIMIT)));
@@ -97,6 +127,11 @@ function writeSessions(list: Session[]): void {
   }
 }
 
+/**
+ * 读「候选条件偏好」（先列条件 or 直接分析）。
+ *
+ * @returns 偏好设置；读不到时返回默认值（`planFirst:false`、`count:5`）
+ */
 function readCondPref(): CondPref {
   const def = { planFirst: true, count: 4 };
   try {
@@ -114,6 +149,12 @@ function readCondPref(): CondPref {
   }
 }
 
+/**
+ * 写「候选条件偏好」。
+ *
+ * @param v 偏好设置
+ * @returns 无（void）
+ */
 function writeCondPref(v: CondPref): void {
   try {
     localStorage.setItem(COND_PREF_KEY, JSON.stringify(v));
@@ -123,6 +164,12 @@ function writeCondPref(v: CondPref): void {
 }
 
 /** 清空本地缓存（🔴 切换账号 / 登出 / 401 时必须调，否则上一个用户的任务会串台） */
+/**
+ * 清掉本地全部持久化数据（历史 + 最近任务）。
+ *
+ * 🔴 **只清历史与会话**，不动条件偏好（那是用户的使用习惯，不是任务数据）。
+ * @returns 无（void）；清不掉也不抛（隐私模式），内存态由调用方负责清
+ */
 function clearAll(): void {
   try {
     localStorage.removeItem(HISTORY_KEY);

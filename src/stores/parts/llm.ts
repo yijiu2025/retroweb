@@ -11,6 +11,9 @@
  * 🔴 它拿到的 ctx 是**只读意图**的：`nodes` / `params` / `route` / `rootId` 只用来取数，
  *    唯一的写回通道是「改节点上的 analyses 字段」+ `ctx.schedulePersist()` 通知落盘。
  *    不要让这个零件反过来去动树的结构 —— 那说明东西放错了地方。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { ref, type Ref } from 'vue';
 import {
@@ -56,6 +59,9 @@ interface LlmPartCtx {
   schedulePersist: () => void;
 }
 
+/**
+ * @returns LLM 状态分片（配置/分析/追问），供 `createWorkspaceStore` 组装
+ */
 function createLlmPart(ctx: LlmPartCtx) {
   const llmStatus = ref<LlmStatus | null>(null);
   /** AI 工艺分析勾选的模块（默认全选）。空数组 = 全量分析（与后端语义一致） */

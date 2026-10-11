@@ -23,6 +23,9 @@
  * 绝不影响结构式与整张表。注意区分两种「没有」：
  *   · `null`      = 查过了，PubChem 确实没有（不重查）
  *   · `undefined` = 还没查到（查询中 / 网络失败，以后可以再查）
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { ref } from 'vue';
 import type { PubChemSynonymsResponse } from '@/types/external';
@@ -71,6 +74,10 @@ let draining = false;
 /**
  * 读查询结果（模板里直接用）。
  * 读 `known` / `absent` 即建立响应式依赖 ⇒ 查完自动重渲染。
+ * @param smiles 目标结构
+ * @returns 三态：已查到返回 `CasInfo`；查过但 PubChem 未收录返回 `null`；
+ *          **没查过/查不到返回 `undefined`**。🔴 三态必须区分 ——
+ *          「未收录」要提示用户，「还没查」不能提示（否则界面一打开就说查不到）
  */
 function casState(smiles: string): CasState {
   if (!smiles) return undefined;
@@ -80,12 +87,18 @@ function casState(smiles: string): CasState {
   return undefined;
 }
 
-/** PubChem 上按结构检索的页面 —— 「在哪里可以查 CAS」的直接答案 */
+/** PubChem 上按结构检索的页面 —— 「在哪里可以查 CAS」的直接答案
+ * @param smiles 目标结构
+ * @returns PubChem 按结构检索的页面 URL（「去哪里能查到 CAS」的标准答案）
+ */
 function pubchemUrl(smiles: string): string {
   return `https://pubchem.ncbi.nlm.nih.gov/#query=${encodeURIComponent(smiles)}`;
 }
 
-/** PubChem 化合物详情页（点 CAS 号就去这里） */
+/** PubChem 化合物详情页（点 CAS 号就去这里）
+ * @param cid PubChem 化合物 ID（CID）
+ * @returns 该化合物的 PubChem 详情页 URL（点 CAS 号跳转过去）
+ */
 function cidUrl(cid: number): string {
   return `https://pubchem.ncbi.nlm.nih.gov/compound/${cid}`;
 }
@@ -93,6 +106,9 @@ function cidUrl(cid: number): string {
 /**
  * 排队查一个 SMILES（幂等：已查过 / 已在队列里的直接返回）。
  * 组件对自己的 SMILES 各调一次即可，去重全交给这里。
+ * @param smiles 要查 CAS 的结构
+ * @returns 无（void）；**幂等且立即返回** —— 已查过/已在队列里的直接跳过。
+ *          实际请求由内部队列串行执行（限流），组件各调一次即可，去重全交给这里
  */
 function requestCas(smiles: string): void {
   if (!smiles || casState(smiles) !== undefined || pending.has(smiles)) return;
@@ -101,7 +117,10 @@ function requestCas(smiles: string): void {
   if (!draining) void drain();
 }
 
-/** 批量排队 */
+/** 批量排队
+ * @param list 要批量查询的结构列表
+ * @returns 无（void）；逐个转交 `requestCas`（同样幂等）
+ */
 function requestCasMany(list: readonly string[]): void {
   for (const s of list) requestCas(s);
 }

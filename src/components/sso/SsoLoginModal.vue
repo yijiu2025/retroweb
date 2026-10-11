@@ -9,6 +9,16 @@
  *
  * 🔴 注册 / 忘记密码 / 邮箱二次验证 / 设备超限全部由 iframe 内 oauth21 提供，
  *    本应用不自建 —— 视觉永远与 oauth21 一致，协议变更由它自己消化。
+ *
+ * 🔴 必须挂在 `App.vue`（与 `AppShell` 平级），不能挂进某个页面：
+ *    触发源是**全局**的 —— HTTP 401（`api/http.ts` 的 `intercept401`）、
+ *    路由守卫未登录拦截、用户手动点「登录」。「不在那个页面就弹不出来」是不可接受的。
+ *
+ * 🔴 它是 `AppShell` 的**兄弟**而非后代：AppShell 根元素 `overflow:hidden`，
+ *    放进去会被裁剪；el-dialog 默认 Teleport 到 body，挂在外面才不受布局约束。
+ *
+ * @author yijiu2025
+ * @since 2026-10-05
  */
 import { computed, nextTick, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';

@@ -1,0 +1,696 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>RetroWeb 手机端 UI 方案 · 交互原型</title>
+<style>
+/* ============================================================================
+   设计取法：沿用参考图的「暖底 + 深主色卡 + 大留白 + 轻描边」语言，
+   但**色板换成 retroweb 自己的**（化学 / 蓝系），不照抄那张图的紫+米白。
+   —— 理由：主色是产品识别，改掉等于换品牌。这里只借它的版式骨架。
+   ========================================================================== */
+:root {
+  /* 沿用 retroweb 现有 token（蓝系），只把底色从冷灰调暖一点点 */
+  --bg: #f7f7f5;
+  --surface: #ffffff;
+  --surface-2: #fbfbfa;
+  --line: #ebe9e4;
+  --line-2: #dedbd4;
+  --text: #16202e;
+  --text-2: #5b6577;
+  --text-3: #939cab;
+  /* 主色：化学蓝，够沉、能压住大卡 */
+  --brand: #1e4d8f;
+  --brand-d: #163a6d;
+  --brand-ink: #ffffff;
+  /* 语义色：状态一眼可辨，不靠文字 */
+  --ok: #0a7a52;
+  --warn: #b26a00;
+  --bad: #c2333a;
+  --anno: #9a5b12;
+  r: 18px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; padding: 0; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  background: #e9e7e2;
+  color: var(--text);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+code, .mono { font-family: ui-monospace, Consolas, 'SF Mono', Menlo, monospace; }
+
+/* ---------- 外壳：左边说明，右边手机 ---------- */
+.stage { display: flex; gap: 28px; padding: 28px; align-items: flex-start; min-height: 100vh; }
+.notes { flex: 1; min-width: 0; max-width: 660px; }
+.notes h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+.notes .lead { font-size: 13px; color: var(--text-2); margin: 0 0 20px; line-height: 1.7; }
+.notes h2 { font-size: 14px; font-weight: 600; margin: 24px 0 8px; display: flex; align-items: center; gap: 8px; }
+.notes h2 .n { width: 20px; height: 20px; border-radius: 6px; background: var(--brand); color: #fff; font-size: 11px; display: grid; place-items: center; font-weight: 600; }
+.notes p, .notes li { font-size: 13px; color: var(--text-2); line-height: 1.75; }
+.notes ul { margin: 6px 0; padding-left: 18px; }
+.notes b { color: var(--text); font-weight: 600; }
+.notes .warnbox { background: #fff8e8; border: 1px solid #f0dcb0; border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 12.5px; color: #7a5a12; }
+.notes .okbox { background: #eefaf3; border: 1px solid #bfe8d3; border-radius: 10px; padding: 10px 12px; margin: 10px 0; font-size: 12.5px; color: #14603f; }
+
+/* ---------- 手机框 ---------- */
+.phone {
+  width: 390px; height: 844px; flex: none;
+  border: 11px solid #1b1b1b; border-radius: 42px;
+  background: var(--bg); overflow: hidden; position: relative;
+  box-shadow: 0 22px 60px -18px rgba(0,0,0,.42);
+}
+.phone-notch { position: absolute; top: 0; left: 50%; transform: translateX(-50%); width: 148px; height: 26px; background: #1b1b1b; border-radius: 0 0 18px 18px; z-index: 60; }
+.scroll { height: 100%; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; padding-bottom: calc(78px + var(--safe-b)); }
+.scroll::-webkit-scrollbar { width: 0; }
+
+/* ---------- 顶栏 ---------- */
+.appbar { position: sticky; top: 0; z-index: 50; background: rgba(247,247,245,.9); backdrop-filter: saturate(1.6) blur(12px); padding: 30px 16px 10px; border-bottom: 1px solid transparent; transition: border-color .2s; }
+.appbar.scrolled { border-bottom-color: var(--line); }
+.appbar-row { display: flex; align-items: center; gap: 10px; }
+.appbar-title { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
+.appbar-sub { font-size: 12px; color: var(--text-3); margin-top: 1px; }
+/* 🔴 触摸目标：视觉 34px（与顶栏密度匹配），但**点击区补到 44px**。
+   做法 = padding 撑开 + 负 margin 把布局占位收回 —— 不能直接把按钮放大到 44，
+   那样顶栏会挤到换行，且视觉重量失衡。 */
+.icon-btn { box-sizing: content-box; width: 34px; height: 34px; padding: 5px; border-radius: 11px;
+  border: 1px solid var(--line); background: var(--surface); display: grid; place-items: center;
+  cursor: pointer; flex: none; margin: -5px; }
+.icon-btn:active { transform: scale(.94); }
+.spacer { flex: 1; }
+
+/* ---------- 主体 ---------- */
+.body { padding: 12px 16px 0; }
+.card { background: var(--surface); border-radius: var(--r); border: 1px solid var(--line); padding: 16px; margin-bottom: 12px; }
+.card-h { display: flex; align-items: baseline; gap: 8px; margin-bottom: 12px; }
+.card-t { font-size: 13px; font-weight: 600; }
+.card-s { font-size: 11.5px; color: var(--text-3); margin-left: auto; }
+
+/* 主卡：目标 + 状态，一眼看清"我在哪、能不能跑" */
+.hero { background: linear-gradient(158deg, #21548f 0%, #163a6d 100%); color: #fff; border: none; padding: 18px; position: relative; overflow: hidden; }
+.hero::after { content: ''; position: absolute; right: -46px; bottom: -56px; width: 168px; height: 168px; border: 1.5px solid rgba(255,255,255,.16); border-radius: 50%; }
+.hero::before { content: ''; position: absolute; right: -12px; bottom: -22px; width: 104px; height: 104px; border: 1.5px solid rgba(255,255,255,.13); border-radius: 50%; }
+.hero-t { font-size: 11.5px; opacity: .72; letter-spacing: .04em; }
+.hero-name { font-size: 19px; font-weight: 600; margin: 5px 0 2px; display: flex; align-items: center; gap: 8px; }
+.hero-smiles { font-size: 11.5px; opacity: .68; word-break: break-all; line-height: 1.5; max-width: 78%; }
+.hero-stats { display: flex; gap: 18px; margin-top: 16px; position: relative; z-index: 1; }
+.hero-stat b { display: block; font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+.hero-stat span { font-size: 11px; opacity: .66; }
+
+/* 状态条：颜色即语义，不靠读文字 */
+.status { display: flex; align-items: center; gap: 8px; padding: 11px 13px; border-radius: 13px; font-size: 13px; margin-bottom: 12px; border: 1px solid; }
+.status.ok { background: #eefaf3; border-color: #bfe8d3; color: #14603f; }
+.status.busy { background: #eef4fd; border-color: #c6dbf6; color: #1e4d8f; }
+.status.bad { background: #fdf0f0; border-color: #f2cdce; color: #96262c; }
+.status .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none; }
+.status.busy .dot { animation: pulse 1.15s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
+.status .mini { margin-left: auto; font-size: 11.5px; opacity: .75; }
+
+/* 大操作按钮：拇指可达、44px 起 */
+.cta { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 50px; border-radius: 15px; border: none; background: var(--brand); color: var(--brand-ink); font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer; }
+.cta:active { transform: scale(.985); }
+.cta.ghost { background: var(--surface); color: var(--text); border: 1px solid var(--line-2); font-weight: 500; }
+/* 🔴 双列按钮行：**独立于 .cta**。曾写成 .cta.wide-2 复用 .cta 的
+   background/border-radius ⇒ 两个白色 ghost 按钮之间露出容器的蓝底，
+   且各自 15px 圆角把它挖成「透镜形」。行容器不该是按钮，故另起一类。 */
+.btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+.btn-row:last-child { margin-bottom: 0; }
+
+/* 参数速览：折叠成一行行，替代桌面 2570 行的侧栏 */
+.kv { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 11px 2px; border-bottom: 1px solid var(--line); cursor: pointer; }
+.kv:last-child { border-bottom: none; }
+.kv-k { font-size: 12.5px; color: var(--text-3); flex: none; width: 62px; }
+.kv-v { font-size: 13.5px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv-go { font-size: 12px; color: var(--brand); flex: none; }
+
+/* 路线树：单列时间轴，取代桌面横向树 */
+.step { position: relative; padding: 0 0 14px 26px; }
+.step::before { content: ''; position: absolute; left: 8px; top: 16px; bottom: -2px; width: 1.5px; background: var(--line-2); }
+.step:last-child::before { display: none; }
+.step-n { position: absolute; left: 0; top: 1px; width: 18px; height: 18px; border-radius: 50%; background: var(--brand-l, #eff6ff); color: var(--brand); font-size: 10.5px; font-weight: 700; display: grid; place-items: center; border: 1.5px solid #bfd6f3; }
+.step.done .step-n { background: #0a7a52; border-color: #0a7a52; color: #fff; }
+.step.cur .step-n { background: var(--brand); border-color: var(--brand); color: #fff; }
+.step-c { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; padding: 11px 12px; }
+.step-t { font-size: 13.5px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+.step-m { font-size: 11.5px; color: var(--text-3); margin-top: 3px; display: flex; gap: 10px; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--line); color: var(--text-2); }
+.chip.ok { background: #eefaf3; border-color: #bfe8d3; color: #14603f; }
+.chip.anno { background: #fdf6e8; border-color: #f0dcb0; color: #7a5a12; }
+
+/* 卡片式选项（横滑）：询价 / 供应商 / 模型 */
+.hscroll { display: flex; gap: 9px; overflow-x: auto; padding: 2px 16px 4px; margin: 0 -16px; scroll-snap-type: x mandatory; }
+.hscroll::-webkit-scrollbar { height: 0; }
+.tile { flex: none; width: 138px; scroll-snap-align: start; border: 1px solid var(--line); border-radius: 15px; padding: 12px; background: var(--surface); }
+.tile-n { font-size: 17px; font-weight: 600; letter-spacing: -.02em; }
+.tile-s { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.tile-sw { display: flex; align-items: center; gap: 7px; margin-bottom: 9px; }
+.sw { width: 28px; height: 28px; border-radius: 9px; display: grid; place-items: center; flex: none; }
+
+/* 底部页签 */
+.tabbar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 55; background: rgba(255,255,255,.94); backdrop-filter: saturate(1.6) blur(14px); border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(5, 1fr); padding-bottom: var(--safe-b); }
+.tab { border: none; background: none; min-height: 52px; padding: 8px 0 7px; display: grid; justify-items: center; gap: 3px; cursor: pointer; color: var(--text-3); font-family: inherit; }
+.tab span { font-size: 10px; }
+.tab.on { color: var(--brand); font-weight: 600; }
+.tab:active { opacity: .6; }
+.tab-badge { position: absolute; transform: translate(11px, -3px); background: var(--bad); color: #fff; font-size: 9px; min-width: 14px; height: 14px; border-radius: 7px; display: grid; place-items: center; padding: 0 3px; }
+
+/* 底部 sheet：参数 / 详情用全屏 sheet，不用桌面弹窗 */
+.mask { position: absolute; inset: 0; background: rgba(16,22,32,.42); z-index: 70; opacity: 0; pointer-events: none; transition: opacity .22s; }
+.mask.on { opacity: 1; pointer-events: auto; }
+.sheet { position: absolute; left: 0; right: 0; bottom: 0; z-index: 71; background: var(--bg); border-radius: 22px 22px 0 0; transform: translateY(101%); transition: transform .26s cubic-bezier(.32,.72,0,1); max-height: 88%; display: flex; flex-direction: column; }
+.sheet.on { transform: none; }
+.sheet-grip { width: 36px; height: 4px; border-radius: 2px; background: var(--line-2); margin: 9px auto 4px; flex: none; }
+.sheet-h { padding: 6px 16px 10px; display: flex; align-items: center; gap: 10px; flex: none; }
+.sheet-t { font-size: 16px; font-weight: 600; }
+.sheet-b { overflow-y: auto; padding: 0 16px calc(18px + var(--safe-b)); }
+.sheet-b::-webkit-scrollbar { width: 0; }
+.grp { margin-bottom: 18px; }
+.grp-t { font-size: 11.5px; font-weight: 600; color: var(--text-3); letter-spacing: .05em; margin-bottom: 8px; }
+.row { display: flex; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--line); min-height: 44px; }
+.row:last-child { border-bottom: none; }
+.row-l { font-size: 13.5px; flex: 1; }
+.row-v { font-size: 13px; color: var(--text-2); }
+.seg { display: flex; background: var(--surface-2); border: 1px solid var(--line); border-radius: 14px; padding: 3px; gap: 3px; }
+/* 🔴 段控按钮原 28px 高，手指难点 ⇒ 撑到 44px（Apple/Google 对分段控件允许略小，
+   但本项目按「以人为本」统一取 44 下限，不给例外） */
+.seg button { border: none; background: none; min-height: 44px; padding: 6px 16px; border-radius: 11px;
+  font-size: 12.5px; color: var(--text-2); font-family: inherit; cursor: pointer; }
+.seg button.on { background: var(--surface); color: var(--brand); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.07); }
+.stepper { display: flex; align-items: center; gap: 11px; }
+.stepper button { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface); font-size: 19px; line-height: 1; cursor: pointer; font-family: inherit; color: var(--text); }
+.stepper button:active { transform: scale(.9); }
+.stepper b { min-width: 20px; text-align: center; font-size: 14px; }
+
+/* 旋转提示 */
+.rotate { position: absolute; inset: 0; z-index: 95; background: #fbfaf7; display: none; place-items: center; text-align: center; padding: 30px; }
+.rotate.on { display: grid; }
+.rotate-ico { animation: tilt 1.9s ease-in-out infinite; }
+@keyframes tilt { 0%,42% { transform: rotate(0); } 62%,100% { transform: rotate(-90deg); } }
+
+/* 横屏画板占位 */
+/* 🔴 z-index 必须是 **90**：原先 40 < 顶栏 50 / 页签 55 ⇒ 画板被两层压住，
+   且画板区域内点页签会误跳（页签在画板之上）。层级序：rotate(95) > canvas(90) > toast(85) > mask(70) > sheet(71) > tab(55) > bar(50)。 */
+.canvas-land { position: absolute; inset: 0; background: #fff; z-index: 90; display: none; flex-direction: column; }
+.canvas-land.on { display: flex; }
+.cl-bar { padding: 9px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 10px; flex: none; }
+.cl-stage { flex: 1; position: relative; background: #fdfdfe; background-image: radial-gradient(#dfe3ea 1px, transparent 1px); background-size: 22px 22px; }
+.cl-tools { position: absolute; left: 10px; top: 10px; bottom: 10px; width: 44px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; display: flex; flex-direction: column; align-items: center; gap: 5px; padding: 6px 0; }
+.cl-tool { width: 32px; height: 32px; border-radius: 9px; display: grid; place-items: center; cursor: pointer; }
+.cl-tool.on { background: var(--brand); color: #fff; }
+.cl-hint { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); background: rgba(22,32,46,.86); color: #fff; font-size: 11.5px; padding: 6px 12px; border-radius: 10px; white-space: nowrap; }
+.bond { position: absolute; height: 3px; background: #9aa4b2; border-radius: 2px; transform-origin: left center; }
+.node { position: absolute; width: 13px; height: 13px; border-radius: 50%; background: #fff; border: 2px solid #6b7686; }
+.node.me { border-color: var(--brand); box-shadow: 0 0 0 4px rgba(30,77,143,.16); }
+
+/* 图例 */
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 11.5px; color: var(--text-3); }
+.legend i { width: 9px; height: 9px; border-radius: 3px; display: inline-block; margin-right: 5px; vertical-align: -1px; }
+
+.hint-bar { font-size: 11.5px; color: var(--text-3); padding: 0 16px 10px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <!-- ===================== 设计说明 ===================== -->
+  <div class="notes">
+    <h1>RetroWeb 手机端 UI 方案</h1>
+    <p class="lead">
+      可交互原型 —— 右边这台 390×844 里可以直接点。<b>配色刻意没照抄参考图</b>：只借它的版式骨架（暖底、深色主卡、大留白、轻描边、圆角大），
+      色板仍用 retroweb 的化学蓝。<b>主色是产品识别，改掉等于换品牌。</b>
+    </p>
+
+    <h2><span class="n">1</span>导航：侧栏改底部页签</h2>
+    <p>
+      现状：<code>AppShell</code> 在 <code>&lt;768px</code> 只把侧栏收成 <b>64px 图标条</b> —— 仍占 64px 宽、图标无文字、5 个入口要靠记忆。
+      手机端改为<b>底部固定 5 格页签</b>（拇指热区），侧栏整个不渲染。
+      <code>isMobile</code> 目前只参与收侧栏，这次让它参与布局切换。
+    </p>
+
+    <h2><span class="n">2</span>标定态：一张卡说清「拆什么、能不能跑」</h2>
+    <p>
+      桌面那张 666 行的居中大卡片在手机上信息过载。改成四段：<b>目标结构（主卡，一眼认得出）</b> →
+      <b>模型状态条（颜色即语义）</b> → <b>主操作按钮（50px 高）</b> → <b>参数速览 4 行</b>。
+      参数细节<b>不再预展开</b>，点任一行进全屏 sheet。
+    </p>
+    <div class="okbox">
+      <b>关键取舍：</b>状态用<b>颜色 + 文案双通道</b>（绿=可用 / 蓝脉动=加载中 / 红=不可用），不只靠文字也不只靠颜色 —— 色弱用户与灰度屏都能读。
+    </div>
+
+    <h2><span class="n">3</span>路线态：横向树 → 单列时间轴</h2>
+    <p>
+      逆合成树在桌面是横向拖拽，手机上完全不可用。改成<b>单列时间轴</b>：已完成的步骤收起成一行摘要（步骤名 + 概率 + 结构芯片），
+      当前步展开，未来的步折叠。这样一屏能看 5~6 步，而不是横向挤 2 步。
+    </p>
+
+    <h2><span class="n">4</span>横竖屏分工：只有 2 个场景要横屏</h2>
+    <div class="warnbox">
+      <b>用户要求「大部分竖屏」—— 实测下来正好也是这个结论</b>，只有两处物理上放不下：
+      <br>· <b>结构画板（Ketcher）</b>：左侧笔杆 + 中间画布 + 右侧模板，竖屏必然挤成一条缝。
+      <br>· <b>路线网络画布</b>：<code>RouteCanvas</code> 是拖拽 + 滚轮缩放（<code>zoomAt</code> 按 <code>clientWidth</code> 算锚点），且<b>没有任何 touch 事件</b> —— 手机上双指缩放直接不可用。
+      <br>这两处<b>点进去时给「请横屏」提示并尝试锁定方向</b>，其余全部竖屏。
+    </div>
+
+    <h2><span class="n">5</span>触摸手势要补的（现状缺口）</h2>
+    <ul>
+      <li><b>所有可点元素 ≥44×44</b> —— 现在 `icon-btn` 34×34、`tab` 约 40px，偏小</li>
+      <li><code>RouteCanvas</code>：滚轮缩放是<b>非被动</b>监听（<code>preventDefault</code>），手机上要加 <b>双指 pinch</b> 与<b>单指拖拽</b>（现在是直接改 <code>scrollLeft</code>，触摸设备不产生滚动）</li>
+      <li><b>横滑列表</b>：询价 / 供应商 / 模型用 <code>scroll-snap</code> 横滑卡，不用竖排（省一屏高度）</li>
+      <li><b>底部安全区</b>：页签与 sheet 都要加 <code>env(safe-area-inset-bottom)</code>（iPhone home 条）</li>
+      <li><b>键盘弹起</b>：SMILES 输入框聚焦后 sheet 要能被顶上去，不能被键盘盖住</li>
+    </ul>
+
+    <h2><span class="n">6</span>断点建议</h2>
+    <p>
+      现状全仓只有 <b>1180 / 768</b> 两个断点（TasksView 另有 900），<b>没有 480 一档</b> —— 小屏 iPhone SE 一到 390 就直接命中 768 那条最粗的规则。
+      建议补：<code>≤1024</code> 平板降级 / <code>≤768</code> 手机竖屏（主）/ <code>≤480</code> 小屏收紧间距与字号 /
+      <code>横屏且 ≤900</code> 进画板模式。
+    </p>
+
+    <h2><span class="n">7</span>不做什么（避免过度设计）</h2>
+    <p>
+      不做移动端专属功能、不做手势返回、不做离线。不改任何业务逻辑与接口 ——
+      这套<b>纯版式层</b>，靠 <code>matchMedia</code> + CSS 断点分流，现有 store / 组件逻辑原样复用。
+    </p>
+  </div>
+
+  <!-- ===================== 手机原型 ===================== -->
+  <div class="phone">
+    <div class="phone-notch"></div>
+
+    <!-- 横屏画板（点「画结构式」进入） -->
+    <div class="canvas-land" id="land">
+      <div class="cl-bar">
+        <button class="icon-btn" onclick="closeLand()" aria-label="返回">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M15 5l-7 7 7 7"/></svg>
+        </button>
+        <div style="font-size:14px;font-weight:600">结构画板</div>
+        <div class="spacer"></div>
+        <button class="icon-btn" onclick="toast('已存草稿')" aria-label="保存">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 01-2-2V5a2 2 0 012-2h11l5 5v11a2 2 0 01-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></svg>
+        </button>
+        <button class="icon-btn" onclick="toast('已清空画板')" aria-label="清空">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="cl-stage">
+        <div class="cl-tools">
+          <div class="cl-tool on" title="单键">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="7"/></svg>
+          </div>
+          <div class="cl-tool" title="双键">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="12" r="5"/><circle cx="15" cy="12" r="5"/></svg>
+          </div>
+          <div class="cl-tool" title="键">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 14h16M8 10v8M16 10v8"/></svg>
+          </div>
+          <div class="cl-tool" title="橡皮">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M5 15l6-6 8 8-4 4H8z"/></svg>
+          </div>
+        </div>
+        <!-- 示意结构 -->
+        <div class="bond" style="left:118px;top:120px;width:74px"></div>
+        <div class="bond" style="left:192px;top:120px;width:66px;transform:rotate(58deg)"></div>
+        <div class="bond" style="left:192px;top:120px;width:66px;transform:rotate(-58deg)"></div>
+        <div class="node me" style="left:112px;top:114px"></div>
+        <div class="node" style="left:186px;top:114px"></div>
+        <div class="node" style="left:250px;top:72px"></div>
+        <div class="node" style="left:250px;top:166px"></div>
+        <div class="cl-hint">左手画结构 · 右侧模板栏 · 底部可旋转</div>
+      </div>
+    </div>
+
+    <!-- 旋转提示 -->
+    <div class="rotate" id="rot">
+      <div>
+        <div class="rotate-ico">
+          <svg width="58" height="58" viewBox="0 0 24 24" fill="none" stroke="#1e4d8f" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="7" y="2" width="10" height="20" rx="2.5"/><path d="M11 19h2"/>
+          </svg>
+        </div>
+        <div style="font-size:16px;font-weight:600;margin:14px 0 5px">请横屏使用画板</div>
+        <div style="font-size:13px;color:#5b6577;line-height:1.7">结构画板需要更宽的空间<br>把手机转过来即可继续，已输入的内容不会丢</div>
+        <button class="cta ghost" style="max-width:200px;margin:18px auto 0" onclick="closeRot()">仍要竖屏（仅预览）</button>
+      </div>
+    </div>
+
+    <!-- 遮罩 + sheet -->
+    <div class="mask" id="mask" onclick="closeSheet()"></div>
+    <div class="sheet" id="sheet">
+      <div class="sheet-grip"></div>
+      <div class="sheet-h">
+        <div class="sheet-t" id="sheetT">运行参数</div>
+        <div class="spacer"></div>
+        <button class="icon-btn" onclick="closeSheet()" aria-label="关闭">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+      <div class="sheet-b" id="sheetB"></div>
+    </div>
+
+    <!-- 正常竖屏内容 -->
+    <div class="scroll" id="scroll">
+      <div class="appbar" id="appbar">
+        <div class="appbar-row">
+          <div>
+            <div class="appbar-title" id="pgTitle">逆合成工作台</div>
+            <div class="appbar-sub" id="pgSub">一行一化合物 · 多次一步拆分</div>
+          </div>
+          <div class="spacer"></div>
+          <button class="icon-btn" onclick="toast('切换深色')" aria-label="主题">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/></svg>
+          </button>
+          <button class="icon-btn" onclick="goTab(3)" aria-label="我的">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="body" id="body"></div>
+      <div class="hint-bar" id="hint"></div>
+    </div>
+
+    <!-- 底部页签 -->
+    <nav class="tabbar" id="tabbar">
+      <button class="tab on" data-t="0" onclick="goTab(0)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5V21H3z"/></svg>
+        <span>工作台</span>
+      </button>
+      <button class="tab" data-t="1" onclick="goTab(1)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2.5"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
+        <span>任务</span>
+      </button>
+      <button class="tab" data-t="2" onclick="goTab(2)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></svg>
+        <span>历史</span>
+      </button>
+      <button class="tab" data-t="3" onclick="goTab(3)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-6 8-6s8 2 8 6"/></svg>
+        <span>我的</span>
+      </button>
+      <button class="tab" data-t="4" onclick="goTab(4)">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><circle cx="12" cy="12" r="3.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9L17 7M7 17l-2.1 2.1"/></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+  </div>
+</div>
+
+<script>
+/* ============================================================================
+   原型脚本：只为演示交互。真实实现里这些内容应由 router + store 驱动。
+   ========================================================================== */
+const $ = (s) => document.querySelector(s);
+const el = (h) => { const t = document.createElement('template'); t.innerHTML = h.trim(); return t.content.firstElementChild; };
+
+/* 标记：当前处于「标定态」还是「路线态」—— 对应 store.targetSetupOpen */
+let phase = 'setup';
+let tab = 0;
+const depth = 2;
+const layers = 3;
+
+function toast(msg) {
+  let n = document.getElementById('toast');
+  if (!n) { n = el(`<div id="toast" style="position:absolute;left:50%;bottom:96px;transform:translateX(-50%);z-index:85;background:rgba(22,32,46,.92);color:#fff;font-size:12.5px;padding:8px 14px;border-radius:11px;white-space:nowrap;transition:opacity .2s"></div>`); $('.phone').appendChild(n); }
+  n.textContent = msg; n.style.opacity = '1';
+  clearTimeout(n._t); n._t = setTimeout(() => { n.style.opacity = '0'; }, 1400);
+}
+
+/* ---------- 页签 ---------- */
+function goTab(i) {
+  tab = i;
+  document.querySelectorAll('.tab').forEach((b, k) => b.classList.toggle('on', k === i));
+  $('#scroll').scrollTop = 0;
+  render();
+}
+const TITLES = [
+  ['逆合成工作台', '一行一化合物 · 多次一步拆分'],
+  ['任务列表', '进行中与已完成的目标分析'],
+  ['历史记录', '已保存的路线任务'],
+  ['我的', '账号信息与会话'],
+  ['设置', '全局偏好与模型管理']
+];
+function renderHead() {
+  const [t, s] = TITLES[tab];
+  $('#pgTitle').textContent = t;
+  $('#pgSub').textContent = tab === 0 ? (phase === 'setup' ? '第一步 · 设定拆解目标' : '第 3 步 · 逆合成树') : s;
+  $('#hint').textContent = tab === 0 ? '下拉可刷新 · 上滑加载更多' : '';
+}
+
+/* ---------- 各页内容 ---------- */
+const P = {};
+
+/* P0-1 标定态 */
+P.setup = () => `
+  <div class="status busy"><span class="dot"></span>模型加载中，约 40~90 秒<span class="mini">期间可先填参数</span></div>
+
+  <div class="card hero">
+    <div class="hero-t">目标结构</div>
+    <div class="hero-name">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/></svg>
+      2-氯-4-氟苯甲酸
+    </div>
+    <div class="hero-smiles mono">O=C(O)c1cc(Cl)ccc1F</div>
+    <div class="hero-stats">
+      <div class="hero-stat"><b>${depth}</b><span>拆分深度</span></div>
+      <div class="hero-stat"><b>${layers}</b><span>每步候选</span></div>
+      <div class="hero-stat"><b>自动</b><span>起跑线</span></div>
+    </div>
+  </div>
+
+  <button class="cta" onclick="toast('已开始解析…')" style="margin-bottom:10px">开始拆解</button>
+  <div class="btn-row">
+    <button class="cta ghost" onclick="askRotate()">画结构式</button>
+    <button class="cta ghost" onclick="toast('换一个示例结构')">用示例</button>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">参数</span><span class="card-s">共 6 组</span></div>
+    <div class="kv" onclick="sheetParams()"><span class="kv-k">预测模型</span><span class="kv-v">RetroBasic-v2</span><span class="kv-go">改</span></div>
+    <div class="kv" onclick="sheetParams()"><span class="kv-k">起跑线</span><span class="kv-v">自动往下拆 ${depth} 层</span><span class="kv-go">改</span></div>
+    <div class="kv" onclick="sheetParams()"><span class="kv-k">候选数</span><span class="kv-v">每步 ${layers} 个</span><span class="kv-go">改</span></div>
+    <div class="kv" onclick="sheetParams()"><span class="kv-k">询价</span><span class="kv-v">未启用</span><span class="kv-go">改</span></div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">最近的任务</span><span class="card-s">3 个</span></div>
+    <div class="kv" onclick="setPhase()"><span class="kv-k" style="width:auto;flex:1">阿司匹林合成路线</span><span class="chip ok">已完成</span></div>
+    <div class="kv" onclick="setPhase()"><span class="kv-k" style="width:auto;flex:1">布洛芬 · 第 2 步</span><span class="chip">进行中</span></div>
+  </div>`;
+
+/* P0-2 路线态 */
+P.route = () => `
+  <div class="status ok"><span class="dot"></span>模型可用<span class="mini">RetroBasic-v2</span></div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">目标</span><span class="card-s">替换一步</span></div>
+    <div style="display:flex;align-items:center;gap:10px">
+      <svg width="42" height="34" viewBox="0 0 60 44" fill="none" stroke="#6b7686" stroke-width="2">
+        <circle cx="14" cy="22" r="8"/><circle cx="46" cy="22" r="8"/>
+        <path d="M14 14V8M20 16l8-5M20 28l8 5M14 30v6" stroke-width="1.6"/>
+      </svg>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13.5px;font-weight:600">2-氯-4-氟苯甲酸</div>
+        <div class="mono" style="font-size:11px;color:var(--text-3);overflow:hidden;text-overflow:ellipsis">O=C(O)c1cc(Cl)ccc1F</div>
+      </div>
+      <button class="icon-btn" onclick="toast('打开结构预览')" aria-label="预览">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5M11 8v6M8 11h6"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="btn-row">
+    <button class="cta ghost" onclick="askRotate()">路线网络</button>
+    <button class="cta ghost" onclick="sheetParams()">运行参数</button>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">逆合成树</span><span class="card-s">共 4 步 · 已完成 2</span></div>
+    <div class="legend" style="margin-bottom:12px">
+      <span><i style="background:#0a7a52"></i>已完成</span>
+      <span><i style="background:#1e4d8f"></i>进行中</span>
+      <span><i style="background:#dfe3ea"></i>未展开</span>
+    </div>
+
+    <div class="step done">
+      <div class="step-n">✓</div>
+      <div class="step-c">
+        <div class="step-t">第 1 步 · 酰氯中间体</div>
+        <div class="step-m"><span class="chip ok">采纳 1 号</span><span>概率 0.42</span><span>3 个候选</span></div>
+      </div>
+    </div>
+    <div class="step done">
+      <div class="step-n">✓</div>
+      <div class="step-c">
+        <div class="step-t">第 2 步 · 频哪醇保护</div>
+        <div class="step-m"><span class="chip ok">采纳 2 号</span><span>概率 0.31</span><span>5 个候选</span></div>
+      </div>
+    </div>
+    <div class="step cur">
+      <div class="step-n">3</div>
+      <div class="step-c">
+        <div class="step-t">第 3 步 · 硝基还原 <span class="chip anno">候选中</span></div>
+        <div class="step-m" style="margin-bottom:10px"><span>已出 3 / 5</span><span>约 20 秒</span></div>
+        <div style="height:5px;background:var(--surface-2);border-radius:3px;overflow:hidden">
+          <div style="width:60%;height:100%;background:var(--brand);border-radius:3px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="step">
+      <div class="step-n">4</div>
+      <div class="step-c" style="opacity:.72">
+        <div class="step-t">第 4 步 · 保护基脱除</div>
+        <div class="step-m"><span>等待上一步</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">步骤详情</span><span class="card-s">第 3 步</span></div>
+    <div class="grp" style="margin-bottom:0">
+      <div class="grp-t">候选路线</div>
+      <div class="hscroll">
+        <div class="tile"><div class="tile-sw"><span class="sw" style="background:#e8f0fb"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#1e4d8f" stroke-width="2"><path d="M4 12h16"/></svg></span><span class="chip" style="margin-left:auto">42%</span></div><div class="tile-n">铁粉还原</div><div class="tile-s">便宜 · 收率 78%</div></div>
+        <div class="tile" style="border-color:#bfd6f3;background:#f6faff"><div class="tile-sw"><span class="sw" style="background:#1e4d8f;color:#fff"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M20 6L9 17l-5-5"/></svg></span><span class="chip ok" style="margin-left:auto">已采纳</span></div><div class="tile-n">硫化钠</div><div class="tile-s">温和 · 收率 91%</div></div>
+        <div class="tile"><div class="tile-sw"><span class="sw" style="background:#fdf6e8"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9a5b12" stroke-width="2"><path d="M12 9v4M12 17h.01"/><circle cx="12" cy="12" r="9"/></svg></span><span class="chip anno" style="margin-left:auto">26%</span></div><div class="tile-n">氢气催化</div><div class="tile-s">需高压釜</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-h"><span class="card-t">AI 分析</span><span class="card-s">11 项</span></div>
+    <div class="row" onclick="toast('展开分析')"><span class="row-l">反应可行性</span><span class="row-v">较高</span><span class="kv-go">›</span></div>
+    <div class="row" onclick="toast('展开分析')"><span class="row-l">过程安全</span><span class="row-v">注意放热</span><span class="kv-go">›</span></div>
+    <div class="row" onclick="toast('展开分析')"><span class="row-l">毒性提示</span><span class="row-v">低</span><span class="kv-go">›</span></div>
+  </div>`;
+
+P.tasks = () => `
+  <div class="card">
+    <div style="display:flex;gap:8px">
+      <div style="flex:1;background:var(--surface-2);border:1px solid var(--line);border-radius:12px;padding:9px 12px;font-size:13px;color:var(--text-3)">搜索名称 / SMILES</div>
+    </div>
+    <div class="seg" style="margin-top:10px">
+      <button class="on">进行中 2</button><button>已完成 5</button><button>全部</button>
+    </div>
+  </div>
+  <div class="card"><div class="kv" onclick="setPhase()"><span class="kv-k" style="width:auto;flex:1">布洛芬 · 第 2 步</span><span class="chip">进行中</span></div>
+  <div class="card-s" style="margin-top:8px">更新于 3 分钟前 · 6 个候选</div></div>
+  <div class="card"><div class="kv" onclick="setPhase()"><span class="kv-k" style="width:auto;flex:1">阿司匹林合成路线</span><span class="chip ok">已完成</span></div>
+  <div class="card-s" style="margin-top:8px">更新于 昨天 · 4 步全部采纳</div></div>
+  <div class="card"><div class="kv" onclick="setPhase()"><span class="kv-k" style="width:auto;flex:1">对乙酰氨基酚</span><span class="chip ok">已完成</span></div>
+  <div class="card-s" style="margin-top:8px">更新于 上周 · 3 步全部采纳</div></div>
+  <button class="cta" onclick="goTab(0)">＋ 新建任务</button>`;
+
+P.history = () => `
+  <div class="card">
+    <div class="card-h"><span class="card-t">时光档案</span><span class="card-s">20 条上限</span></div>
+  </div>
+  <div class="card"><div class="card-t" style="font-size:14px">阿司匹林合成路线</div>
+  <div class="card-s" style="margin:5px 0 9px">2026-10-08 · 4 步 · 总概率 0.31</div>
+  <div class="btn-row"><button class="cta ghost" onclick="setPhase()">载入</button><button class="cta ghost" onclick="toast('导出 PDF')">导出</button></div></div>
+  <div class="card"><div class="card-t" style="font-size:14px">对乙酰氨基酚</div>
+  <div class="card-s" style="margin:5px 0 9px">2026-09-29 · 3 步 · 总概率 0.44</div>
+  <div class="btn-row"><button class="cta ghost" onclick="setPhase()">载入</button><button class="cta ghost" onclick="toast('导出 PDF')">导出</button></div></div>`;
+
+P.me = () => `
+  <div class="card" style="text-align:center;padding:22px 16px">
+    <div style="width:56px;height:56px;border-radius:50%;background:var(--brand);color:#fff;display:grid;place-items:center;font-size:20px;font-weight:600;margin:0 auto 10px">y</div>
+    <div style="font-size:16px;font-weight:600">yijiu2025</div>
+    <div style="font-size:12px;color:var(--text-3);margin-top:3px">yijiu2025@example.com</div>
+    <div style="margin-top:12px"><span class="chip ok">已登录 · 会员</span></div>
+  </div>
+  <div class="card">
+    <div class="row"><span class="row-l">登录方式</span><span class="row-v">账号密码</span><span class="kv-go">›</span></div>
+    <div class="row"><span class="row-l">设备会话</span><span class="row-v">2 台在线</span><span class="kv-go">›</span></div>
+    <div class="row"><span class="row-l">切换账号</span><span class="row-v">已保存 3 个</span><span class="kv-go">›</span></div>
+  </div>
+  <button class="cta ghost" style="color:var(--bad);border-color:#f2cdce">退出登录</button>`;
+
+P.settings = () => `
+  <div class="card">
+    <div class="card-h"><span class="card-t">外观</span></div>
+    <div class="row"><span class="row-l">主题</span><div class="seg"><button>浅</button><button class="on">深</button><button>跟随</button></div></div>
+    <div class="row"><span class="row-l">收起辅助面板</span><span class="chip on">开</span></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><span class="card-t">模型</span></div>
+    <div class="status ok" style="margin:0 0 10px"><span class="dot"></span>RetroBasic-v2<span class="mini">运行中</span></div>
+    <div class="row"><span class="row-l">加载 / 停止模型</span><span class="row-v">直连档可用</span><span class="kv-go">›</span></div>
+    <div class="row"><span class="row-l">启用模型清单</span><span class="chip">需管理员</span><span class="kv-go">›</span></div>
+  </div>
+  <div class="card">
+    <div class="card-h"><span class="card-t">其他</span></div>
+    <div class="row"><span class="row-l">隐藏合规提示</span><span class="chip">关</span></div>
+    <div class="row"><span class="row-l">询价供应商</span><span class="row-v">3 家</span><span class="kv-go">›</span></div>
+  </div>`;
+
+/* ---------- sheet ---------- */
+function sheet(title, html) {
+  $('#sheetT').textContent = title;
+  $('#sheetB').innerHTML = html;
+  $('#mask').classList.add('on');
+  $('#sheet').classList.add('on');
+}
+function closeSheet() { $('#mask').classList.remove('on'); $('#sheet').classList.remove('on'); }
+
+function sheetParams() {
+  sheet('运行参数', `
+    <div class="grp"><div class="grp-t">预测设置</div>
+      <div class="row"><span class="row-l">预测模型</span><div class="seg"><button class="on">Basic</button><button>Plus</button></div></div>
+      <div class="row"><span class="row-l">温度</span><span class="row-v">0.7</span></div>
+      <div class="row"><span class="row-l">最大 token</span><span class="row-v">不限</span></div>
+    </div>
+    <div class="grp"><div class="grp-t">拆分约束</div>
+      <div class="row"><span class="row-l">起跑线</span><div class="seg"><button>手动逐步</button><button class="on">自动往下拆</button></div></div>
+      <div class="row"><span class="row-l">拆分深度</span><div class="stepper"><button>−</button><b>2</b><button>＋</button></div></div>
+      <div class="row"><span class="row-l">每步候选数</span><div class="stepper"><button>−</button><b>3</b><button>＋</button></div></div>
+    </div>
+    <div class="grp"><div class="grp-t">条件方案</div>
+      <div class="row"><span class="row-l">温度范围</span><span class="row-v">≤ 60 °C</span></div>
+      <div class="row"><span class="row-l">催化剂</span><span class="row-v">Fe / Ni</span></div>
+      <div class="row"><span class="row-l">禁用试剂</span><span class="row-v">2 个</span></div>
+    </div>
+    <div class="grp"><div class="grp-t">分析模块（11）</div>
+      <div class="row"><span class="row-l">反应可行性</span><span class="chip ok">开</span></div>
+      <div class="row"><span class="row-l">过程安全</span><span class="chip ok">开</span></div>
+      <div class="row"><span class="row-l">物质毒性</span><span class="chip ok">开</span></div>
+      <div class="row"><span class="row-l">杂质谱</span><span class="chip">关</span></div>
+    </div>
+    <div class="grp"><div class="grp-t">采购询价</div>
+      <div class="row"><span class="row-l">启用询价</span><span class="chip">关</span></div>
+      <div class="row"><span class="row-l">优先按 CAS</span><span class="chip ok">开</span></div>
+      <div class="row"><span class="row-l">供应商</span><span class="row-v">3 家在用</span></div>
+    </div>
+    <button class="cta" style="margin-top:6px" onclick="closeSheet();toast('已保存')">应用</button>`);
+}
+
+/* ---------- 横屏 ---------- */
+function askRotate() { $('#rot').classList.add('on'); }
+function closeRot() { $('#rot').classList.remove('on'); openLand(); }
+function openLand() { $('#land').classList.add('on'); }
+function closeLand() { $('#land').classList.remove('on'); }
+
+/* ---------- 阶段切换 ---------- */
+function setPhase() { phase = 'route'; render(); $('#scroll').scrollTop = 0; }
+
+function render() {
+  renderHead();
+  if (tab === 0) $('#body').innerHTML = phase === 'setup' ? P.setup() : P.route();
+  else if (tab === 1) $('#body').innerHTML = P.tasks();
+  else if (tab === 2) $('#body').innerHTML = P.history();
+  else if (tab === 3) $('#body').innerHTML = P.me();
+  else $('#body').innerHTML = P.settings();
+}
+render();
+
+/* 顶栏滚动后加分隔线 */
+$('#scroll').addEventListener('scroll', (e) => {
+  $('#appbar').classList.toggle('scrolled', e.target.scrollTop > 6);
+}, { passive: true });
+</script>
+</body>
+</html>

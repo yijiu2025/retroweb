@@ -11,6 +11,13 @@
  * 🔴 启动引导（拉 userinfo 探活）**不在这里** —— 由 router 守卫与 App.vue 共同触发，
  *    auth store 内部有 `initialized` 幂等守卫，两条路都走到也只请求一次。
  *
+ * ── 本文件的边界：只做「装配」，不做「实现」──
+ *   它知道有六个步骤、知道先后顺序，但**不知道任何一个部件内部怎么工作**：
+ *   · 不认识任何 store（`useAuthStore` 等一律不出现在本文件）；
+ *   · 不碰任何 HTTP 细节（第 3 步只调 `installSession()`，接线细节见其文件头）；
+ *   · 不处理业务分支（第 4/5 步是纯 dev 诊断与启动横幅）。
+ *   判据很简单：**删掉本文件换一种装配方式，业务一行不该变。**
+ *
  * @author yijiu2025
  * @since 2026-10-11
  */
@@ -18,9 +25,8 @@ import { createApp } from 'vue';
 import { createPinia } from 'pinia';
 import App from './App.vue';
 import router from './router';
-import { setUnauthorizedHandler } from '@/api/http';
+import { installSession } from '@/api/session/install';
 import { API_BASE_URL, AUTH_BYPASS, RETRO_VIA_NODE } from '@/config/services';
-import { useAuthStore } from '@/stores/auth';
 
 /** 日志前缀：全仓统一用它，便于在控制台按 `[RetroWeb]` 过滤 */
 const LOG_TAG = '[RetroWeb]';
@@ -49,11 +55,11 @@ app.use(pinia);
 app.use(router);
 
 // ---------------------------------------------------------------------------
-// 3. 注入 401 处理器
+// 3. 接会话（401 → 登录流）
 // ---------------------------------------------------------------------------
-// 依赖方向：bootstrap → http，不反向。http 只暴露一个注册口，装配方注入处理器，
-// 避免 auth store → http 与 http → auth store 成环（见 api/http.ts 文件头）。
-setUnauthorizedHandler((reason: string) => useAuthStore().markExpired(reason));
+// 入口只负责"什么时候装"，**不负责"装什么"** —— 具体接线（哪个回调、怎么落到
+// auth store、依赖方向为何如此）在 `api/session/install.ts` 的文件头里写清了。
+installSession();
 
 // ---------------------------------------------------------------------------
 // 4. dev 专用：未捕获的 Promise 拒绝

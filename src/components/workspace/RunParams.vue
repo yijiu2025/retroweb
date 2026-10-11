@@ -18,10 +18,11 @@
 import { computed, nextTick, onMounted, ref, watch } from 'vue';
 import { ElMessage, ElMessageBox } from 'element-plus';
 import { retroApi, llmApi } from '@/api/retro';
-import { nodeLlmApi } from '@/api/llm';
+import { nodeLlmApi } from '@/api/capability/node-llm';
+import { endpointConfigApi } from '@/api/capability/endpoint-config';
 import { useWorkspaceStore, ALL_ANALYSIS_MODULES, ANALYSIS_MODULE_LABELS } from '@/stores/workspace';
 import { useSettingsStore } from '@/stores/settings';
-import { RETRO_VIA_NODE } from '@/config/services';
+import { RETRO_VIA_NODE, MODEL_CONTROL_ENABLED } from '@/config/services';
 import { SUPPLIERS, supplierById, type Supplier } from '@/utils/suppliers';
 import { countHeavyAtoms } from '@/utils/smiles';
 import { depictMolfile, isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
@@ -120,6 +121,10 @@ const modelDetail = computed(() => {
         const busy = store.models.find((m) => m.state === 'loading');
         return `「${busy ? shortLabel(busy.label) : '其他模型'}」正在加载，切换要等它结束`;
       }
+      // 无权启停（走 Node 中转）时不能叫用户去点按钮 —— 按钮根本不显示
+      if (!MODEL_CONTROL_ENABLED) {
+        return svc?.running ? '等待后端把模型加载到可用' : '由后端负责启动（期间解析 / 分析照常可用）';
+      }
       return svc?.running
         ? '点「加载」后启动（首次约 40~90 秒）'
         : '点「加载」拉起模型服务（首次约 40~90 秒；期间解析 / 分析照常可用）';
@@ -188,6 +193,9 @@ function onModelSelectVisible(visible: boolean): void {
 }
 
 async function onModelChange(key: string): Promise<void> {
+  // 🔴 无权启停模型（走 Node 中转）时，下拉**只是选择**、不触发生效 ——
+  //    否则会弹"要停掉当前模型重新加载吗"的确认框，而前端其实根本没这个权限。
+  if (!MODEL_CONTROL_ENABLED) return;
   // 选回「已经就绪 / 正在加载」的那个模型 ⇒ 无需动作（后端 /api/load 也会 no-op 直接返回）
   const curState = store.models.find((m) => m.key === key)?.state;
   if (curState === 'ready' || curState === 'loading') {
@@ -243,6 +251,11 @@ const fwdDetail = computed(() => {
     case 'ready':
       return `已就绪${f.load_seconds ? ` · 用时 ${Math.round(f.load_seconds)} 秒` : ''} · 开启后每条候选反应都要过一遍正向校验`;
     default:
+      if (!MODEL_CONTROL_ENABLED) {
+        return store.modelReady
+          ? '等待后端把正向模型加载到可用'
+          : '预测模型就绪后由后端一并处理';
+      }
       return store.modelReady
         ? '点「加载正向模型」后即可启用（约 1 GB 内存，几十秒）'
         : '先加载预测模型，再点「加载正向模型」';
@@ -251,6 +264,8 @@ const fwdDetail = computed(() => {
 
 /** 只有当"文件在、但还没就绪"时才给加载按钮：文件缺了点了必然失败，不如直接给下载指引 */
 const showForwardLoad = computed(() => {
+  // 🔴 无权启停模型时不给入口（走 Node 中转时模型加载归 Node 管）
+  if (!MODEL_CONTROL_ENABLED) return false;
   const st = store.forwardModel?.state;
   return !!st && st !== 'ready' && st !== 'unavailable';
 });
@@ -508,7 +523,7 @@ function applyKeyStates(s: LlmSettings): void {
 
 /** 读后端的端点配置；返回是否**真的读到了**（`false` = 请求失败或后端版本不对） */
 async function loadSettings(): Promise<boolean> {
-  const s = await llmApi.settings();
+  const s = await endpointConfigApi.settings();
   if (!s.ok) return false;
   if (!Array.isArray(s.profiles)) {
     // 后端没重启仍在跑旧版本：空面板会让人以为「配置丢了」，必须说清楚
@@ -563,7 +578,7 @@ async function saveSettings(silent = false): Promise<boolean> {
   }
   savingSettings.value = true;
   try {
-    const out = await llmApi.saveSettings({
+    const out = await endpointConfigApi.saveSettings({
       profiles: profiles.value.map((p) => ({
         id: p.id,
         name: p.name,
@@ -598,7 +613,7 @@ async function switchProfile(id: string): Promise<void> {
   switching.value = true;
   try {
     if (dirty.value && !(await saveSettings(true))) return; // 保存失败就别切，避免状态错乱
-    const out = await llmApi.activateProfile(id);
+    const out = await endpointConfigApi.activateProfile(id);
     if (!out.ok) {
       ElMessage.error(out.error || '切换端点配置失败');
       return;
@@ -758,7 +773,8 @@ async function resetKeys(): Promise<void> {
   const c = cur.value;
   if (!c) return;
   try {
-    const out = await llmApi.resetKeys(c.id); // 只清这套配置的标记，不牵动别的端点
+    // 🔴 中转档下会抛错（密钥轮换状态在服务端），面板据此提示用户，不静默吞
+    const out = await endpointConfigApi.resetKeys(c.id); // 只清这套配置的标记，不牵动别的端点
     // 🔴 只更新状态标签，**不覆盖 keys** —— 草稿里可能还有没保存的新增 key，
     //     用服务端列表覆盖会把它弄丢（实测踩过）。
     applyKeyStates(out);
@@ -983,6 +999,7 @@ onMounted(() => {
                 />
               </el-select>
               <el-button
+                v-if="MODEL_CONTROL_ENABLED"
                 size="small"
                 :type="store.modelReady || store.modelBusy ? 'default' : 'primary'"
                 :loading="

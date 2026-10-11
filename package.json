@@ -10,7 +10,8 @@
     "preview": "vite preview --port 5177 --strictPort",
     "type-check": "vue-tsc -b",
     "lint": "eslint .",
-    "lint:fix": "eslint . --fix"
+    "lint:fix": "eslint . --fix",
+    "audit:jsdoc": "node scripts/audit-jsdoc.cjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

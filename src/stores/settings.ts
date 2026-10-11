@@ -1,4 +1,9 @@
-/** 全局偏好（主题、侧栏开合、右面板开合、路线网络栏开合、询价供应商），持久化到 localStorage */
+/**
+ * 全局偏好（主题、侧栏开合、右面板开合、路线网络栏开合、询价供应商），持久化到 localStorage
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
+ */
 import { defineStore } from 'pinia';
 import { ref, watch } from 'vue';
 import { DEFAULT_SUPPLIER_ID, isSupplierId } from '@/utils/suppliers';

@@ -4,6 +4,9 @@
  * 守卫口径：
  *  - 免登录（VITE_AUTH_BYPASS=true）：全部放行，注入 dev 用户，不弹 iframe
  *  - 严格模式：需要登录的页面未登录 → 打开登录弹窗（跳到哪由 authStore 记住）
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from '@/stores/auth';

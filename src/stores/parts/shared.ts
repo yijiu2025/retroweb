@@ -4,6 +4,9 @@
  * 放这里的判据只有一条：**不依赖任何 store 状态**（不读节点、不读参数、不发请求）。
  * 这样它既能被主 store 用，也能被各个零件用，还能被组件直接 import，
  * 而不会引起循环依赖。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import type { AnalysisModuleKey, Reaction, RunParams } from '@/types/retro';
 
@@ -14,6 +17,11 @@ import type { AnalysisModuleKey, Reaction, RunParams } from '@/types/retro';
  *    相同分子分析。若 id 随机，切换 runs / 复用结果时 `chosenReactionId` 就对不上，
  *    已建的子树会被误判成「无效选择」而清掉。用确定性 id ⇒ 同样的前体组合永远同一个 id，
  *    选择、复用、切换全都稳定。
+ * @param nodeId     所属节点 id（树上的位置）
+ * @param precursors 该步的前体组合（拼接串，作为哈希输入）
+ * @returns 该步的**确定性** id（`rxn_<nodeId>_<hash>`）。🔴 必须确定：
+ *          它是「切方案不重建树」「复用结果对齐原步」的地基；
+ *          用随机 id 会让切换方案时 `chosenReactionId` 对不上、已建子树被误判清除
  */
 function reactionIdFor(nodeId: string, precursors: string): string {
   let h = 5381;
@@ -24,7 +32,11 @@ function reactionIdFor(nodeId: string, precursors: string): string {
   return `rxn_${nodeId}_${h.toString(36)}`;
 }
 
-/** 把任意来源的候选整理成「属于 nodeId」的形状（复用别人结果时必须重挂） */
+/** 把任意来源的候选整理成「属于 nodeId」的形状（复用别人结果时必须重挂）
+ * @param nodeId 要挂到哪个节点下
+ * @param list   任意来源的候选反应
+ * @returns 重挂了 id 与归属的候选列表（复用别人结果时**必须**过这里，否则子树认不出父节点）
+ */
 function materializeCandidates(nodeId: string, list: Reaction[]): Reaction[] {
   return list.map((r) => ({
     ...r,
@@ -91,13 +103,22 @@ const ANALYSIS_MODULE_LABELS: Record<AnalysisModuleKey, string> = {
   toxicity: '毒性与防护要点'
 };
 
-/** axios 的取消错误（用户点停止 / 组件卸载）—— 不该当失败弹错误条 */
+/** axios 的取消错误（用户点停止 / 组件卸载）—— 不该当失败弹错误条
+ * @param err 捕获到的异常
+ * @returns 是否是 axios 的取消错误（`ERR_CANCELED` / `CanceledError`）。
+ *          取消**不算故障**，不该弹错误条
+ */
 function isAbort(err: unknown): boolean {
   const code = (err as { code?: string })?.code;
   return code === 'ERR_CANCELED' || (err instanceof Error && err.name === 'CanceledError');
 }
 
-/** 可被打断的 sleep：abort 时立即 resolve，让轮询循环能尽快退出 */
+/** 可被打断的 sleep：abort 时立即 resolve，让轮询循环能尽快退出
+ * @param ms     等待毫秒数
+ * @param signal 取消信号；🔴 给了它就变成**可打断**的 sleep ——
+ *                  abort 时立即 resolve（不 reject），让轮询循环尽快退出
+ * @returns 到点或被中断后 resolve（无 reject 路径）
+ */
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal?.aborted) return resolve();

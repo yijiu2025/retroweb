@@ -8,6 +8,9 @@
  * 握手语义：真正的就绪信号是 `SSO_READY`（iframe 内 Vue 已 mount），
  * **不是** `@load` —— @load 只保证 HTML 拉完，此时同步主题会丢消息导致闪白。
  * @load 只用来启动 3s 兜底定时器。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { onMounted, onUnmounted } from 'vue';
 import { parseSsoMessage, type SsoMessage, type SsoUser } from '@/types/sso';
@@ -20,6 +23,13 @@ interface SsoHandlers {
   onDenied?: (payload: { error?: string; description?: string }) => void;
 }
 
+/**
+ * @param options.ssoOrigin  允许的来源 origin（**必须校验**，否则任意页面可伪造登录消息）
+ * @param options.getIframe 取 iframe 的函数（可能还没挂载，故用函数而非元素）
+ * @param options.handlers   各类消息的处理回调
+ * @returns 无（void）；在组件 setup 里调用即自动注册/注销 message 监听。
+ *          🔴 origin + source **双校验**，两者任一不符即静默丢弃
+ */
 function useSsoMessage(options: {
   ssoOrigin: string;
   getIframe: () => HTMLIFrameElement | null;

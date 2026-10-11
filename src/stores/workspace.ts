@@ -7,6 +7,9 @@
  *   - 「一次搜到底」：`autoRun`（自动往下拆）提交 kind=search 的任务，
  *     后端 Retro* 一次搜完整棵 AND/OR 树、吃满调用预算，返回多条完整路线；
  *     最优路线重建为树，其余存成备选方案（schemes）。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { defineStore } from 'pinia';
 import { computed, ref, watch } from 'vue';

@@ -10,10 +10,14 @@
  *
  * 形态是**工厂函数**而不是 composable：这些 ref 必须活在主 store 的 setup 作用域里，
  * 不能挂在某个组件上（模型状态是全局的、跨页签的）。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
  */
 import { computed, ref, type Ref } from 'vue';
 import { isUnauthorizedError } from '@/api/http';
 import { retroApi } from '@/api/retro';
+import { MODEL_CONTROL_ENABLED } from '@/config/services';
 import type {
   ForwardModelInfo,
   ModelServiceInfo,
@@ -32,6 +36,9 @@ interface ModelsPartCtx {
   setGlobalError: (msg: string, retry?: (() => void) | null) => void;
 }
 
+/**
+ * @returns 模型状态分片（模型列表/加载/服务启停），供 `createWorkspaceStore` 组装
+ */
 function createModelsPart(ctx: ModelsPartCtx) {
   const models = ref<RetroModel[]>([]);
   const modelsLoading = ref(false);
@@ -188,6 +195,12 @@ function createModelsPart(ctx: ModelsPartCtx) {
    * 换模型 = 重启模型服务进程（加载必须在单线程阶段完成），所以这里会等几秒。
    */
   async function warmModel(key?: string): Promise<void> {
+    // 🔴 走 Node 中转时模型加载归 Node 管，前端无权启停（见 services.ts 的 MODEL_CONTROL_ENABLED）。
+    //    这里必须再挡一道：UI 已隐藏入口，但 store 是公开的（探针 / 历史代码 / 快捷键都可能调到）。
+    if (!MODEL_CONTROL_ENABLED) {
+      console.warn('[models] 当前档位禁止前端启停模型（模型加载归 Node 管），已忽略 warmModel');
+      return;
+    }
     const target = key || ctx.params.value.model;
     modelLoadingKey.value = target;
     try {
@@ -206,6 +219,10 @@ function createModelsPart(ctx: ModelsPartCtx) {
 
   /** 停止模型服务（省内存）。API 不受影响 —— 解析 / 绘制 / AI 分析照常可用。 */
   async function stopModelService(): Promise<void> {
+    if (!MODEL_CONTROL_ENABLED) {
+      console.warn('[models] 当前档位禁止前端启停模型（模型加载归 Node 管），已忽略 stopModelService');
+      return;
+    }
     modelStopping.value = true;
     try {
       const res = await retroApi.modelService('stop');
@@ -230,6 +247,11 @@ function createModelsPart(ctx: ModelsPartCtx) {
    */
   async function loadForward(): Promise<void> {
     if (!forwardModel.value) return;
+    // 正向模型也属「启动模型」（热挂）⇒ 同一开关管
+    if (!MODEL_CONTROL_ENABLED) {
+      console.warn('[models] 当前档位禁止前端加载正向模型（归 Node 管），已忽略 loadForward');
+      return;
+    }
     forwardLoadingKey.value = ctx.params.value.model; // 非 null 即「按钮转圈中」
     try {
       const res = await retroApi.loadForward(forwardModel.value.key);
