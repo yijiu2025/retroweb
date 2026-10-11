@@ -13,7 +13,8 @@
     "type-check": "vue-tsc -b",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "audit:jsdoc": "node scripts/audit-jsdoc.cjs"
+    "audit:jsdoc": "node scripts/audit-jsdoc.cjs",
+    "verify:readme": "node scripts/verify-readme.cjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

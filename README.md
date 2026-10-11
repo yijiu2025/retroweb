@@ -1,5 +1,7 @@
 # RetroWeb · 逆合成工作台（独立前端）
 
+[English](README.en.md) | **简体中文**
+
 一个目标分子 → 一条（或几条）逆合成路线，配一套工艺分析。前端负责路线树的长成与
 交互，模型与化学计算由后端/浏览器端 RDKit 承担。
 
@@ -559,8 +561,8 @@ LCMS（**理论值来自 RDKit，注释来自模型**）· NMR（¹H / ¹³C 描
 | --- | --- |
 | Ketcher（结构式画板） | Apache-2.0 |
 | RDKit（`@rdkit/rdkit`，WASM） | BSD-3-Clause |
-| Element Plus / Vue / axios / Pinia / Vue Router | MIT |
-| Vite / ESLint / Pinia / Vue Router / zod | MIT |
+| Element Plus / Vue / axios / Pinia / Vue Router / zod | MIT |
+| Vite / ESLint / Sass / unplugin-vue-components | MIT |
 | TypeScript | Apache-2.0 |
 | Ketcher 内含的 Indigo | 见 Ketcher 仓库声明 |
 
