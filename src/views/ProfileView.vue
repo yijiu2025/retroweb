@@ -1,10 +1,19 @@
 <script setup lang="ts">
-/** 个人中心 */
+/**
+ * 个人中心 —— 账号信息 + 会话 + 「关于本项目」。
+ *
+ * 「关于本项目」（项目介绍 / GitHub 仓库 / 打赏码）与「运行设置」弹窗里是
+ * **同一个组件**，文案单一来源在 `@/config/about.ts`。两处各写一份必然漂移。
+ *
+ * @author yijiu2025
+ * @since 2026-10-11
+ */
 import { computed } from 'vue';
 import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useAuthStore } from '@/stores/auth';
 import { safeRemoteUrl } from '@/utils/safe-url';
+import AboutProject from '@/components/common/AboutProject.vue';
 
 const authStore = useAuthStore();
 const router = useRouter();
@@ -56,6 +65,10 @@ async function onLogout(): Promise<void> {
         :closable="false"
         title="当前为开发模式，未做真实鉴权；生产环境请将 VITE_AUTH_BYPASS 设为 false"
       />
+
+      <!-- 关于本项目：介绍 + GitHub 仓库 + 自愿支持（与「运行设置」弹窗同一个组件） -->
+      <el-divider class="profile__divider" />
+      <AboutProject />
     </div>
   </section>
 </template>
@@ -65,7 +78,14 @@ async function onLogout(): Promise<void> {
   display: flex;
   flex-direction: column;
   gap: 16px;
-  max-width: 640px;
+  /* 🔴 别把上限压太窄：下面的「关于本项目」要并排放两张二维码，
+   *    640px 会让它们挤成上下两行、且每张被压小。
+   *    这个宽度是「账号信息那一段」的舒适宽度，不是整页的。 */
+  max-width: 880px;
+}
+
+.profile__divider {
+  margin: 4px 0 0;
 }
 
 .profile__hero {

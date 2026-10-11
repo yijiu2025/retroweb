@@ -48,6 +48,7 @@ import TargetBar from '@/components/workspace/TargetBar.vue';
 import RunParams from '@/components/workspace/RunParams.vue';
 import SchemeCompare from '@/components/workspace/SchemeCompare.vue';
 import RouteStats from '@/components/workspace/RouteStats.vue';
+import AboutProject from '@/components/common/AboutProject.vue';
 import MolPreviewDialog from '@/components/mol/MolPreviewDialog.vue';
 
 const settings = useSettingsStore();
@@ -432,6 +433,13 @@ onUnmounted(() => window.removeEventListener('resize', handleResize));
       class="app__run-settings-dialog"
     >
       <RunParams />
+
+      <!-- 关于本项目：介绍 + GitHub 仓库 + 自愿支持。
+           compact 模式只给一句话与仓库链接（弹窗里空间有限），打赏区仍可展开。
+           文案与「个人中心」同源（@/config/about.ts），改一处两处一起变。 -->
+      <el-divider class="app__settings-divider" />
+      <AboutProject compact />
+
       <template #footer>
         <el-button @click="store.runSettingsOpen = false">关闭</el-button>
       </template>
@@ -996,6 +1004,11 @@ onUnmounted(() => window.removeEventListener('resize', handleResize));
 
 .app__run-settings-dialog :deep(.rw-card__body) {
   padding: 0;
+}
+
+/* 「运行参数」与「关于本项目」之间的分隔线：留白别太大，弹窗里本来就挤 */
+.app__settings-divider {
+  margin: 18px 0 14px;
 }
 
 /* 弹窗 880 宽：6 组折叠参数按宽度自动分栏。

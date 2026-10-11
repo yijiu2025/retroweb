@@ -81,19 +81,6 @@ function isExported(src, name) {
   return new RegExp(`\\b${name}\\b`).test(tail);
 }
 
-/** 该文件是否导出了某个对象字面量（如 const xxxApi = {…}; export { xxxApi }） */
-function exportsObjectWithMethods(src) {
-  const lines = src.split('\n');
-  let start = lines.length;
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const t = lines[i].trim();
-    if (t === '' || t.startsWith('//') || t.startsWith('*') || t.startsWith('/*') || t === '*/') continue;
-    if (t.startsWith('export')) start = i;
-    else if (start < lines.length) break;
-  }
-  return /\b\w+\s*[,}]/.test(lines.slice(start).join('\n'));
-}
-
 const files = walk(SRC);
 const report = [];
 let totalFn = 0;

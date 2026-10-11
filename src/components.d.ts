@@ -11,6 +11,7 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AboutProject: typeof import('./components/common/AboutProject.vue')['default']
     AppShell: typeof import('./components/layout/AppShell.vue')['default']
     AsidePanel: typeof import('./components/layout/AsidePanel.vue')['default']
     CandidatePanel: typeof import('./components/workspace/CandidatePanel.vue')['default']
@@ -22,6 +23,7 @@ declare module 'vue' {
     ElDescriptions: typeof import('element-plus/es')['ElDescriptions']
     ElDescriptionsItem: typeof import('element-plus/es')['ElDescriptionsItem']
     ElDialog: typeof import('element-plus/es')['ElDialog']
+    ElDivider: typeof import('element-plus/es')['ElDivider']
     ElDropdown: typeof import('element-plus/es')['ElDropdown']
     ElDropdownItem: typeof import('element-plus/es')['ElDropdownItem']
     ElDropdownMenu: typeof import('element-plus/es')['ElDropdownMenu']

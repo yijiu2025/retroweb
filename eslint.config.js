@@ -40,6 +40,23 @@ export default [
     }
   },
   {
+    // 🔴 `scripts/` 是 **Node 侧工具**（CommonJS，跑在 node 里，不进浏览器产物）：
+    //    用 require / __dirname / console / process。
+    //    上面那段把 browser+node globals 一起给了，于是 `require` 又撞上
+    //    @typescript-eslint/no-require-imports —— 浏览器代码该禁的，工具脚本不该禁。
+    //    另：`.cjs` 后缀让 tseslint 的 TS 规则也生效，所以要显式关掉那条。
+    files: ['scripts/**/*.{js,cjs,mjs}'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'commonjs',
+      globals: { ...globals.node }
+    },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
+    }
+  },
+  {
     // 导出位置约定（与根仓 `eslint.config.js` 的「5.2 导出位置约定」同口径）：
     // 所有 export 一律收拢到文件末尾，定义处不写 `export` 关键字。
     //   正确：function foo() {}  …  export { foo };  /  export type { T };  /  export default foo;
