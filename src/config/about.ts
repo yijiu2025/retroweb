@@ -59,6 +59,17 @@ const DONATE_CHANNELS = [
 /** 收款方署名（展示在二维码下方，如实告知钱转给谁） */
 const DONATE_OWNER = '世间無晚風(*功)';
 
+/** 公众号：项目进展、用法分享、更新公告都在这里发。
+ *  🔴 读者搜「柒染靓月」即可找到，不必写微信号 —— 公众号二维码会变，
+ *    写死 ID 反而在换号后失效。 */
+const WECHAT_OFFICIAL = {
+  name: '柒染靓月',
+  /** 公众号二维码图片（放 public/donate/，430×430 JPEG） */
+  image: '/donate/mp-qrcode.jpg',
+  /** 说明文案 */
+  hint: '项目进展 · 用法分享 · 更新公告'
+};
+
 /** 用途说明：钱用来做什么，明确写出来。
  *  🔴 措辞要**贴合实际部署形态** —— 本项目是本地部署（模型与推理都在用户自己机器上），
  *    写成"服务器开销"会让人误以为有托管服务，反而困惑。 */
@@ -78,5 +89,6 @@ export {
   DONATE_CHANNELS,
   DONATE_OWNER,
   DONATE_NOTE,
-  DONATE_MISSION
+  DONATE_MISSION,
+  WECHAT_OFFICIAL
 };

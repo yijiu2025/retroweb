@@ -1,7 +1,7 @@
 {
   "name": "retroweb",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.1",
   "type": "module",
   "description": "逆合成工作台前端（独立项目，登录走 oauth21 iframe SSO）",
   "license": "MIT",

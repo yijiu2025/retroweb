@@ -13,7 +13,7 @@ import { ref } from 'vue';
 //    以 PascalCase 直接书写的标签，`<component :is="'Monitor'">` 这种字符串形式
 //    它解析不到 ⇒ 渲染成空白（写完才发现的坑）。
 import { Link, CoffeeCup } from '@element-plus/icons-vue';
-import { REPO_URL, REPO_TAGLINE, REPO_INTRO, REPO_FEATURES, DONATE_CHANNELS, DONATE_OWNER, DONATE_NOTE, DONATE_MISSION } from '@/config/about';
+import { REPO_URL, REPO_TAGLINE, REPO_INTRO, REPO_FEATURES, DONATE_CHANNELS, DONATE_OWNER, DONATE_NOTE, DONATE_MISSION, WECHAT_OFFICIAL } from '@/config/about';
 // 🔴 复制必须走 `copyText` —— 它是全站唯一入口（utils/clipboard.ts），
 //    内部已处理「非安全上下文 / 用户拒绝权限」的降级提示。
 //    直接调 navigator.clipboard 在 http 访问下会静默失败，点了没反应。
@@ -89,6 +89,21 @@ function copyRepo(): void {
           <div class="about__donate-owner">收款人：{{ DONATE_OWNER }}</div>
           <div class="about__donate-note">{{ DONATE_NOTE }}</div>
         </div>
+      </div>
+    </div>
+
+    <!-- 公众号：与「自愿支持」平级但**不同性质** —— 关注是零门槛的关注，不是掏钱，
+         所以单列一栏且不折叠（折叠起来等于把它藏起来）。 -->
+    <div class="about__mp">
+      <figure class="about__mp-figure">
+        <img :src="WECHAT_OFFICIAL.image" :alt="`${WECHAT_OFFICIAL.name}公众号二维码`" loading="lazy" />
+      </figure>
+      <div class="about__mp-text">
+        <div class="about__mp-title">
+          关注公众号「{{ WECHAT_OFFICIAL.name }}」
+        </div>
+        <div class="about__mp-hint">{{ WECHAT_OFFICIAL.hint }}</div>
+        <div class="about__mp-sub">微信搜索公众号名即可找到</div>
       </div>
     </div>
   </section>
@@ -271,5 +286,69 @@ function copyRepo(): void {
 
 .about__donate-owner {
   color: var(--rw-text-2);
+}
+
+/* ---------- 公众号 ---------- */
+
+/* 横排：码在左、文字在右。零门槛的关注不该做成需要"展开才看见"的东西。 */
+.about__mp {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--rw-border);
+  border-radius: 8px;
+}
+
+.about__mp-figure {
+  margin: 0;
+  flex: none;
+}
+
+.about__mp-figure img {
+  display: block;
+  width: 84px;
+  height: 84px;
+  border-radius: 6px;
+  /* 二维码必须保持黑白反白正常，否则扫不出来 */
+  filter: none;
+  background: #fff;
+  border: 1px solid var(--rw-border);
+}
+
+.about__mp-text {
+  min-width: 0;
+}
+
+.about__mp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--rw-text);
+}
+
+.about__mp-hint {
+  font-size: 12px;
+  color: var(--rw-text-2);
+  margin-top: 3px;
+}
+
+.about__mp-sub {
+  font-size: 11px;
+  color: var(--rw-text-3);
+  margin-top: 2px;
+}
+
+/* 窄屏：改成竖排（横排在 390px 下二维码被挤到 84px 以下就不好扫了） */
+@media (max-width: 520px) {
+  .about__mp {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .about__mp-figure img {
+    width: 132px;
+    height: 132px;
+  }
 }
 </style>

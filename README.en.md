@@ -617,6 +617,15 @@ procurement / a research grant is less trouble for both sides.
 
 Payee: **世间無晚風(\*功)**
 
+### WeChat Official Account
+
+<p align="center">
+  <img src="public/donate/mp-qrcode.jpg" width="150" alt="柒染靓月 WeChat Official Account QR code">
+</p>
+
+Search the WeChat Official Account **柒染靓月** (Qiran Liangyue) to follow it. Project progress,
+usage tips, and release announcements are published there.
+
 ---
 
 ## 10. License and disclaimer
