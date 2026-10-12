@@ -40,12 +40,17 @@ export default [
     }
   },
   {
-    // 🔴 `scripts/` 是 **Node 侧工具**（CommonJS，跑在 node 里，不进浏览器产物）：
-    //    用 require / __dirname / console / process。
+    // 🔴 `scripts/` 是 **Node 侧工具**：用 require / __dirname / console / process，
+    //    不进浏览器产物。
     //    上面那段把 browser+node globals 一起给了，于是 `require` 又撞上
     //    @typescript-eslint/no-require-imports —— 浏览器代码该禁的，工具脚本不该禁。
     //    另：`.cjs` 后缀让 tseslint 的 TS 规则也生效，所以要显式关掉那条。
-    files: ['scripts/**/*.{js,cjs,mjs}'],
+    //
+    //    ⚠️ 这里**按后缀分成两段**，不要合并成一个 `{js,cjs,mjs}` 再统一写
+    //    `sourceType: 'commonjs'`：ESLint 对 `.mjs` 有隐式覆盖（无论配什么都按 module 解析），
+    //    于是配置写着 commonjs、实际按 module 跑 —— 能过，但**配置本身是错的**，
+    //    后来人读它会以为 `.mjs` 里不能用 import。显式分开才能自解释。
+    files: ['scripts/**/*.{js,cjs}'],
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'commonjs',
@@ -53,6 +58,18 @@ export default [
     },
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
+    }
+  },
+  {
+    // 发版脚本（`scripts/release*.mjs`）：ESM，用 import / export
+    files: ['scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 'latest',
+      sourceType: 'module',
+      globals: { ...globals.node }
+    },
+    rules: {
       '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_' }]
     }
   },

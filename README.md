@@ -148,6 +148,39 @@ npm run build        # 先 type-check 再 vite build
 > `vite build` 若要落到已存在的 `dist/`，会被 safe-delete shim 拦住 ——
 > 需要临时验证时加 `--outDir <一个全新目录>`，别去删 `dist/`。
 
+### 发版（按提交类型自动判定）
+
+```bash
+npm run release                          # 预览，不写任何东西（默认）
+npm run release -- --apply               # 执行：闸门 → 对齐版本 → 打 tag → 推送 → 建 Release
+npm run release -- --from v1.0.0         # 指定起算点（复盘 / 补发）
+npm run release -- --apply --allow-dirty # 工作区有并行改动时放行
+npm run release -- --apply --skip-checks # 跳过发版前闸门
+npm run test:release                     # 发版判定逻辑的单元测试（node:test）
+```
+
+**判定规则**（基线 = 最新 tag）
+
+| 提交类型                                     | 是否发布 | 递增                        |
+| -------------------------------------------- | -------- | --------------------------- |
+| 破坏性（`!:` 或 footer 形式的 `BREAKING CHANGE`） | 发       | major：`1.0.2` → `2.0.0`    |
+| 含 `feat`                                    | 发       | minor：`1.0.2` → `1.1.0`    |
+| 仅 `fix` / `perf`                            | 发       | patch：`1.0.2` → `1.0.3`    |
+| 仅 chore/docs/test/style/ci/refactor/build    | **不发** | —                           |
+
+几条边界：
+
+- **版本源是 git tag**，`package.json` 的 `version` **单向跟随** ——
+  脚本在打 tag 前把它对齐，不一致时单独提交一个 `chore(release): x.y.z`。
+  **不要反过来拿 `package.json` 推版本号。**
+- 破坏性变更**只认 footer 形式**（行首且带冒号）。不可退化成子串匹配 ——
+  提交正文里"提到"这个关键词（例如写这条规则本身）会让 minor 被误升成 major。
+- `--apply` 前会依次跑 type-check / lint / audit:jsdoc / verify:readme / build。
+  浏览器探针（`verify:ep-style` 等）需要 dev server，**不在脚本里跑**。
+- Release 说明**对公网可见**；脚本会列出标题含敏感表述（漏洞 / 密钥 / token 等）的提交，发之前先确认。
+- tag 推送同样可能极慢或零输出 ⇒ 判定一律用 `git ls-remote`，**不信退出码**。
+- **tag 已推而 Release 缺失时，重跑脚本会自动补建**（两者漂移是常见故障，且事后极难发现）。
+
 ---
 
 ## 二、登录：iframe SSO 是怎么接的

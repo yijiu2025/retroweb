@@ -159,6 +159,43 @@ npm run build        # type-check, then vite build
 > If `vite build` targets an existing `dist/`, the safe-delete shim blocks it — for a temporary
 > verification pass use `--outDir <a brand-new directory>` instead of deleting `dist/`.
 
+### Releasing (version decided automatically from commit types)
+
+```bash
+npm run release                          # preview, writes nothing (the default)
+npm run release -- --apply               # execute: gates → align version → tag → push → create Release
+npm run release -- --from v1.0.0         # explicit start point (retrospective / back-fill)
+npm run release -- --apply --allow-dirty # allow a dirty tree (parallel work in flight)
+npm run release -- --apply --skip-checks # skip the pre-release gates
+npm run test:release                     # unit tests for the decision logic (node:test)
+```
+
+**Decision rules** (baseline = latest tag)
+
+| Commit type                                        | Release? | Bump                        |
+| -------------------------------------------------- | -------- | --------------------------- |
+| Breaking (`!:` or a footer-form `BREAKING CHANGE`) | yes      | major: `1.0.2` → `2.0.0`    |
+| Contains `feat`                                    | yes      | minor: `1.0.2` → `1.1.0`    |
+| Only `fix` / `perf`                                | yes      | patch: `1.0.2` → `1.0.3`    |
+| Only chore/docs/test/style/ci/refactor/build        | **no**   | —                           |
+
+A few boundaries:
+
+- **The version source is the git tag**; `package.json`'s `version` follows it one-way —
+  the script aligns it before tagging and, if it differs, commits a separate
+  `chore(release): x.y.z`. **Do not derive the version from `package.json`.**
+- Breaking changes are recognised **only in footer form** (at line start, with a colon). This must not
+  degrade into substring matching — merely *mentioning* the phrase in a commit body (for example while
+  writing this very rule) would bump a minor to major.
+- Before `--apply` the script runs type-check / lint / audit:jsdoc / verify:readme / build in order.
+  The browser probes (`verify:ep-style` etc.) need a dev server and are **not** run by the script.
+- Release notes are **publicly visible**; the script lists commits whose subject looks sensitive
+  (vulnerability / secret / token …) so you can confirm before publishing.
+- Tag pushes can be extremely slow or produce no output ⇒ always judge by `git ls-remote`,
+  **never by the exit code**.
+- **If a tag was pushed but its Release is missing, re-running the script back-fills it**
+  (the two drift apart easily, and it is very hard to notice afterwards).
+
 ---
 
 ## 2. Login: how the iframe SSO is wired
