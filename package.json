@@ -18,7 +18,8 @@
     "verify:retro-envelope": "node scripts/verify-retro-envelope.cjs",
     "verify:ep-style": "node scripts/verify-ep-style.cjs",
     "release": "node scripts/release.mjs",
-    "test:release": "node --test scripts/release-lib.test.mjs"
+    "test:release": "node --test scripts/release-lib.test.mjs",
+    "verify:interrupt": "node scripts/verify-interrupt.cjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",

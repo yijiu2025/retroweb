@@ -159,6 +159,20 @@ npm run build        # type-check, then vite build
 > If `vite build` targets an existing `dist/`, the safe-delete shim blocks it — for a temporary
 > verification pass use `--outDir <a brand-new directory>` instead of deleting `dist/`.
 
+### Browser probes (need a running dev server)
+
+The three gates above are all **static**; they cannot catch "type-check and lint are green but the UI is broken".
+Those cases are verified in a real browser, one script each:
+
+| Command | What it checks |
+| --- | --- |
+| `npm run verify:ep-style` | Whether Element Plus **functional APIs** (`ElMessage` / `ElMessageBox`) actually have their CSS loaded |
+| `npm run verify:retro-envelope` | Whether the retro API **response unwrapping shape** is correct (drives the real code path with stubbed responses) |
+| `npm run verify:interrupt` | Whether the three streaming flows (single-step analysis / conditions enumeration / analyse-whole-route) can be **interrupted**, and whether you can keep asking afterwards |
+
+> All three need `npm run dev` already running on 5177. The release script does **not** run them
+> (it should not be starting services) — run them explicitly when needed.
+
 ### Releasing (version decided automatically from commit types)
 
 ```bash

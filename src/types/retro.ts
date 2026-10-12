@@ -586,6 +586,8 @@ interface StepConditions {
   computed?: MassInfo | null;
   model?: string;
   error?: string;
+  /** 用户主动打断的枚举（同 `StepAnalysis.interrupted`：显式字段，不靠 error 文案判） */
+  interrupted?: boolean;
   at?: number;
   elapsed?: number;
 }
@@ -611,6 +613,17 @@ interface StepAnalysis {
   /** 用户选定的候选条件 id（选了之后深入分析会锁定这套条件） */
   chosenConditionId?: string;
   error?: string;
+  /**
+   * 这次分析是**用户主动打断**的（不是故障）。
+   *
+   * 🔴 必须有这个显式字段，不能靠 `error` 的文案去判（`error === '已手动停止'`）：
+   *    文案是易变判据 —— 后端或文案一改，判据就**静默失效**，而且失效时没有任何报错。
+   *    本仓已有过同类教训（见 `stores/parts/models.ts` 的 `isAuthFailure` 注释）。
+   *
+   *    用途：打断后仍要允许「继续追问 / 接着分析」—— 那两件事对"正常完成"和
+   *    "被用户打断"是同一回事，但对"失败"不是。
+   */
+  interrupted?: boolean;
   model?: string;
   at?: number;
   elapsed?: number;

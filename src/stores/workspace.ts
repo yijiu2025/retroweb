@@ -2153,6 +2153,8 @@ function persistSession(): void {
     cancelFollowup,
     submitFeedback,
     analyzeRoute,
+    routeAnalyzing,
+    cancelRouteAnalysis,
     cancelAllAnalyses
   } = llmPart;
 
@@ -2296,6 +2298,8 @@ function persistSession(): void {
     analysisOf,
     analyzeStep,
     analyzeRoute,
+    routeAnalyzing,
+    cancelRouteAnalysis,
     cancelAnalysis,
     condPlanFirst,
     condOptionCount,

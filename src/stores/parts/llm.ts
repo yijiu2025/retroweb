@@ -68,6 +68,17 @@ function createLlmPart(ctx: LlmPartCtx) {
   const analysisModules = ref<AnalysisModuleKey[]>([...ALL_ANALYSIS_MODULES]);
   /** 正在流式进行的分析 / 枚举 / 追问（key = nodeId 或 `cond:<id>` / `fu:<id>`） */
   const analysisAborts = new Map<string, AbortController>();
+  /** 「一键分析全路线」是否在跑（按钮的 loading / 停止态） */
+  const routeAnalyzing = ref(false);
+  /**
+   * 「一键分析全路线」的取消标志。
+   *
+   * 🔴 为什么不能只看 `analysisAborts` 里有没有 controller：那个 Map 是**共享**的，
+   *    条件枚举 / 追问也往里放。取消批量分析时若只看"有没有 controller"，
+   *    会把用户正在等的一条追问一起 abort 掉。
+   *    所以批量循环用这个**自己的**标志作为"该不该继续下一步"的判据。
+   */
+  let routeCancelRequested = false;
 
   /**
    * 拉取大模型配置状态。
@@ -242,10 +253,13 @@ function createLlmPart(ctx: LlmPartCtx) {
       );
     } finally {
       const cur = node.analyses?.[rid];
-      // 被 abort 时既走不到 done 也走不到 error ⇒ 这里收尾，避免永远停在「分析中」
+      // 🔴 走到这里还是 streaming ⇒ **只可能是被 abort**（正常结束走 onDone、
+      //    报错走 onError，都会先把状态改掉）。所以这里可以确定地标记为「用户打断」，
+      //    而不是靠猜 —— 界面据此仍允许「追问 / 接着分析」。
       if (cur && cur.status === 'streaming') {
         cur.status = 'failed';
         cur.error = cur.error || '分析已中断';
+        cur.interrupted = true;
       }
       analysisAborts.delete(nodeId);
       trimAnalyses(node);
@@ -262,6 +276,7 @@ function createLlmPart(ctx: LlmPartCtx) {
     if (rec && rec.status === 'streaming') {
       rec.status = 'failed';
       rec.error = '已手动停止';
+      rec.interrupted = true; // 显式标记：界面据此仍允许「追问 / 接着分析」
     }
   }
 
@@ -359,9 +374,11 @@ function createLlmPart(ctx: LlmPartCtx) {
     } finally {
       const c = cur();
       // 被 abort 时既走不到 done 也走不到 error ⇒ 这里收尾，避免永远停在「枚举中」
+      // 🔴 与 analyzeStep 同一套推理：还能走到这里就说明是被 abort 的 ⇒ 标记为「用户打断」
       if (c && c.status === 'streaming') {
         c.status = 'failed';
         c.error = c.error || '枚举已中断';
+        c.interrupted = true;
       }
       analysisAborts.delete(ak);
       ctx.schedulePersist();
@@ -401,6 +418,7 @@ function createLlmPart(ctx: LlmPartCtx) {
     if (c && c.status === 'streaming') {
       c.status = 'failed';
       c.error = '已手动停止';
+      c.interrupted = true;
     }
   }
 
@@ -531,19 +549,69 @@ function createLlmPart(ctx: LlmPartCtx) {
   }
 
   /** 把所有节点的 AI 分析一次性生成（沿当前路线的每一步） */
-  async function analyzeRoute(): Promise<void> {
+  /**
+   * 对**整条路线**的每一步依次跑工艺分析（「一键分析全路线」）。
+   *
+   * 🔴 必须可打断：每步的模型思考动辄几十秒（实测推理模型单步思考 30~55s），
+   *    而这条路线上可能有十几步 —— 没有停止入口的话，用户点下去就只能干等，
+   *    中途发现了问题也停不下来。所以：
+   *      · `routeAnalyzing` 暴露给按钮做 loading / 停止态；
+   *      · 循环在**每一步开始前**检查取消标志（已开始的那一步由 `cancelRouteAnalysis`
+   *        直接 abort 掉它的 controller，不用等它自己结束）；
+   *      · 取消后立刻 `break`，不再往下走。
+   *
+   * @returns **是否跑完**（true = 所有步都走完了；false = 被用户打断）。
+   *          ⚠️ 刻意返回布尔而不是 void：调用方据此决定提示语 ——
+   *          被打断时若还弹「已完成整条路线的工艺分析」，那是在撒谎。
+   */
+  async function analyzeRoute(): Promise<boolean> {
     const steps = ctx.route.value;
-    for (const step of steps) {
-      const node = ctx.nodes.value[step.nodeId];
-      if (!node?.chosenReactionId) continue;
-      const rec = node.analyses?.[node.chosenReactionId];
-      if (rec?.status === 'done' || rec?.status === 'streaming') continue;
-      await analyzeStep(step.nodeId);
+    routeCancelRequested = false;
+    routeAnalyzing.value = true;
+    try {
+      for (const step of steps) {
+        // 取消标志在**每步之前**查 —— 这样"停在两步之间"是干净的，
+        // 不会留下一个半死不活的 streaming 记录
+        if (routeCancelRequested) return false;
+        const node = ctx.nodes.value[step.nodeId];
+        if (!node?.chosenReactionId) continue;
+        const rec = node.analyses?.[node.chosenReactionId];
+        if (rec?.status === 'done' || rec?.status === 'streaming') continue;
+        await analyzeStep(step.nodeId);
+        if (routeCancelRequested) return false;
+      }
+      return true;
+    } finally {
+      routeAnalyzing.value = false;
+      routeCancelRequested = false;
     }
+  }
+
+  /**
+   * 打断「一键分析全路线」。
+   *
+   * 两件事都要做，缺一不可：
+   *   ① 置取消标志 —— 让循环在下一步开始前退出（否则当前步跑完还会继续下一步）；
+   *   ② abort 掉**当前正在跑的那一步** —— 否则要等它自己把几十秒思考跑完才停。
+   */
+  function cancelRouteAnalysis(): void {
+    routeCancelRequested = true;
+    // 当前正在分析的那个节点的 controller；没有则说明停在两步之间，只靠标志即可
+    for (const [nodeId, controller] of analysisAborts) {
+      if (nodeId.startsWith('cond:') || nodeId.startsWith('fu:')) continue;
+      controller.abort();
+      analysisAborts.delete(nodeId);
+    }
+    routeAnalyzing.value = false;
   }
 
   /** 停掉所有进行中的分析 / 枚举 / 追问（reset 时用，别一个个 cancel） */
   function cancelAllAnalyses(): void {
+    // 🔴 「一键分析全路线」的循环**不在** analysisAborts 里（它是个 for-await），
+    //    只 abort 各个 controller 的话，循环会把下一步接着跑起来 ⇒
+    //    reset / 换目标之后它还在后台继续分析，很隐蔽。必须连标志一起置。
+    routeCancelRequested = true;
+    routeAnalyzing.value = false;
     analysisAborts.forEach((c) => c.abort());
     analysisAborts.clear();
   }
@@ -565,6 +633,8 @@ function createLlmPart(ctx: LlmPartCtx) {
     cancelFollowup,
     submitFeedback,
     analyzeRoute,
+    routeAnalyzing,
+    cancelRouteAnalysis,
     cancelAllAnalyses
   };
 }

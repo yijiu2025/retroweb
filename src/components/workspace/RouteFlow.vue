@@ -26,8 +26,6 @@ const analyzed = computed(
   () => steps.value.filter((s) => store.analysisOf(s.nodeId)?.status === 'done').length
 );
 
-const busy = ref(false);
-
 function statusOf(nodeId: string): string {
   return store.analysisOf(nodeId)?.status ?? 'idle';
 }
@@ -58,13 +56,12 @@ async function analyzeAll(): Promise<void> {
     ElMessage.warning('还没有采纳任何一步');
     return;
   }
-  busy.value = true;
-  try {
-    await store.analyzeRoute();
-    ElMessage.success('已完成整条路线的工艺分析');
-  } finally {
-    busy.value = false;
-  }
+  // 🔴 用 store 的 routeAnalyzing 而不是组件本地 busy：批量循环住在 store 里，
+  //    组件本地标志一旦与它不同步（切页签、组件重建）就会出现"看起来没跑但停不下来"。
+  const completed = await store.analyzeRoute();
+  // 被打断时不能说"已完成" —— 那与事实不符（部分步骤根本没跑）。
+  if (completed) ElMessage.success('已完成整条路线的工艺分析');
+  else ElMessage.info('已停止分析（已完成的步骤保留）');
 }
 
 watch(
@@ -98,7 +95,18 @@ watch(
       <div class="rw-card__title">每步流程（工艺流水线）</div>
       <div class="flow__ops">
         <span class="flow__count">已分析 {{ analyzed }} / {{ steps.length }} 步</span>
-        <el-button size="small" type="primary" :loading="busy" @click="analyzeAll">
+        <!-- 🔴 运行中必须有停止入口：整条路线可能有十几步、每步思考几十秒，
+             没有它用户点下去就只能干等（中途发现问题也停不下来）。 -->
+        <el-button
+          v-if="store.routeAnalyzing"
+          size="small"
+          type="danger"
+          plain
+          @click="store.cancelRouteAnalysis()"
+        >
+          停止
+        </el-button>
+        <el-button v-else size="small" type="primary" @click="analyzeAll">
           一键分析全路线
         </el-button>
       </div>

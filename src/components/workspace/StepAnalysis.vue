@@ -45,6 +45,21 @@ const thinkingOnly = computed(
 );
 const thinkChars = computed(() => (analysis.value?.reasoning || '').length);
 
+/**
+ * 追问区能不能用。
+ *
+ * 🔴 判据不能写成 `status === 'done'`：**用户主动打断之后同样应该能接着问** ——
+ *    "停止"表达的是"我不想继续等它写完了，现在就要问"，而不是"这一步作废了"。
+ *    原先只认 done，一按停止追问框整块消失，用户必须先重新跑完一次分析才能提问。
+ *
+ * 🔴 判据用**显式字段** `interrupted`，不要用 `error === '已手动停止'` 这类文案匹配：
+ *    文案一改判据就静默失效，且失效时不报任何错（本仓已有同类教训）。
+ */
+const canFollowup = computed(() => status.value === 'done' || analysis.value?.interrupted === true);
+
+/** 被打断而中断（用于给用户一句明确的说明，而不是让他以为程序坏了） */
+const interrupted = computed(() => analysis.value?.interrupted === true);
+
 const COND_LABELS: Record<string, string> = {
   solvent: '溶剂体系',
   temperature: '温度程序',
@@ -207,6 +222,8 @@ async function submitFeedback(): Promise<void> {
 const plan = computed(() => analysis.value?.condOptions ?? null);
 const planStatus = computed(() => plan.value?.status ?? 'idle');
 const planStreaming = computed(() => planStatus.value === 'streaming');
+/** 枚举是用户主动打断的（不是故障）—— 文案据此区分，别把它说成「失败」 */
+const planInterrupted = computed(() => plan.value?.interrupted === true);
 const planOptions = computed(() => plan.value?.data?.options ?? []);
 /** 推理模型在枚举阶段只吐思考时，也要让人看到「在动」 */
 const planThinkingOnly = computed(
@@ -381,8 +398,14 @@ function clearChosen(): void {
         <pre v-else class="ana__raw ana__raw--live rw-scroll">{{ plan?.raw || '…' }}</pre>
       </div>
 
-      <div v-else-if="planStatus === 'failed'" class="ana__error">
-        <b>候选条件枚举失败：</b>{{ plan?.error || '未知错误' }}
+      <!-- 同主分析：用户自己按的「停止」不该说成「失败」 -->
+      <div v-else-if="planStatus === 'failed'" class="ana__error" :class="{ 'is-interrupted': planInterrupted }">
+        <template v-if="planInterrupted">
+          <b>已停止枚举。</b>候选条件没列完 —— 可以重试，或直接用「不限条件（直接分析）」跑一步分析。
+        </template>
+        <template v-else>
+          <b>候选条件枚举失败：</b>{{ plan?.error || '未知错误' }}
+        </template>
         <el-button size="small" text type="primary" @click="enumeratePlan(true)">重试</el-button>
       </div>
 
@@ -463,9 +486,19 @@ function clearChosen(): void {
       <pre v-else class="ana__raw ana__raw--live rw-scroll">{{ analysis?.raw || '…' }}</pre>
     </div>
 
-    <!-- 失败 -->
-    <div v-else-if="status === 'failed'" class="ana__error">
-      <b>分析失败：</b>{{ analysis?.error || '未知错误' }}
+    <!-- 失败 / 被用户停止。
+         🔴 两者必须分开说：把"用户自己按的停止"写成「分析失败」，
+            用户会以为程序出错，还去排查后端。 -->
+    <div v-else-if="status === 'failed'" class="ana__error" :class="{ 'is-interrupted': interrupted }">
+      <template v-if="interrupted">
+        <b>已停止分析。</b>这一步没有跑完 —— 可以「接着分析」继续，或直接在下面追问。
+        <span v-if="analysis?.reasoning" class="ana__error-sub">
+          （已保留 {{ analysis.reasoning.length }} 字思考过程，可展开回看）
+        </span>
+      </template>
+      <template v-else>
+        <b>分析失败：</b>{{ analysis?.error || '未知错误' }}
+      </template>
     </div>
 
     <!-- 思考过程（推理模型，折叠；正文出来后仍可回看） -->
@@ -799,8 +832,9 @@ function clearChosen(): void {
 
     <!-- 追问：分析出结果后，可以带着这一步的上下文继续问它别的问题。
          带过去的是「产物 / 前体 / 路线上下文 + 这份分析 + 上面的历史问答」——
-         所以追问能接着前文答，不会答成对另一个反应的评论。 -->
-    <div v-if="status === 'done' && analysis?.data" class="ana__fu">
+         所以追问能接着前文答，不会答成对另一个反应的评论。
+         🔴 `canFollowup` 而非 `status === 'done'`：被用户打断后也要能接着问。 -->
+    <div v-if="canFollowup" class="ana__fu">
       <div class="ana__h">
         追问
         <span class="ana__tag-flow">携带本步上下文与上文分析</span>
@@ -1359,6 +1393,15 @@ function clearChosen(): void {
 .ana__error {
   font-size: 12px;
   color: var(--rw-bad);
+}
+
+/* 用户自己按的「停止」不是错误 ⇒ 中性色。用红色会让人以为程序坏了。 */
+.ana__error.is-interrupted {
+  color: var(--rw-text-2);
+}
+
+.ana__error-sub {
+  color: var(--rw-text-3);
 }
 
 .ana__streaming {

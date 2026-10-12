@@ -148,6 +148,19 @@ npm run build        # 先 type-check 再 vite build
 > `vite build` 若要落到已存在的 `dist/`，会被 safe-delete shim 拦住 ——
 > 需要临时验证时加 `--outDir <一个全新目录>`，别去删 `dist/`。
 
+### 浏览器探针（需要 dev server 在跑）
+
+上面三道关卡都是**静态**的，抓不到「类型检查与 lint 全绿、但界面是坏的」那类问题。
+这类问题用真实浏览器验证，各有一个脚本：
+
+| 命令 | 查什么 |
+| --- | --- |
+| `npm run verify:ep-style` | Element Plus **函数式 API**（`ElMessage` / `ElMessageBox`）的样式有没有真的被引入 |
+| `npm run verify:retro-envelope` | retro API 的**响应拆包形状**是否正确（用桩响应驱动真实代码路径） |
+| `npm run verify:interrupt` | 三条流式链路（单步分析 / 条件枚举 / 一键分析全路线）能否**打断**、打断后能否继续追问 |
+
+> 三者都需要 `npm run dev` 已在 5177 运行。发版脚本**不会**跑它们（不该去起服务），需要时单独执行。
+
 ### 发版（按提交类型自动判定）
 
 ```bash

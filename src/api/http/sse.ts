@@ -64,6 +64,14 @@ async function postSse<T extends { type: string }>(
       signal
     });
   } catch (e) {
+    // 🔴 **abort 不是错误**：用户点「停止」时，若请求还停在"等响应头"阶段，
+    //    `await fetch` 会以 AbortError 拒绝 ⇒ 这里若不拦，界面就会显示
+    //    「signal is aborted without reason」这种**浏览器内部措辞**，
+    //    用户完全看不懂，还会以为是自己把程序弄坏了。
+    //    ⚠️ 本函数头注释一直写着"abort 不算错误，静默收尾"，但只有下面的
+    //       读取循环实现了它，这一处漏了 —— 两处必须一致。
+    //    判据用 `signal.aborted` 与 `name`，**不看 message**（文案会变）。
+    if (signal?.aborted || (e as Error)?.name === 'AbortError') return;
     onError((e as Error)?.message || '请求大模型失败');
     return;
   }
