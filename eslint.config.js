@@ -57,6 +57,17 @@ export default [
     }
   },
   {
+    // 🔴 Playwright 探针（`scripts/verify-*.cjs`）：**同一个文件里有两套执行环境** ——
+    //    外层是 Node，而 `page.evaluate(() => …)` 的回调字符串实际在**浏览器**里跑，
+    //    里面用 `document` / `window` 是合法的。ESLint 只按文件看，不认这个边界，
+    //    所以这里要为它们补上 browser globals，否则新探针一写就红。
+    //    只放行 `verify-*` 前缀，不放开整个 scripts/ —— 别让普通工具脚本误用 DOM API。
+    files: ['scripts/verify-*.cjs'],
+    languageOptions: {
+      globals: { ...globals.node, ...globals.browser }
+    }
+  },
+  {
     // 导出位置约定（与根仓 `eslint.config.js` 的「5.2 导出位置约定」同口径）：
     // 所有 export 一律收拢到文件末尾，定义处不写 `export` 关键字。
     //   正确：function foo() {}  …  export { foo };  /  export type { T };  /  export default foo;

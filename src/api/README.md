@@ -55,6 +55,30 @@ Node 的前缀是**拼出来的**：`src/api/retroweb/system.json` 的 `prefix` 
 
 🔴 `keys: []` 是**显式清空**，`undefined` 才是"不动旧 key"。传错会清空用户的密钥。
 
+### ③ 🔴 两套客户端「拆信封后返回什么」**约定相反**
+
+这是本项目最容易改错、且**类型检查抓不到**的一处（真出过线上报错：
+`Cannot read properties of undefined (reading 'models')`）。
+
+| 客户端 | 拦截器返回 | 调用点写法 |
+|---|---|---|
+| `api/http/*`（Node 信封） | **裸负载** | `const user = await apiClient.get<UserInfo>(…)` ← **不解构** |
+| `api/retro/*`（Flask 裸 JSON） | **整个 `AxiosResponse`**（只换 `.data`） | `const { data } = await retroClient.get<T>(…)` ← **必须解构** |
+
+**为什么 retro 侧要返回 `AxiosResponse` 而不是裸负载**：那边 **19 个调用点**
+（`retro/compute.ts` 10 + `retro/llm.ts` 9）全是 `const { data } = …`。
+把它改成返回裸负载，`data` 就是 `undefined`，下游 `res.models` / `res.ok` 立刻抛
+`Cannot read properties of undefined`。反之若把 http 改成返回 `AxiosResponse`，
+那边 20+ 个不解构的调用点会拿到一层多余包装。
+
+**⚠️ 为什么 `vue-tsc` 挡不住**：axios 的类型声明说 `.get<T>()` 返回 `AxiosResponse<T>`。
+只要拦截器签名跟着写成 `AxiosResponse<T>`，`const { data }` 在类型上就完全合法 ——
+运行时返回的却是裸负载。**类型系统在拦截器边界上是失真的。**
+
+**验证方式**：`npm run verify:retro-envelope`（桩响应驱动真实代码路径）。
+🔴 注意它**必须用桩响应**：后端没起时请求直接 reject，根本走不到拆包逻辑 ——
+用「后端未启动」的环境测这个 bug 会得到假绿（这一点已经踩过）。
+
 ## 注释规范
 
 结构（文件头 / 目录分层 / 为什么这么写）由各文件自己讲；**输入输出由 JSDoc 标签讲**，两者缺一不可。

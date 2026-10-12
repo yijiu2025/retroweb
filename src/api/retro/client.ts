@@ -25,7 +25,7 @@
  * @author yijiu2025
  * @since 2026-10-11
  */
-import axios, { type AxiosInstance } from 'axios';
+import axios, { type AxiosInstance, type AxiosResponse } from 'axios';
 import { API_BASE_URL, RETRO_BASE_URL, RETRO_VIA_NODE } from '@/config/services';
 import {
   attachUnauthorizedInterceptor,
@@ -47,16 +47,36 @@ const retroBaseURL: string = RETRO_VIA_NODE ? `${API_BASE_URL}/retroweb/v1` : RE
 
 /**
  * 响应拆包：Node 中转回 `{code,message,data}` 信封，直连 Python 回裸 JSON。
- * 走 Node 时取 `data`；直连时原样返回。
+ * 走 Node 时把 `data` 换进去；直连时原样返回。
  *
- * @param response axios 响应（只用到 `data`）
- * @returns 业务负载。⚠️ 不判 `code`：**HTTP 状态码已经是成败判据**，
- *          拆包只负责形状，不负责业务判定（那是 `fail()` 的事）
+ * 🔴 **返回的必须是 `AxiosResponse` 形状（即 `response` 本身），不能是裸负载。**
+ *    本目录 **19 个调用点**（`compute.ts` 10 处 + `llm.ts` 9 处）全部写成
+ *      `const { data } = await retroClient.get<T>(…)`
+ *    —— 它们期待解构出 `.data`。若这里返回裸负载，`const { data }` 会得到 `undefined`，
+ *    下游紧接着访问 `res.models` / `res.ok` 就抛
+ *      "Cannot read properties of undefined (reading 'models')"。
+ *
+ *    ⚠️ 这与 `api/http/client.ts` 的**约定相反**：那边 `onFulfilled` 返回裸负载，
+ *    所以那边的调用点是 `const user = await apiClient.get<UserInfo>(…)`（不解构）。
+ *    **两套约定不同，移植写法时必须连调用点一起改** —— 重构时只改了这里、没改调用点，
+ *    就出过上面那个错（且能通过 `vue-tsc`：axios 的类型声明说 `.get()` 返回
+ *    `AxiosResponse<T>`，`const { data }` 类型上完全合法，类型检查抓不到）。
+ *
+ *    ⚠️ 另外「后端没起」时也**不会**暴露本问题：请求直接 reject 走 catch 分支，
+ *    只有**后端真的返回了响应**才会走到这里。所以它必须用一个「桩响应」来验证
+ *    （见 `.tmp-probe/verify-retro-envelope.cjs`）。
+ *
+ * @param response axios 响应
+ * @returns 同一个 `AxiosResponse`，仅走 Node 时替换其 `data`
  */
-function unwrapNodeEnvelope<T>(response: { data: T }): T {
-  if (!RETRO_VIA_NODE) return response.data;
+function unwrapNodeEnvelope<T>(response: AxiosResponse<T>): AxiosResponse<T> {
+  if (!RETRO_VIA_NODE) return response;
   const body = response.data as { code?: number; data?: unknown } | null;
-  return (body?.data ?? response.data) as T;
+  // 只认「有 data 字段」的信封；否则原样返回（错误体、非信封响应都走这里）
+  if (body && typeof body === 'object' && 'data' in body) {
+    return { ...response, data: body.data as T };
+  }
+  return response;
 }
 
 /**
