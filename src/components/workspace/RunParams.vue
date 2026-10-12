@@ -1872,12 +1872,20 @@ onMounted(() => {
 .params__model {
   display: flex;
   gap: 6px;
+  /* 🔴 必须自己吃掉标签右侧的剩余宽度。`.params__row` 是
+     `justify-content: space-between`，本元素默认 `flex: 0 1 auto` ⇒ 只按内容宽度收缩，
+     而里面的 select 是 `min-width: 0` 可以一直缩 —— 两者叠加会把整个下拉**压成 34px
+     的空框**（实测），当前选中的模型名一个字都看不见，看着像坏掉了。 */
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* 下拉吃掉剩余宽度，按钮**禁止收缩** —— 收缩时「停止」两个字会被裁掉
    （实测：弹窗窄栏里按钮只剩一半）。 */
 .params__model :deep(.el-select) {
   flex: 1 1 auto;
+  /* 这里保持 `min-width: 0` 是**对的**：宽度已由外层 `.params__model` 兜住，
+     再设硬下限只会在窄栏（标定卡右栏）里把按钮顶出容器。 */
   min-width: 0;
 }
 

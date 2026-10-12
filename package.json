@@ -15,7 +15,8 @@
     "lint:fix": "eslint . --fix",
     "audit:jsdoc": "node scripts/audit-jsdoc.cjs",
     "verify:readme": "node scripts/verify-readme.cjs",
-    "verify:retro-envelope": "node scripts/verify-retro-envelope.cjs"
+    "verify:retro-envelope": "node scripts/verify-retro-envelope.cjs",
+    "verify:ep-style": "node scripts/verify-ep-style.cjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
