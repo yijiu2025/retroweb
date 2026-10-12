@@ -492,8 +492,12 @@ async function main() {
     const tagOnRemote = gitTry('ls-remote', '--tags', 'origin', tag).out;
     log(tagOnRemote.includes(tag) ? `  ✓ tag ${tag} 已在远端` : `  ✗ tag ${tag} 未出现在远端，需重推`);
 
-    // 本机 git 不写松散 ref，packed-refs 需同步修正，否则 status 会长期谎报 ahead
-    if (existsSync(FIX_REFS_TOOL)) {
+    // 本机 git 不写松散 ref，packed-refs 需同步修正，否则 status 会长期谎报 ahead。
+    // 🔴 **只在 packed-refs 真的存在时才修**：该工具是给父仓写的 —— 那边的 git
+    //    确实不写松散 ref；而本仓的 ref 就是松散的，这里压根没有 packed-refs
+    //    文件，无条件调用只会打一条莫名其妙的"找不到文件"警告，让发版看起来没跑干净。
+    //    判据用文件是否存在，而不是"工具存不存在"（工具在父仓的 HOME 下，往往是在的）。
+    if (existsSync(FIX_REFS_TOOL) && existsSync(path.join(ROOT, '.git', 'packed-refs'))) {
       const fix = tryRun('node', [FIX_REFS_TOOL, remoteSha]);
       log(fix.ok ? '  ✓ packed-refs 已同步' : `  ⚠ packed-refs 修正失败：${fix.out.split('\n')[0]}`);
     }
