@@ -37,6 +37,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: '个人中心', desc: '账号信息与会话', requiresAuth: true }
   },
   {
+    path: '/settings/models',
+    name: 'model-settings',
+    component: () => import('@/views/ModelSettingsView.vue'),
+    meta: { title: '模型设置', desc: '模型下载 / 手动放置 / CPU 与 GPU 切换', requiresAuth: true }
+  },
+  {
     path: '/:pathMatch(.*)*',
     name: 'not-found',
     component: () => import('@/views/NotFoundView.vue'),

@@ -11,6 +11,9 @@ dist-*/
 #    `*.local` 覆盖机制**已废弃**（会静默盖掉团队档，见 .env.example 顶部），
 #    这里继续忽略是为了防止有人从旧习惯里把它加回来。
 *.local
+# `.env.production` 由桌面打包脚本按 vite "desktop" profile 现场生成
+# （VITE_AUTH_BYPASS=true / VITE_RETRO_URL=/api 等），属构建产物，不入库。
+.env.production
 
 # 版式验收探针脚本（playwright 驱动，跑完即弃，不是产品代码）
 .tmp-probe/
