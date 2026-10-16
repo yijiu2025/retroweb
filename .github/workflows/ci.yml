@@ -1,0 +1,38 @@
+# ============================================================================
+# CI —— 提交门禁（retroweb 独立仓，2026-10-17 从零建立）
+#
+# 本文件是**唯一入口**（家族 CI 规范见 fullstack-rules → ci-conventions.md）：
+#   · 共享门禁 ci-quality.yml 承载「类型 → 规范 → 构建」；
+#   · 本仓**无单测框架**（vitest 未引入），quality job 的 test-cmd 传空跳过；
+#     发布脚本的行为测试（node --test）在专属关卡里覆盖；
+#   · 专属关卡 ci-gates.yml 承载结构类守卫（JSDoc 基线 / README 同步）。
+#
+# 🔴 共享门禁字节级一致、**禁止手改**：单一来源在 fullstack-rules 技能
+#    assets/ci/ci-quality.yml，改动走技能脚本 distribute-ci.mjs 分发；
+#    CI 第一步会跑 scripts/ci-quality-check.mjs 自检副本一致性。
+# ============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    uses: ./.github/workflows/ci-quality.yml
+    with:
+      # 本仓无单测框架：跳过（发布脚本测试在 gates job）
+      test-cmd: ''
+
+  gates:
+    uses: ./.github/workflows/ci-gates.yml
