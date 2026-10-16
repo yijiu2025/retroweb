@@ -1,0 +1,102 @@
+# ============================================================================
+# 共享质量门禁（ci-quality）—— 前端家族「同一逻辑」的唯一载体
+#
+# 🔴 本文件在所有接入仓中**字节级一致**，单一来源在 fullstack-rules 技能：
+#      .claude/skills/fullstack-rules/assets/ci/ci-quality.yml
+#    **禁止手改本文件** —— 要改共享逻辑，请改技能中的 canonical，再用技能脚本
+#      node .claude/skills/fullstack-rules/scripts/distribute-ci.mjs <仓路径...>
+#    分发到各仓。文件末尾的 canonical-sha256 行是完整性自检值，
+#    任何手改都会被 CI 第一步（scripts/ci-quality-check.mjs）拦下。
+#
+# 顺序口径（全家族统一，不可调换）：
+#     完整性自检 → 类型 → 规范 → 单测 → 构建 → 构建后关卡
+#   类型错最便宜（不进构建），先挡；构建最贵，放后面兜底；
+#   🔴 需要 dist 产物的关卡必须走 post-build-cmd、与构建同 job ——
+#      拆 job 传 artifact 更脆（oauth-web 静态关卡的历史决策，勿翻案）。
+#
+# 输入命令留空串 = 跳过对应步骤（供无单测框架的仓使用，如 retroweb）；
+# 默认值对应标准 Vue3 + Vite 前端（oauth-web / retroweb 同构）。
+#
+# 接入三件套（缺一不可）：本文件 + scripts/ci-quality-check.mjs + 入口 ci.yml。
+# 完整规范见 fullstack-rules → references/ci-conventions.md。
+# ============================================================================
+
+name: CI Quality（共享门禁）
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node 主版本
+        type: string
+        default: '22'
+      install-cmd:
+        description: 依赖安装命令（空串 = 跳过）
+        type: string
+        default: 'npm ci --ignore-scripts --no-audit --no-fund'
+      type-check-cmd:
+        description: 类型检查命令（空串 = 跳过）
+        type: string
+        default: 'npm run type-check'
+      lint-cmd:
+        description: 代码规范命令（空串 = 跳过）
+        type: string
+        default: 'npm run lint'
+      test-cmd:
+        description: 单元测试命令（空串 = 跳过）
+        type: string
+        default: 'npm run test'
+      build-cmd:
+        description: 构建命令（空串 = 跳过）
+        type: string
+        default: 'npm run build'
+      post-build-cmd:
+        description: 构建后关卡命令（空串 = 跳过；需 dist 产物的关卡放这里）
+        type: string
+        default: ''
+
+jobs:
+  quality:
+    name: 类型 / 规范 / 单测 / 构建
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      # 第一步永远是完整性自检：共享门禁被手改会让「同一逻辑」悄悄失真
+      - name: 共享门禁完整性自检
+        run: node scripts/ci-quality-check.mjs
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: npm
+
+      - name: 安装依赖
+        if: ${{ inputs.install-cmd != '' }}
+        run: ${{ inputs.install-cmd }}
+
+      # 类型错最便宜，先挡（build 通常还会再跑一次，那是构建期兜底）
+      - name: 类型检查
+        if: ${{ inputs.type-check-cmd != '' }}
+        run: ${{ inputs.type-check-cmd }}
+
+      - name: 代码规范（ESLint）
+        if: ${{ inputs.lint-cmd != '' }}
+        run: ${{ inputs.lint-cmd }}
+
+      - name: 单元测试
+        if: ${{ inputs.test-cmd != '' }}
+        run: ${{ inputs.test-cmd }}
+        env:
+          CI: true
+
+      - name: 构建
+        if: ${{ inputs.build-cmd != '' }}
+        run: ${{ inputs.build-cmd }}
+
+      # 构建后关卡：与构建同 job，因为要扫 dist/ 产物（见文件头注释）
+      - name: 构建后关卡
+        if: ${{ inputs.post-build-cmd != '' }}
+        run: ${{ inputs.post-build-cmd }}
+# canonical-sha256: 473a2f4b7e5ed100da69fae4f0b8732db8448da938ee2fd6b551126d0e991c11

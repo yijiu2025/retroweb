@@ -1,0 +1,43 @@
+# ============================================================================
+# 专属关卡（retroweb）—— 结构类守卫，无服务器依赖
+#
+# 为什么不进共享门禁：这些是本仓特有的检查（JSDoc 基线 / README 同步 /
+# 发布脚本测试），其他仓没有；家族规范要求专属测试住独立文件
+# （ci-<domain>.yml），完整规范见 fullstack-rules → ci-conventions.md。
+#
+# ⚠️ 三个浏览器关卡**刻意不进 CI**：verify:retro-envelope / verify:ep-style /
+#    verify:interrupt 需要 dev server（localhost:5177）+ 真实浏览器，
+#    CI 里起服务反而易 flake。本地全量跑：npm run dev 后依次执行三者
+#    （与 oauth-web 对 dev/prod 关卡的处理同口径）。
+# ============================================================================
+name: CI Gates（retroweb 专属关卡）
+
+on:
+  workflow_call:
+
+jobs:
+  gates:
+    name: JSDoc / README / 发布脚本
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: 安装依赖（lock 复现）
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      # JSDoc 基线：导出函数的 @param / @returns / 文件头缺口必须为 0
+      - name: JSDoc 审计
+        run: npm run audit:jsdoc
+
+      - name: README 同步关卡
+        run: npm run verify:readme
+
+      # 发布脚本行为测试（node --test，无需服务器）
+      - name: 发布脚本测试
+        run: npm run test:release
