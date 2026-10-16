@@ -38,6 +38,10 @@ jobs:
       - name: README 同步关卡
         run: npm run verify:readme
 
+      # 文档入口校验：两级入口体系 + 无死链（规范：fullstack-rules → docs-conventions.md）
+      - name: 文档入口校验
+        run: npm run verify:docs
+
       # 发布脚本行为测试（node --test，无需服务器）
       - name: 发布脚本测试
         run: npm run test:release
