@@ -1,0 +1,18 @@
+blank_issues_enabled: true
+
+contact_links:
+  - name: 安全漏洞报告（私密渠道）
+    url: https://github.com/yijiu2025/retroweb/security/advisories/new
+    about: 安全漏洞请勿开公开 issue，走私密报告（需管理员已开启 Private vulnerability reporting）
+  - name: 后端 / 模型问题（retro）
+    url: https://github.com/yijiu2025/retro/issues
+    about: 预测结果、接口行为、模型服务问题请到 retro 仓库报告
+  - name: 登录态问题（oauth-web）
+    url: https://github.com/yijiu2025/oauth-web/issues
+    about: 登录页自身、SSO 流程、授权页问题请到 oauth-web 仓库报告
+  - name: 项目文档
+    url: https://github.com/yijiu2025/retroweb/tree/main/docs
+    about: 设计说明、移动端原型、使用手册
+  - name: 贡献指南
+    url: https://github.com/yijiu2025/retroweb/blob/main/CONTRIBUTING.md
+    about: 上手、代码红线、提交与 PR 流程，提 bug 前建议先读

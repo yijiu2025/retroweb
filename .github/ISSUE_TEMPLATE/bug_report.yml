@@ -1,0 +1,143 @@
+name: 缺陷报告
+description: 报告一个可复现的问题（路线树 / 画板 / 登录 / LLM 分析 / 构建等）
+labels: ['bug']
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 发生了什么，期望发生了什么
+      placeholder: |
+        例：搜索到底后切到另一套方案再切回来，路线树只剩根节点，历史丢失。
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤
+      description: 从零开始的完整步骤，越具体越好
+      placeholder: |
+        1. npm run dev 打开 http://localhost:5177
+        2. 输入目标分子，点「自动往下拆」
+        3. 等搜索完成，切换到方案 B，再切回方案 A
+        4. 观察路线树
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: 影响面
+      options:
+        - 路线树（展开 / 采纳 / 切换）
+        - 候选前体列表
+        - 多方案对照
+        - 结构式画板（Ketcher）
+        - 分子结构渲染（RDKit）
+        - 登录（iframe SSO）
+        - LLM 工艺分析 / 追问
+        - 运行设置 / 个人中心
+        - 分析档案与复用
+        - 构建 / CI / 依赖
+        - 文档
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: route
+    attributes:
+      label: 涉及页面 / 路由
+      description: 带 URL 参数的请一并写上
+      placeholder: /workbench?job=123
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 提交
+      description: release 版本号或 commit sha（不确定就写「main 最新」）
+      placeholder: v1.1.0 或 58f92e3
+    validations:
+      required: true
+
+  - type: input
+    id: browser
+    attributes:
+      label: 浏览器与版本
+      placeholder: Chrome 131 / Safari 18 / Firefox 133 …
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统
+      placeholder: Windows 11 / macOS 15 / Android 15 / iOS 19 …
+    validations:
+      required: true
+
+  - type: input
+    id: viewport
+    attributes:
+      label: 视口宽度与缩放
+      description: 影响响应式表现；用了浏览器缩放的请注明比例
+      placeholder: 1440×900，缩放 100%
+
+  - type: dropdown
+    id: login
+    attributes:
+      label: 登录形态
+      description: 免登录档是开发专用形态；真实登录需要 oauth21 在跑
+      options:
+        - 免登录开发档
+        - 真实登录（oauth21 iframe）
+        - 未登录态
+        - 与登录无关
+    validations:
+      required: true
+
+  - type: dropdown
+    id: color-mode
+    attributes:
+      label: 明暗模式
+      options:
+        - 浅色
+        - 深色
+        - 跟随系统
+        - 与配色无关
+
+  - type: textarea
+    id: backend
+    attributes:
+      label: 后端情况
+      description: 是否接了 retro 后端、版本；接口类问题必填（没后端时接口全部失败是预期现象）
+      placeholder: 未接后端 / retro v1.1.1 @ localhost:8000
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: 已尝试过什么
+      description: 排除项写清楚，节省双方时间
+      placeholder: 换了浏览器、清了 localStorage、对比了 v1.0.x…
+
+  - type: checkboxes
+    id: desensitize
+    attributes:
+      label: 脱敏检查
+      description: 截图与日志里的敏感信息处理
+      options:
+        - label: 已确认不含真实 token、密钥、邮箱、手机号等敏感信息
+          required: true
+        - label: 控制台错误与网络请求已脱敏（如含 Authorization 头已打码）
+          required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: 附加材料
+      description: 截图 / 录屏 / 控制台报错 / HAR，拖进来即可
+    validations:
+      required: false
