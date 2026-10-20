@@ -1234,6 +1234,69 @@ interface RetrowebSettings {
   [key: string]: unknown;
 }
 
+/**
+ * 物质查询（`/api/substance`）的结果字段。
+ *
+ * 前端 CAS / 名称 → 结构 的输入框靠它（见 components/workspace/TargetInput.vue）。
+ * **两个数据源字段不完全一样**（见 SubstanceApi）：
+ *   · `smiles` —— 两个源都能给（ChemIndex 那条路径由后端用 InChI 转）
+ *   · `cas` / `name` / `formula` / `mw` —— PubChem 查名称时也能给（同义词里翻）
+ *   · `melting_point` / `risk_codes` 等 —— **只有 ChemIndex 有**
+ */
+interface SubstanceInfo {
+  /** CAS 登记号（按名称查时 PubChem 会从同义词里翻出来） */
+  cas?: string;
+  /** 物质名称（IUPAC 或系统名） */
+  name?: string;
+  /** 规范 SMILES（**Kekulé 形式**，交给 RDKit 规范化后才入库） */
+  smiles?: string;
+  /** 分子式，如 `C9H8O4` */
+  formula?: string;
+  /** 分子量 */
+  mw?: number;
+  /** PubChem CID */
+  cid?: number;
+  /** InChI（ChemIndex 独有） */
+  inchi?: string;
+  /** 熔点 */
+  melting_point?: string;
+  /** 沸点 */
+  boiling_point?: string;
+  /** 闪点 */
+  flash_point?: string;
+  /** 水溶性 */
+  water_solubility?: string;
+  /** 蒸气压 */
+  vapour_pressure?: string;
+  /** 危害符号 */
+  hazard_symbols?: string;
+  /** 风险代码 */
+  risk_codes?: string;
+  /** 安全说明 */
+  safety_description?: string;
+  /** EINECS 号 */
+  einecs?: string;
+  /** 同义词列表 */
+  synonyms?: string[];
+}
+
+/** `/api/substance` 的响应。`found:false` 是**查无此物**（不是错误） */
+interface SubstanceApi {
+  ok: boolean;
+  /** 实际用了哪个数据源（兜底/自动选择时前端需要知道） */
+  source?: 'pubchem' | 'chemindex';
+  /** `false` = 上游查无此物（HTTP 200，不是异常） */
+  found?: boolean;
+  /** 失败原因（`ok:false` 时有） */
+  error?: string;
+}
+
+/** 前端可选的物质数据源（界面下拉用） */
+type SubstanceSource = 'pubchem' | 'chemindex';
+
+/** 查询方式：按 CAS 号还是按名称 */
+type SubstanceChoice = 'cas' | 'name';
+
 export type {
   ModelState,
   RetroModel,
@@ -1313,5 +1376,9 @@ export type {
   LlmSource,
   NodeLlmProfile,
   OfficialLlm,
-  RetrowebSettings
+  RetrowebSettings,
+  SubstanceInfo,
+  SubstanceApi,
+  SubstanceSource,
+  SubstanceChoice
 };

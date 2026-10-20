@@ -24,6 +24,42 @@ interface PubChemSynonymsResponse {
   };
 }
 
+/**
+ * PubChem PUG REST 的 property 响应（按 CAS 号反查结构时用，见 `utils/cas-lookup.ts`）。
+ *
+ * 🔴 `SMILES` 与 `ConnectivitySMILES` 的区别（实测 2026-10-20）：
+ *    · `SMILES`            —— **含立体化学**（`C/C=C/C`）
+ *    · `ConnectivitySMILES` —— 去掉立体后的连接结构
+ *    2023 起的 PubChem 两个都给；老版本只有 `SMILES`。
+ *    取值时优先 `SMILES`（保留立体信息对逆合成更有用）。
+ *
+ * 另外注意 PubChem 返回的是 **Kekulé 形式**（`C1=CC=CC=C1`），
+ * 不是芳香小写形式（`c1ccccc1`）⇒ 拿到后要交给 RDKit 规范化。
+ */
+interface PubChemPropertyResponse {
+  PropertyTable?: {
+    Properties?: Array<{
+      CID?: number;
+      /** 含立体的 SMILES（Kekulé 形式） */
+      SMILES?: string;
+      /** 不含立体的 SMILES（Kekulé 形式） */
+      ConnectivitySMILES?: string;
+      /** 分子式，如 `C9H8O4` */
+      MolecularFormula?: string;
+      /** 分子量，如 `180.16` */
+      MolecularWeight?: string;
+      /** IUPAC 名 */
+      IUPACName?: string;
+    }>;
+  };
+  /** 出错时的结构（404 = 没收录这个 CAS 号） */
+  Fault?: {
+    Code?: string;
+    Message?: string;
+    Details?: string[];
+  };
+}
+
 /** smiles-drawer 的绘制器实例（我们只需要 draw 这一个方法） */
 interface SmiDrawerLike {
   draw(
@@ -45,4 +81,4 @@ declare global {
   }
 }
 
-export type { PubChemSynonymsResponse, SmiDrawerLike };
+export type { PubChemSynonymsResponse, PubChemPropertyResponse, SmiDrawerLike };

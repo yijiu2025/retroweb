@@ -29,6 +29,7 @@
  */
 import { ref } from 'vue';
 import type { PubChemSynonymsResponse } from '@/types/external';
+import { CAS_RE } from '@/utils/cas-regex';
 
 /** PUG REST：POST SMILES 表单 → 同义词列表（CAS 混在里面） */
 const ENDPOINT = 'https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/smiles/synonyms/JSON';
@@ -42,8 +43,7 @@ const MIN_GAP_MS = 260;
 /** 落盘最多保留多少条（防 localStorage 无限膨胀） */
 const MAX_PERSIST = 400;
 
-/** CAS 登记号的标准形态：2~7 位-2 位-1 位（校验位） */
-const CAS_RE = /^\d{2,7}-\d{2}-\d$/;
+// CAS 的形态正则统一放在 utils/cas-regex.ts（与 cas-lookup.ts 共用同一份）
 
 interface CasInfo {
   /** CAS 登记号，如 `50-78-2` */

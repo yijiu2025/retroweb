@@ -14,6 +14,7 @@
 | [feedback-learning.md](./feedback-learning.md) | 点板/过柱极性预测与「预测 vs 实测」错误反馈学习机制设计（把实验偏差沉淀成可训练数据） |
 | [how-to-read-diff.md](./how-to-read-diff.md) | 怎么看提交记录与文件变动（GitHub 网页 + 命令行两条路，面向不熟悉 git 的协作者） |
 | [healthcheck-2026-10-09.md](./healthcheck-2026-10-09.md) | 2026-10-09 体检报告（前端 + retrochimera 后端四关结果，历史快照不再维护） |
+| [releases/](./releases/) | 历次 Release 说明（v1.2.0 起：新建项目支持 CAS 号 + 物质查询可选 ChemIndex） |
 
 ## 约定
 

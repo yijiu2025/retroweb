@@ -25,15 +25,38 @@
  *   本组件嵌在「标定大卡片」（TargetSetupPanel）里，负责画布 + 粘贴框 + 解析结果。
  *   解析成功 → `store.setTarget()` → 标定面板整体消失、工作台切到路线态，
  *   目标降级成路线区顶部的 TargetBar（这条带子由 TargetBar.vue 负责，不在这里）。
+ *
+ * **CAS 号 / 名称输入**（2026-10-20，10-20 扩成双源）：
+ *   用户手里可能只有一个 CAS 号（如 `50-78-2`），没有结构式。
+ *   本组件在解析前先看输入像不像 CAS：
+ *     · 像 → 查物质（`/api/substance`，**PubChem / ChemIndex 可选**）
+ *       拿 SMILES → **转成 SMILES 后走完全相同的解析链路**
+ *       （`parseStructure`）⇒ 分子式/分子量/原子数由 RDKit 统一算，
+ *       界面表现与粘贴结构式**完全一致**。
+ *     · 不像 → 照旧按原逻辑走（CDXML 走后端，其余走前端 RDKit）。
+ *
+ *   🔴 **刻意不新开一条「CAS 专用」的解析路径**：那会造成两套算 formula/mw
+ *      的实现，将来必然分叉（上游给的分子式与 RDKit 算的在某些结构上
+ *      会差一个氢的写法）。统一走 `parseStructure` ⇒ 只有一处真相。
+ *
+ *   🔴 **查询走后端而不是前端直连**：ChemIndex 没有 CORS 头（浏览器直连必拒），
+ *      且有 JS 反爬挑战（要把响应里的 `_0x2` 写进 `HW_CHECK` cookie 再重发）
+ *      ⇒ 只能服务端代理。PubChem 本来能直连，但为了两个源**统一入口**也一起走。
+ *      代价：多一次本机 HTTP 往返（毫秒级），换来两个源共用一个下拉。
+ *
+ *   🔴 上游返回的是 **Kekulé 形式**（`C1=CC=CC=C1`），不是芳香小写形式。
+ *      交给 RDKit 规范化后才进入后续链路 —— 否则缓存键、结构图、
+ *      与用户粘贴的结构比对全都对不上。
  */
-import { computed, nextTick, ref } from 'vue';
+import { computed, nextTick, ref, watch } from 'vue';
 import { ElMessage } from 'element-plus';
 import { retroApi } from '@/api/retro';
 import { useWorkspaceStore } from '@/stores/workspace';
-import type { ParseFailure, ParseSuccess } from '@/types/retro';
+import type { ParseFailure, ParseSuccess, SubstanceInfo, SubstanceSource } from '@/types/retro';
 import { depictMolfile, isRdkitReady, needsBackendParse, parseStructure } from '@/utils/rdkit';
 import { readFileAsText } from '@/utils/smiles';
 import { copyText } from '@/utils/clipboard';
+import { isValidCas, normalizeCas } from '@/utils/cas-regex';
 import MolView from '@/components/mol/MolView.vue';
 import StructureEditor from '@/components/mol/StructureEditor.vue';
 
@@ -64,7 +87,7 @@ const EXAMPLES: Array<{ label: string; smiles: string }> = [
 ];
 
 const PLACEHOLDER =
-  '粘贴 ChemDraw 结构（Ctrl+C 复制的 CDXML）、MOL / SDF 文本，或直接输入 SMILES，例如 CC(=O)Oc1ccccc1C(=O)O';
+  '粘贴 ChemDraw 结构（Ctrl+C 复制的 CDXML）、MOL / SDF 文本，直接输入 SMILES（如 CC(=O)Oc1ccccc1C(=O)O），或输入 CAS 号（如 50-78-2）';
 
 /**
  * 输入框正下方的「支持什么」提示 —— 学 Reaxys 搜索框下面那行
@@ -72,21 +95,175 @@ const PLACEHOLDER =
  * 把「这里该填什么、长什么样」直接印在输入框底下，别让用户去猜。
  * 合并模式后只有一句：能认的格式全列出来，不再随模式变。
  */
-const hintText = '支持 CDXML / MOL / SDF / SMILES / 反应式 SMILES（用 > 分隔），粘贴即自动识别格式';
+const hintText =
+  '支持 CDXML / MOL / SDF / SMILES / 反应式 SMILES（用 > 分隔）/ CAS 号，粘贴即自动识别格式';
 
 const currentSmiles = computed(() => store.rootId ? store.nodes[store.rootId]?.smiles : '');
 
+/**
+ * 输入框当前内容**是不是一个 CAS 号**（用于界面上给「按 CAS 查」的即时提示）。
+ *
+ * 🔴 只判**形态**，不判校验位：`50-78-2` 形态对但校验位写错时，也该让用户
+ *    去查 —— PubChem 会告诉他认不认识（"查无此 CAS"），比本地正则拦下更准。
+ */
+const looksLikeCas = computed(() => normalizeCas(text.value) !== '');
+
+/**
+ * 物质数据源 —— **做成可切换的**，因为两个源各有所长（实测 2026-10-20）：
+ *
+ *   | | PubChem | ChemIndex |
+ *   |---|---|---|
+ *   | CAS → 结构 | ✅ | ✅ |
+ *   | 中文名 → 结构 | ✅ | ❌（只认英文名） |
+ *   | 物性（熔点/沸点/闪点/溶解度） | 部分 | ✅ 齐全 |
+ *   | 危害符号 / 风险代码 | ✅ | ✅ |
+ *   | 是否需要后端代理 | 否（有 CORS） | **是**（无 CORS + 反爬） |
+ *
+ * 🔴 默认 **PubChem**：它覆盖面最广（中文名也能查），且不依赖后端活着。
+ *    用户要知道的差异写在界面的 tooltip 里，不用记。
+ *
+ * 🔴 这个值**本地持久化**（localStorage）：选一次就一直生效，不必每次开面板重选。
+ */
+const STORAGE_KEY = 'rw-substance-source';
+const source = ref<SubstanceSource>((localStorage.getItem(STORAGE_KEY) as SubstanceSource) || 'pubchem');
+
+watch(source, (s) => {
+  localStorage.setItem(STORAGE_KEY, s);
+  // 换源后把上一次的查询结果作废，否则会拿 PubChem 的信息配 ChemIndex 的名字
+  substanceHit.value = undefined;
+});
+
+/** 数据源下拉的选项（文案写清「什么时候选它」，别只说名字） */
+const SOURCE_OPTIONS: Array<{ value: SubstanceSource; label: string }> = [
+  { value: 'pubchem', label: 'PubChem' },
+  { value: 'chemindex', label: 'ChemIndex（含物性）' }
+];
+
+/** 当前源的名字（提示语里用，避免满屏 `source.value` 这种代码词） */
+const sourceLabel = computed(() =>
+  source.value === 'chemindex' ? 'ChemIndex' : 'PubChem'
+);
+
+/**
+ * 当前数据源的描述（界面上那行小字，随选择变）。
+ * 写「这个源擅长什么」，让用户知道为什么可能要切。
+ */
+const sourceHint = computed(() =>
+  source.value === 'chemindex'
+    ? 'ChemIndex：物性与危害信息更全（熔点/沸点/风险代码），但查名称只认英文'
+    : 'PubChem：覆盖最广，支持中文名查询，物性信息较少'
+);
+
+/**
+ * 输入框内容是 CAS 号但**校验位不对** —— 只提示、不阻断。
+ *
+ * 🔴 为什么只提示不拦下：校验位算错可能只是用户抄错了一位，
+ *    而这个号在上游到底存不存在才是权威结论。拦下的话，用户明明填的是
+ *    一个真实存在的 CAS（只是末位笔误）却连查都不能查。
+ */
+const casChecksumBad = computed(() => {
+  const cas = normalizeCas(text.value);
+  if (!cas) return false;
+  return !isValidCas(cas);
+});
+
+/**
+ * 查询结果（两个源共用一份结构）：
+ *   · `undefined` → 还没查 / 正在查
+ *   · `null`      → 查过了，这个源没有收录
+ *   · `SubstanceInfo` → 查到了
+ */
+const substanceHit = ref<SubstanceInfo | null | undefined>(undefined);
+const substanceSearching = ref(false);
+
+/**
+ * 把一个 CAS 号解析成结构。
+ *
+ * 🔴 为什么要自己轮询而不用 `requestLookup` 就完事：
+ *    `requestLookup` 是**即发即忘**（组件各调一次、去重与限流在 utils 里），
+ *    适合「显示一个 CAS 标签」那种不关心结果的场景。
+ *    但这里**必须等到结果**才能继续解析（拿到 SMILES 才能往下走），
+ *    所以自己订阅状态变化 + 轮询等待。
+ *
+ * @param cas 标准写法的 CAS 号
+ * @returns 查到的 SMILES（Kekulé 形式，**待 RDKit 规范化**）；
+ *          查无此号 / 网络失败时返回空串
+ */
+/**
+ * 查一次物质（CAS 号或名称），把结果写进 `substanceHit`。
+ *
+ * 🔴 为什么走**后端**（`/api/substance`）而不是前端直连：
+ *    · ChemIndex 没有 CORS 头，浏览器直连必被拒；
+ *    · 它有 JS 反爬挑战（要把响应里的 `_0x2` 写进 `HW_CHECK` cookie 再重发），
+ *      纯 HTTP 客户端第一发就吃「安全检查」页。
+ *    ⇒ 只能服务端代理。PubChem 本来能直连，但为了两个源**统一入口**也一起走这里。
+ *
+ * @returns 查到的 SMILES；查无此物 / 失败返回空串
+ */
+async function fetchSubstance(): Promise<string> {
+  const raw = text.value.trim();
+  if (!raw) return '';
+  substanceSearching.value = true;
+  try {
+    const res = await retroApi.substance(raw, source.value);
+    if (res.ok && res.smiles) {
+      substanceHit.value = res;
+      return res.smiles;
+    }
+    // `found:false` = 这个源查无此物（不是错误）；其它 = 出错了
+    substanceHit.value = res.found === false ? null : undefined;
+    return '';
+  } catch (e) {
+    substanceHit.value = undefined;
+    ElMessage.error(`${(e as Error).message || '物质查询失败'}`);
+    return '';
+  } finally {
+    substanceSearching.value = false;
+  }
+}
+
 async function runParse(input?: string): Promise<void> {
-  const payload = (input ?? text.value).trim();
-  if (!payload) {
-    ElMessage.warning('请先粘贴结构或输入 SMILES');
+  const raw = (input ?? text.value).trim();
+  if (!raw) {
+    ElMessage.warning('请先粘贴结构、输入 SMILES 或 CAS 号');
     return;
   }
   parsing.value = true;
   failure.value = null;
   try {
+    // ---- ① CAS 号优先识别 ----
+    // 必须在判 CDXML 之前：CAS 号长得像 SMILES（`50-78-2` 甚至能通过
+    // SMILES 的字符集检查），若先走 parseStructure 会被当成「一个奇怪的结构」
+    // 报一堆 valence 错误，用户完全看不懂。
+    const cas = normalizeCas(raw);
+    let payload = raw;
+    let viaCas = false;
+    // 名称也可以走物质查询（两个源都支持），但只有 CAS 号才**优先于**结构解析
+    // —— 记名称时用户意图也可能是要粘结构（「aspirin」绝无歧义，但「water」
+    //    之类的词也可能是别的）。所以只在形态明确时抢跑。
+    if (cas) viaCas = true;
+
+    if (viaCas) {
+      const smiles = await fetchSubstance();
+      if (!smiles) {
+        // 查无此号 / 网络失败 —— 说清楚是哪一种，别只说"解析失败"
+        if (substanceHit.value === null) {
+          ElMessage.error(`${source.value === 'chemindex' ? 'ChemIndex' : 'PubChem'} 没有收录 CAS 号 ${cas}，试试换个数据源`);
+        } else {
+          ElMessage.error(`查 CAS 号 ${cas}失败（网络或超时），请稍后重试`);
+        }
+        parsing.value = false;
+        return;
+      }
+      // 🔴 PubChem 给的是 Kekulé 形式，必须交给 RDKit 规范化。
+      //    规范化在 parseStructure 里做（它内部会 canonicalize）⇒ 下面直接用原始
+      //    SMILES 喂进去即可，不需要在这里再转一次。
+      payload = smiles;
+    }
+
+    // ---- ② 常规结构解析（CDXML 走后端，其余走前端 RDKit）----
     // CDXML 是唯一必须走后端的输入（浏览器版 RDKit 读不了它）
-    const useBackend = needsBackendParse(payload);
+    const useBackend = !viaCas && needsBackendParse(payload);
     if (!useBackend && !isRdkitReady()) {
       // 首次解析要拉 7.4MB 的 WASM 引擎 —— 说清楚，别让人以为卡死了
       ElMessage.info('首次解析需加载前端解析引擎（约 7MB），请稍候…');
@@ -97,7 +274,11 @@ async function runParse(input?: string): Promise<void> {
       // 🔴 解析成功 ⇒ 输入区收起（用户要求：输入完成就可以隐藏，点胶囊可替换）
       collapsed.value = true;
       store.setTarget(res);
-      ElMessage.success('已解析并设为目标分子');
+      ElMessage.success(
+        viaCas
+          ? `已按 CAS 号 ${cas} 查到结构并设为目标分子`
+          : '已解析并设为目标分子'
+      );
     } else {
       parsed.value = null;
       failure.value = res;
@@ -161,6 +342,18 @@ async function resolveSeed(): Promise<string> {
   if (parsed.value?.smiles) return parsed.value.smiles;
   const raw = text.value.trim();
   if (!raw) return '';
+  // 🔴 输入框里是 CAS 号时也得能开画板 —— 否则用户「输入 CAS → 点编辑结构式」
+  //    得到一张空画板，得先把 CAS 查一遍再重新输入。
+  if (normalizeCas(raw)) {
+    const smiles = await fetchSubstance();
+    if (!smiles) return '';
+    try {
+      const res = await parseStructure(smiles);
+      return res.ok ? res.smiles : '';
+    } catch {
+      return '';
+    }
+  }
   try {
     const res = needsBackendParse(raw) ? await retroApi.parse(raw) : await parseStructure(raw);
     return res.ok ? res.smiles : '';
@@ -172,6 +365,7 @@ async function resolveSeed(): Promise<string> {
 /** 打开画板时会带上什么结构（没有就说没有 —— 不放没用的字） */
 const seedHint = computed(() => {
   if (parsed.value?.smiles) return '打开画板会带上上面这个结构，可以直接改';
+  if (looksLikeCas.value) return '打开画板会先查出这个 CAS 号的结构再带进去';
   if (text.value.trim()) return '打开画板会先解析输入框里的内容，能认出来就带进去';
   return '';
 });
@@ -348,9 +542,65 @@ void nextTick(seedFromCurrent);
           </div>
         </div>
 
-        <!-- ② 格式提示行（参考稿的 "支持 CDXML / MOL / SDF…" 一行小字） -->
+        <!-- ② 输入行右侧/下方：**物质数据源选择**（CAS / 名称查询用哪个库）
+             🔴 只在输入像 CAS 号 / 名称时才值得关注，但常驻显示也没坏处：
+                用户能事先知道「可以切源」。做成两行：上面下拉，下面一句话说清
+                这个源擅长什么 —— 别让用户选完还不知道区别。 -->
+        <div class="target__source">
+          <el-select
+            v-model="source"
+            size="small"
+            class="target__source-select"
+            :disabled="parsing"
+          >
+            <el-option
+              v-for="opt in SOURCE_OPTIONS"
+              :key="opt.value"
+              :label="opt.label"
+              :value="opt.value"
+            />
+          </el-select>
+          <span class="target__source-hint">{{ sourceHint }}</span>
+        </div>
+
+        <!-- ③ 格式提示行（参考稿的 "支持 CDXML / MOL / SDF…" 一行小字）
+             🔴 识别到 CAS 号时**换成 CAS 专用提示**：用户输入 `50-78-2` 之后，
+             底下必须告诉他「这是 CAS 号，会去查」——
+             否则他看到「已设为目标分子」前会以为程序没认出来。 -->
         <div class="target__hint">
-          <span class="target__hint-text">{{ hintText }}</span>
+          <span v-if="!looksLikeCas" class="target__hint-text">{{ hintText }}</span>
+          <span
+            v-else
+            class="target__hint-cas"
+            :class="{ 'is-warn': substanceHit === null || casChecksumBad }"
+          >
+            <svg viewBox="0 0 16 16" aria-hidden="true">
+              <circle cx="8" cy="8" r="6.5" />
+              <path d="M8 7.2v4M8 4.8v.6" />
+            </svg>
+            <template v-if="substanceSearching">
+              正在查 {{ sourceLabel }}…
+            </template>
+            <template v-else-if="substanceHit === null">
+              {{ sourceLabel }}没有收录这个 CAS 号，换个数据源或核对后重试
+            </template>
+            <template v-else-if="substanceHit">
+              识别为 CAS 号 {{ substanceHit.cas || normalizeCas(text) }}，点「解析结构」按它查
+              {{ sourceLabel }}
+              <template v-if="substanceHit.name">｜{{ substanceHit.name }}</template>
+              <!-- 物性与危害信息是 ChemIndex 的独有价值，查到了就露一小条 -->
+              <template v-if="substanceHit.melting_point">
+                ｜熔点 {{ substanceHit.melting_point }}
+              </template>
+            </template>
+            <template v-else>
+              识别为 CAS 号 {{ normalizeCas(text) }}，点「解析结构」按它查 {{ sourceLabel }}
+            </template>
+            <!-- 校验位不对：只提醒，不拦下（上游认不认才是权威） -->
+            <span v-if="casChecksumBad" class="target__hint-cas-warn">
+              （校验位可能抄错了）
+            </span>
+          </span>
         </div>
       </div>
 
@@ -629,7 +879,31 @@ void nextTick(seedFromCurrent);
   font-weight: 600;
 }
 
-/* ---------- ② 格式提示行 ---------- */
+/* ---------- ② 物质数据源选择（CAS / 名称查询用哪个库）----------
+   放在输入框正下方：它是「输入什么」的一部分，不是全局设置。
+   下拉本身不大，重点在旁边那句话（这个源擅长什么）。 */
+.target__source {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* 收窄下拉：这里的选项很短（"PubChem" / "ChemIndex（含物性）"），
+   默认 100% 会把整行占满，把后面的说明文字挤到下一行去。 */
+.target__source-select {
+  flex: 0 0 auto;
+  width: 178px;
+}
+
+.target__source-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: var(--rw-text-3);
+}
+
+/* ---------- ③ 格式提示行 ---------- */
 .target__hint {
   display: flex;
   align-items: center;
@@ -643,6 +917,37 @@ void nextTick(seedFromCurrent);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* CAS 提示：识别到 CAS 号时取代通用提示行。
+   用品牌色点出「这是个 CAS 号」，让用户知道程序认出来了、正在按 CAS 处理。
+   查无此号时转警示色 —— 那是需要用户改输入的信号。 */
+.target__hint-cas {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--rw-brand-d);
+}
+
+.target__hint-cas svg {
+  width: 13px;
+  height: 13px;
+  flex: 0 0 13px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+}
+
+/* 查无此号 / 校验位可疑：转警示色 —— 这是需要用户改输入的信号 */
+.target__hint-cas.is-warn {
+  color: var(--el-color-warning-dark-2, #b88230);
+}
+
+.target__hint-cas-warn {
+  opacity: 0.85;
 }
 
 /* ---------- ③ 「或者」分隔 + 居中绘制入口（Reaxys 的 AND + Draw） ---------- */

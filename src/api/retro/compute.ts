@@ -33,7 +33,11 @@ import type {
   ModelsResponse,
   ParseResult,
   PredictResult,
-  SearchAlgorithm
+  SearchAlgorithm,
+  SubstanceApi,
+  SubstanceChoice,
+  SubstanceInfo,
+  SubstanceSource
 } from '@/types/retro';
 
 const retroApi = {
@@ -159,6 +163,37 @@ const retroApi = {
       return data;
     } catch (e) {
       fail(e, '结构解析失败');
+    }
+  },
+
+  /**
+   * 查物质档案（CAS 号 / 名称 → 结构 + 物性）。
+   *
+   * 🔴 为什么 CAS 查结构要走**后端**而不是像原来那样前端直连 PubChem：
+   *    ChemIndex **没有** CORS 头，浏览器直连必被拒；而且它有 JS 反爬挑战
+   *    （要把响应里的 `_0x2` 写进 `HW_CHECK` cookie 再重发），纯 HTTP 客户端
+   *    第一发就吃一个「安全检查」页。⇒ 只能由服务端代理。
+   *    PubChem 本来能直连，但为了两个源**统一入口**，也一起走这里。
+   *
+   * @param terms CAS 号（如 `50-78-2`）或物质名称（如 `aspirin`）
+   * @param source `pubchem`（默认，结构为主）或 `chemindex`（物性/危害更全）
+   * @param choice 不传则后端按形态自己猜（像 CAS 就按 cas 查）
+   * @returns 查到的字段；**查无此物不是异常**，而是 `{ok:false, found:false}`
+   * @throws 走 `fail()`：网络 / 后端 5xx / 上游被反爬拦住（502）
+   */
+  async substance(
+    terms: string,
+    source: SubstanceSource = 'pubchem',
+    choice?: SubstanceChoice
+  ): Promise<SubstanceApi & SubstanceInfo> {
+    try {
+      const { data } = await retroClient.post<SubstanceApi & SubstanceInfo>(
+        '/substance',
+        { terms, source, choice }
+      );
+      return data;
+    } catch (e) {
+      fail(e, '物质查询失败');
     }
   },
 
